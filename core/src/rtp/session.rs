@@ -34,6 +34,8 @@ pub struct RtpSessionConfig {
 }
 
 /// 單通通話的 RTP session handle
+///
+/// handle 被丟棄時會一併停止收發 task，避免漏掉 `stop()` 時 RTP 持續傳送。
 pub struct RtpSession {
     pub stats:      Arc<RtpStats>,
     stop_flag:      Arc<AtomicBool>,
@@ -205,5 +207,11 @@ impl RtpSession {
             }
         }
         anyhow::bail!("無法找到可用的 RTP port（從 {} 開始）", start);
+    }
+}
+
+impl Drop for RtpSession {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
     }
 }

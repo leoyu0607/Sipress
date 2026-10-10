@@ -59,6 +59,8 @@ impl AgentEngine {
         let detail  = Arc::new(DetailedStats::default());
         let start   = Instant::now();
 
+        cfg.validate()?;
+
         let sip_log = Arc::new(
             SipLogger::new(&cfg.logs_dir, SipRole::Agent)
                 .unwrap_or_else(|e| {
