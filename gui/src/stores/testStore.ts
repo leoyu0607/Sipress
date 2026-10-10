@@ -198,6 +198,7 @@ export const useTestStore = defineStore('test', () => {
 
   let pollTimer:  ReturnType<typeof setInterval> | null = null
   let clockTimer: ReturnType<typeof setInterval> | null = null
+  let stopping = false        // 已送出停止、等待引擎收尾中（防止重複停止）
   let prevInitiated = 0
   let rtpLoggedOnce = false   // 防止重複寫 RTP session 啟動 log
 
@@ -349,10 +350,11 @@ export const useTestStore = defineStore('test', () => {
     }
   }
 
-  async function _tryFetchReport() {
+  /** 取得最終報告；引擎執行失敗時回傳 false（get_report 會丟出錯誤原因） */
+  async function _tryFetchReport(): Promise<boolean> {
     try {
       const report = await invoke<RustReport | null>('get_report')
-      if (!report) return
+      if (!report) return true
       metrics.value = {
         ...metrics.value,
         cps:       report.actual_cps,
@@ -388,21 +390,25 @@ export const useTestStore = defineStore('test', () => {
       respCodes.value['200'] = report.calls_answered
       respCodes.value['408'] = report.calls_timeout
       addLog('ok', `測試完成  發起 ${report.calls_initiated}  接通 ${report.calls_answered}  失敗 ${report.calls_failed + report.calls_timeout}  ASR ${report.asr.toFixed(1)}%  CPS ${report.actual_cps.toFixed(1)}`)
+      return true
     } catch (e) {
-      addLog('warn', `無法取得最終報告: ${e}`)
+      addLog('err', `壓測執行失敗: ${e}`)
+      return false
     }
   }
 
   function _finishTest() {
     if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-    _tryFetchReport().then(() => { status.value = 'done' })
+    stopping = false
+    _tryFetchReport().then(ok => { status.value = ok ? 'done' : 'error' })
   }
 
   // ── Start / Stop ──────────────────────────────────────────────────────────────
   async function startTest() {
     if (status.value === 'running') return
     status.value = 'running'
+    stopping = false
     elapsedSec.value = 0
     prevInitiated = 0
     rtpLoggedOnce = false
@@ -464,14 +470,21 @@ export const useTestStore = defineStore('test', () => {
   }
 
   async function stopTest() {
-    if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
+    if (stopping) return
+    stopping = true
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
+    addLog('warn', `test stopped  elapsed: ${elapsedSec.value}s`)
     try {
       await invoke('stop_test')
-    } catch { /* already stopped */ }
-    await _tryFetchReport()
-    status.value = 'done'
-    addLog('warn', `test stopped  elapsed: ${elapsedSec.value}s`)
+    } catch {
+      // 引擎已結束（沒有可停止的壓測）→ 直接收尾取報告
+      _finishTest()
+      return
+    }
+    // 引擎會先對進行中的通話送 BYE/CANCEL 並等待回應，
+    // 由輪詢偵測 snapshot.finished 後再取最終報告
+    addLog('info', '等待進行中通話收尾（BYE/CANCEL）…')
+    if (!pollTimer) _finishTest()
   }
 
   // ── SIP Account Management ────────────────────────────────────────────────────

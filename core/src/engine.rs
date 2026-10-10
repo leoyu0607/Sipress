@@ -500,6 +500,18 @@ impl Engine {
                             }
                             _ => {}
                         }
+                    } else {
+                        // 找不到對應 dialog（已結束或未知）仍須回最終回應，否則伺服器會持續重傳
+                        // 對話內請求 → 481（RFC 3261 §12.2.2 / §15.1.2）；Caller 模式不接受新來電 → 603
+                        let status = if method == "INVITE" && SipParser::to_tag(&req_raw).is_none() {
+                            "603 Decline"
+                        } else {
+                            "481 Call/Transaction Does Not Exist"
+                        };
+                        sip_log.log_event(&call_id, &format!("收到未知 dialog 的 {}，回應 {}", method, status));
+                        let resp = SipMessage::response_for_request(&req_raw, status);
+                        sip_log.log_message(Direction::Send, &resp, &cfg.server_addr);
+                        let _ = udp.send(&resp).await;
                     }
                 } // SipEvent::IncomingRequest
                 } // match ev

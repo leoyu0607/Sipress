@@ -17,6 +17,8 @@ enum UasBehavior {
     AnswerThenBye,
     /// 只回 200，等待客戶端 BYE
     Answer,
+    /// 回 200 後，再對一個不存在的 Call-ID 送 BYE
+    AnswerThenByeUnknownDialog,
 }
 
 fn header_line(raw: &str, names: &[&str]) -> String {
@@ -71,8 +73,10 @@ fn server_bye(invite: &str, call_id: &str) -> String {
     )
 }
 
-/// 啟動 mock UAS，回傳其 SIP 位址
-async fn spawn_uas(behavior: UasBehavior) -> SocketAddr {
+/// 啟動 mock UAS，回傳其 SIP 位址與它收到的所有 SIP 回應
+async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let responses: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let responses_rx = Arc::clone(&responses);
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = sock.local_addr().unwrap();
     // 對端 RTP 黑洞（只需一個可送達的 port）
@@ -89,7 +93,8 @@ async fn spawn_uas(behavior: UasBehavior) -> SocketAddr {
             };
             let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
             if raw.starts_with("SIP/2.0") {
-                continue; // 引擎對伺服器 BYE 的 200 OK
+                responses_rx.lock().unwrap().push(raw); // 引擎對伺服器請求的回應
+                continue;
             }
             let method = raw.split_whitespace().next().unwrap_or("").to_string();
             match method.as_str() {
@@ -109,6 +114,11 @@ async fn spawn_uas(behavior: UasBehavior) -> SocketAddr {
                         UasBehavior::Answer => {
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                         }
+                        UasBehavior::AnswerThenByeUnknownDialog => {
+                            let _ = sock.send_to(ok.as_bytes(), peer).await;
+                            let bye = server_bye(&raw, "no-such-dialog@127.0.0.1");
+                            let _ = sock.send_to(bye.as_bytes(), peer).await;
+                        }
                     }
                 }
                 "BYE" | "CANCEL" => {
@@ -119,7 +129,7 @@ async fn spawn_uas(behavior: UasBehavior) -> SocketAddr {
             }
         }
     });
-    addr
+    (addr, responses)
 }
 
 fn test_config(server: SocketAddr) -> Config {
@@ -140,7 +150,7 @@ fn test_config(server: SocketAddr) -> Config {
 
 #[tokio::test]
 async fn retransmitted_200_ok_is_not_double_counted() {
-    let uas = spawn_uas(UasBehavior::AnswerWithRetransmit).await;
+    let (uas, _) = spawn_uas(UasBehavior::AnswerWithRetransmit).await;
     let cfg = Config {
         cps:                20.0,
         max_total_calls:    Some(3),
@@ -158,7 +168,7 @@ async fn retransmitted_200_ok_is_not_double_counted() {
 
 #[tokio::test]
 async fn calls_active_at_deadline_are_completed_without_waiting_full_timeout() {
-    let uas = spawn_uas(UasBehavior::Answer).await;
+    let (uas, _) = spawn_uas(UasBehavior::Answer).await;
     let cfg = Config {
         cps:                5.0,
         call_duration_secs: 0, // 不主動 BYE → 測試結束時必定仍在通話
@@ -184,7 +194,7 @@ async fn calls_active_at_deadline_are_completed_without_waiting_full_timeout() {
 
 #[tokio::test]
 async fn unlimited_duration_does_not_panic_and_stops_on_signal() {
-    let uas = spawn_uas(UasBehavior::Answer).await;
+    let (uas, _) = spawn_uas(UasBehavior::Answer).await;
     let cfg = Config {
         cps:                5.0,
         call_duration_secs: 0,
@@ -206,7 +216,7 @@ async fn unlimited_duration_does_not_panic_and_stops_on_signal() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
-    let uas = spawn_uas(UasBehavior::AnswerThenBye).await;
+    let (uas, _) = spawn_uas(UasBehavior::AnswerThenBye).await;
     let cfg = Config {
         cps:                20.0,
         call_duration_secs: 0,
@@ -233,4 +243,28 @@ async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
         "每通電話都已被伺服器掛斷，不應殘留 RTP session：{:?}",
         after_calls
     );
+}
+
+#[tokio::test]
+async fn bye_for_unknown_dialog_is_still_answered() {
+    let (uas, responses) = spawn_uas(UasBehavior::AnswerThenByeUnknownDialog).await;
+    let cfg = Config {
+        cps:                5.0,
+        max_total_calls:    Some(1),
+        call_duration_secs: 1,
+        duration_secs:      5,
+        ..test_config(uas)
+    };
+    Engine::new(cfg).run(None).await.unwrap();
+
+    let responses = responses.lock().unwrap();
+    let answer = responses.iter()
+        .find(|r| SipParser::call_id(r).as_deref() == Some("no-such-dialog@127.0.0.1"));
+    let answer = answer.expect("對不存在 dialog 的 BYE 也必須回應，否則伺服器會一直重傳");
+    assert!(
+        answer.starts_with("SIP/2.0 200") || answer.starts_with("SIP/2.0 481"),
+        "非預期回應：{}",
+        answer.lines().next().unwrap_or("")
+    );
+    assert_eq!(SipParser::cseq_method(answer).as_deref(), Some("BYE"));
 }

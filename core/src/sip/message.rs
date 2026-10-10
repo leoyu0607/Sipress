@@ -243,9 +243,15 @@ impl SipMessage {
 
     /// 對伺服器發來的 BYE 回應 200 OK（不含 SDP）
     pub fn ok_for_server_bye(raw_request: &str) -> String {
+        Self::response_for_request(raw_request, "200 OK")
+    }
+
+    /// 對伺服器發來的請求回應任意狀態（不含 body），鏡射 Via/From/To/Call-ID/CSeq
+    /// `status_line` 例："481 Call/Transaction Does Not Exist"
+    pub fn response_for_request(raw_request: &str, status_line: &str) -> String {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_request);
         format!(
-            "SIP/2.0 200 OK\r\n\
+            "SIP/2.0 {status}\r\n\
              {via}\r\n\
              {from}\r\n\
              {to}\r\n\
@@ -253,6 +259,7 @@ impl SipMessage {
              {cseq}\r\n\
              Content-Length: 0\r\n\
              \r\n",
+            status = status_line,
             via = via, from = from, to = to, call_id = call_id, cseq = cseq,
         )
     }
