@@ -23,6 +23,10 @@ enum UasBehavior {
     RejectBusyRetransmit,
     /// 只回 180；收到 CANCEL 後回 200（CANCEL）+ 487（INVITE）
     RingNoAnswer,
+    /// 丟掉每通電話的第一個 INVITE（模擬 UDP 掉包），只回應重傳的 INVITE
+    DropFirstInvite,
+    /// 正常接聽，但丟掉每通電話的第一個 BYE，只回應重傳的 BYE
+    DropFirstBye,
 }
 
 fn header_line(raw: &str, names: &[&str]) -> String {
@@ -97,6 +101,8 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
         let _keep = rtp_sink;
         let mut buf = vec![0u8; 65536];
         let mut invites: std::collections::HashMap<String, String> = Default::default();
+        // 已丟棄過的 "METHOD call-id"（Drop* 行為只丟每通電話的第一個請求）
+        let mut dropped: std::collections::HashSet<String> = Default::default();
         loop {
             let (n, peer) = match sock.recv_from(&mut buf).await {
                 Ok(v) => v,
@@ -108,6 +114,16 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                 continue; // 引擎對伺服器請求的回應
             }
             let method = raw.split_whitespace().next().unwrap_or("").to_string();
+            let drop_first = matches!(
+                (behavior, method.as_str()),
+                (UasBehavior::DropFirstInvite, "INVITE") | (UasBehavior::DropFirstBye, "BYE")
+            );
+            if drop_first {
+                let key = format!("{} {}", method, SipParser::call_id(&raw).unwrap_or_default());
+                if dropped.insert(key) {
+                    continue; // 第一次：當作掉包，不回應
+                }
+            }
             match method.as_str() {
                 "INVITE" => {
                     let ok = ok_for_invite(&raw, addr, rtp_port);
@@ -122,7 +138,7 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                             let _ = sock.send_to(server_bye(&raw, &cid).as_bytes(), peer).await;
                         }
-                        UasBehavior::Answer => {
+                        UasBehavior::Answer | UasBehavior::DropFirstInvite | UasBehavior::DropFirstBye => {
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                         }
                         UasBehavior::AnswerThenByeUnknownDialog => {
@@ -356,7 +372,58 @@ async fn cancelled_invite_487_is_acked() {
 
     assert_eq!(report.calls_timeout, 1);
     assert_eq!(requests(&received, "CANCEL").len(), 1);
+    assert_eq!(requests(&received, "INVITE").len(), 1, "已收到 180 後不可再重傳 INVITE");
     let acks = requests(&received, "ACK");
     assert_eq!(acks.len(), 1, "CANCEL 後收到的 487 必須回 ACK，否則伺服器會持續重傳");
     assert_eq!(SipParser::cseq_method(&acks[0]).as_deref(), Some("ACK"));
+}
+
+#[tokio::test]
+async fn lost_invite_is_retransmitted_until_answered() {
+    let (uas, received) = spawn_uas(UasBehavior::DropFirstInvite).await;
+    let cfg = Config {
+        cps:                10.0,
+        max_total_calls:    Some(2),
+        call_duration_secs: 1,
+        duration_secs:      8,
+        ..test_config(uas)
+    };
+    let report = Engine::new(cfg).run(None).await.unwrap();
+
+    assert_eq!(report.calls_initiated, 2);
+    assert_eq!(report.calls_answered, 2, "第一個 INVITE 掉包後應靠重傳接通");
+    assert_eq!(report.calls_timeout, 0);
+
+    let invites = requests(&received, "INVITE");
+    assert_eq!(invites.len(), 4, "每通電話：原始 INVITE + 1 次重傳");
+    for invite in &invites {
+        let cid = SipParser::call_id(invite);
+        let first = invites.iter().find(|i| SipParser::call_id(i) == cid).unwrap();
+        assert_eq!(invite, first, "重傳必須是完全相同的請求（同 branch / CSeq）");
+    }
+    // 重傳間隔應為 T1（500ms）：接通的 setup time 介於 0.5s ~ 1s
+    assert!(report.setup_p50_ms >= 450.0 && report.setup_p50_ms < 1000.0,
+        "setup={}ms", report.setup_p50_ms);
+}
+
+#[tokio::test]
+async fn lost_bye_is_retransmitted_until_answered() {
+    let (uas, received) = spawn_uas(UasBehavior::DropFirstBye).await;
+    let cfg = Config {
+        cps:                10.0,
+        max_total_calls:    Some(1),
+        call_duration_secs: 1,
+        duration_secs:      10,
+        invite_timeout_secs: 5, // BYE 逾時強制結束需 5 秒；重傳應在 ~0.5 秒內完成
+        ..test_config(uas)
+    };
+    let started = Instant::now();
+    let report = Engine::new(cfg).run(None).await.unwrap();
+
+    assert_eq!(report.calls_completed, 1);
+    let byes = requests(&received, "BYE");
+    assert_eq!(byes.len(), 2, "第一個 BYE 掉包後應重傳一次");
+    assert_eq!(byes[0], byes[1], "重傳必須是完全相同的 BYE");
+    assert!(started.elapsed() < Duration::from_secs(3),
+        "應靠 BYE 重傳結束，而非等 BYE 逾時（實際 {:?}）", started.elapsed());
 }

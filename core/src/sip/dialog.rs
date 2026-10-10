@@ -1,6 +1,11 @@
 /// SIP 對話狀態機
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+
+/// RFC 3261 §17.1.1.1：RTT 估計值，UDP 重傳的起始間隔
+pub const T1: Duration = Duration::from_millis(500);
+/// RFC 3261 §17.1.2.2：非 INVITE 請求的最大重傳間隔
+pub const T2: Duration = Duration::from_secs(4);
 
 /// 單一通話的完整狀態
 #[derive(Debug, Clone)]
@@ -27,6 +32,12 @@ pub struct Dialog {
 
     // 對端 Contact URI（從 200 OK 解析，用於 BYE/ACK Request-URI）
     pub remote_contact: Option<String>,
+
+    // UDP 重傳（INVITE：Timer A；BYE：Timer E）
+    /// 等待回應中的請求原文（重傳時原樣送出）
+    retx_msg:      Option<String>,
+    retx_interval: Duration,
+    next_retx_at:  Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,7 +85,41 @@ impl Dialog {
             callee,
             local_rtp_port,
             remote_contact: None,
+            retx_msg:       None,
+            retx_interval:  T1,
+            next_retx_at:   None,
         }
+    }
+
+    /// 送出 INVITE / BYE 後呼叫：記住請求原文並在 T1 後開始重傳
+    pub fn arm_retransmit(&mut self, msg: String, now: Instant) {
+        self.retx_msg      = Some(msg);
+        self.retx_interval = T1;
+        self.next_retx_at  = Some(now + T1);
+    }
+
+    /// 若重傳時間已到，回傳要重送的請求並排定下一次重傳
+    ///
+    /// - Calling（尚未收到任何 1xx）：重傳 INVITE，間隔每次加倍（Timer A）
+    /// - Terminating：重傳 BYE，間隔加倍但不超過 T2（Timer E）
+    /// - 其他狀態（已收到 1xx / 最終回應）：停止重傳
+    pub fn due_retransmit(&mut self, now: Instant) -> Option<String> {
+        let max_interval = match self.state {
+            DialogState::Calling     => None,
+            DialogState::Terminating => Some(T2),
+            _ => {
+                self.retx_msg     = None;
+                self.next_retx_at = None;
+                return None;
+            }
+        };
+        if now < self.next_retx_at? {
+            return None;
+        }
+        let doubled = self.retx_interval * 2;
+        self.retx_interval = max_interval.map_or(doubled, |m| doubled.min(m));
+        self.next_retx_at  = Some(now + self.retx_interval);
+        self.retx_msg.clone()
     }
 
     /// 收到 100 Trying
@@ -247,6 +292,49 @@ mod tests {
         let prev = d.state.clone();
         d.on_ok("tag2".into());
         assert_eq!(d.state, prev, "OK should not change Terminating state");
+    }
+
+    #[test]
+    fn invite_retransmits_with_doubling_interval_until_provisional() {
+        let mut d = new_dialog();
+        let t0 = d.invite_sent_at;
+        d.arm_retransmit("INVITE".into(), t0);
+
+        assert_eq!(d.due_retransmit(t0 + Duration::from_millis(499)), None);
+        // Timer A：0.5s → 1s → 2s → 4s（不設上限）
+        let mut t = t0;
+        for gap_ms in [500, 1000, 2000, 4000, 8000] {
+            t += Duration::from_millis(gap_ms);
+            assert_eq!(d.due_retransmit(t).as_deref(), Some("INVITE"), "t+{}ms", gap_ms);
+            assert_eq!(d.due_retransmit(t), None, "同一時間點不可重複重傳");
+        }
+
+        d.on_trying();
+        assert_eq!(d.due_retransmit(t + Duration::from_secs(60)), None, "收到 1xx 後停止重傳");
+    }
+
+    #[test]
+    fn bye_retransmit_interval_is_capped_at_t2() {
+        let mut d = new_dialog();
+        d.on_ok("tag".into());
+        d.on_bye_sent();
+        let t0 = Instant::now();
+        d.arm_retransmit("BYE".into(), t0);
+
+        let mut t = t0;
+        for gap_ms in [500, 1000, 2000, 4000, 4000, 4000] {
+            t += Duration::from_millis(gap_ms);
+            assert_eq!(d.due_retransmit(t).as_deref(), Some("BYE"), "t+{}ms", gap_ms);
+        }
+
+        d.on_bye_ok();
+        assert_eq!(d.due_retransmit(t + Duration::from_secs(60)), None, "收到最終回應後停止重傳");
+    }
+
+    #[test]
+    fn no_retransmit_without_arming() {
+        let mut d = new_dialog();
+        assert_eq!(d.due_retransmit(Instant::now() + Duration::from_secs(10)), None);
     }
 
     #[test]

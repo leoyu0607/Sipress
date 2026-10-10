@@ -558,6 +558,7 @@ impl Engine {
                                         dialog.remote_contact.as_deref(),
                                     );
                                     dialog.on_bye_sent();
+                                    dialog.arm_retransmit(bye.clone(), now);
                                     to_send.push(bye);
                                 }
                             }
@@ -579,6 +580,13 @@ impl Engine {
                             }
                         }
                         _ => {}
+                    }
+
+                    // UDP 重傳：INVITE 未收到任何 1xx / BYE 未收到最終回應
+                    if let Some(msg) = dialog.due_retransmit(now) {
+                        let method = msg.split_whitespace().next().unwrap_or("");
+                        sip_log.log_event(&dialog.call_id, &format!("RETRANSMIT {}", method));
+                        to_send.push(msg);
                     }
                 }
 
@@ -667,7 +675,8 @@ impl Engine {
                         if rtp_port > 0 { rtp_port } else { 9 },
                     );
 
-                    let dialog = Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
+                    let mut dialog = Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
+                    dialog.arm_retransmit(invite.clone(), now);
                     dialogs.lock().await.insert(call_id, dialog);
                     live.on_invite();
 
@@ -733,8 +742,9 @@ impl Engine {
                                     "UDP",
                                     dialog.remote_contact.as_deref(),
                                 );
-                                to_send.push(bye);
                                 dialog.on_bye_sent();
+                                dialog.arm_retransmit(bye.clone(), now);
+                                to_send.push(bye);
                             }
                             _ => {}
                         }
