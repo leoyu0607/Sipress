@@ -169,6 +169,14 @@ impl Engine {
                     };
                     let contact_uri = if code == Some(200) { SipParser::contact_uri(&raw) } else { None };
 
+                    // INVITE 的非 2xx 最終回應（含重傳、CANCEL 後的 487）一律在此回 ACK：
+                    // 屬於 transaction 層行為，不依賴 dialog 是否仍存在
+                    if method.as_deref() == Some("INVITE") && code.is_some_and(|c| c >= 300) {
+                        let ack = SipMessage::ack_for_non2xx(&raw);
+                        log_recv.log_message(Direction::Send, &ack, &udp_recv.server.to_string());
+                        let _ = udp_recv.send(&ack).await;
+                    }
+
                     if let (Some(call_id), Some(code)) = (call_id, code) {
                         let _ = ev_tx2.send(SipEvent::Response {
                             call_id, code, to_tag, method, remote_rtp_addr, contact_uri,
@@ -384,7 +392,9 @@ impl Engine {
                                 let _ = udp_ack.send(&ack_copy).await;
                             });
                         }
-                        200 if method.as_deref() == Some("BYE") => {
+                        // BYE 的任何最終回應（200，或 481/408 等錯誤）都代表 dialog 已結束
+                        200..=699 if method.as_deref() == Some("BYE")
+                            && dialog.state == DialogState::Terminating => {
                             if let Some(a) = dialog.answered_at {
                                 detail.record_duration(a.elapsed().as_secs_f64());
                             }
@@ -394,37 +404,15 @@ impl Engine {
                             dialog.on_bye_ok();
                             live.on_completed();
                         }
-                        400..=699 if method.as_deref() != Some("BYE") => {
-                            // non-2xx ACK：使用原始 INVITE branch（RFC 3261 §17.1.1.3）
-                            let to_tag_for_ack = to_tag.as_deref().unwrap_or("").to_string();
-                            let ack_err = SipMessage::ack(
-                                &dialog.call_id,
-                                &cfg.caller_number,
-                                local_domain,
-                                &dialog.callee,
-                                &to_tag_for_ack,
-                                &cfg.server_addr,
-                                &local_addr,
-                                dialog.cseq,
-                                &dialog.branch,
-                                &dialog.from_tag,
-                                "UDP",
-                                None,  // non-2xx 不使用 Contact URI
-                            );
-                            let udp_ack  = Arc::clone(&udp);
-                            let log_ack  = Arc::clone(&sip_log);
-                            let srv_ack  = cfg.server_addr.clone();
-                            let ack_copy = ack_err.clone();
-                            tokio::spawn(async move {
-                                log_ack.log_message(Direction::Send, &ack_copy, &srv_ack);
-                                let _ = udp_ack.send(&ack_copy).await;
-                            });
-
-                            // 同時清理任何預分配但未使用的 RTP socket
+                        // INVITE 被拒（3xx–6xx）：ACK 已由接收 task 送出，這裡只做統計；
+                        // 只在早期狀態處理一次，避免重傳的錯誤回應重複計數
+                        300..=699 if method.as_deref() == Some("INVITE")
+                            && matches!(dialog.state,
+                                DialogState::Calling | DialogState::Trying | DialogState::Ringing) => {
+                            // 清理預分配但未使用的 RTP socket
                             if cfg.enable_rtp {
                                 pre_bound_rtp.lock().await.remove(&call_id);
                             }
-
                             detail.record_fail_code(code);
                             dialog.on_error(code);
                             live.on_failed();
@@ -445,7 +433,9 @@ impl Engine {
                                 } else {
                                     cfg.rtp_base_port
                                 };
-                                let ok      = SipMessage::ok_for_server_reinvite(&req_raw, &local_addr, local_port);
+                                let ok      = SipMessage::ok_for_server_reinvite(
+                                    &req_raw, &local_addr, local_port, &cfg.caller_number,
+                                );
                                 let udp_ok  = Arc::clone(&udp);
                                 let log_ok  = Arc::clone(&sip_log);
                                 let server  = cfg.server_addr.clone();
@@ -543,6 +533,9 @@ impl Engine {
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
+                                if cfg.enable_rtp {
+                                    pre_bound_rtp.lock().await.remove(&dialog.call_id);
+                                }
                             }
                         }
                         // 通話時長到 → 發 BYE（使用 Contact URI 作為 Request-URI）
@@ -613,7 +606,7 @@ impl Engine {
             let total_limit_reached = cfg.max_total_calls
                 .map_or(false, |max| live.calls_initiated.load(std::sync::atomic::Ordering::Relaxed) >= max);
 
-            let deadline_reached = deadline.map_or(false, |d| now >= d);
+            let deadline_reached = deadline.is_some_and(|d| now >= d);
 
             if draining_until.is_none() && !stopped && !total_limit_reached
                 && !deadline_reached && now >= next_call {
@@ -720,6 +713,9 @@ impl Engine {
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
+                                if cfg.enable_rtp {
+                                    pre_bound_rtp.lock().await.remove(&dialog.call_id);
+                                }
                             }
                             DialogState::Connected => {
                                 let bye_branch = SipMessage::new_branch();

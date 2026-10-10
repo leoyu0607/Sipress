@@ -19,6 +19,10 @@ enum UasBehavior {
     Answer,
     /// 回 200 後，再對一個不存在的 Call-ID 送 BYE
     AnswerThenByeUnknownDialog,
+    /// 回 486 Busy Here 兩次（模擬未收到 ACK 的重傳）
+    RejectBusyRetransmit,
+    /// 只回 180；收到 CANCEL 後回 200（CANCEL）+ 487（INVITE）
+    RingNoAnswer,
 }
 
 fn header_line(raw: &str, names: &[&str]) -> String {
@@ -53,8 +57,14 @@ fn ok_for_invite(raw: &str, uas_addr: SocketAddr, rtp_port: u16) -> String {
 }
 
 fn ringing_for_invite(raw: &str) -> String {
+    response_with_tag(raw, "180 Ringing")
+}
+
+/// 鏡射請求標頭並在 To 加上 UAS tag 的無 body 回應
+fn response_with_tag(raw: &str, status: &str) -> String {
     format!(
-        "SIP/2.0 180 Ringing\r\n{}\r\n{}\r\n{};tag=uas\r\n{}\r\n{}\r\nContent-Length: 0\r\n\r\n",
+        "SIP/2.0 {}\r\n{}\r\n{}\r\n{};tag=uas\r\n{}\r\n{}\r\nContent-Length: 0\r\n\r\n",
+        status,
         header_line(raw, &["via", "v"]),
         header_line(raw, &["from", "f"]),
         header_line(raw, &["to", "t"]),
@@ -73,10 +83,10 @@ fn server_bye(invite: &str, call_id: &str) -> String {
     )
 }
 
-/// 啟動 mock UAS，回傳其 SIP 位址與它收到的所有 SIP 回應
+/// 啟動 mock UAS，回傳其 SIP 位址與它收到的所有 SIP 訊息（請求與回應）
 async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
-    let responses: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let responses_rx = Arc::clone(&responses);
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let received_rx = Arc::clone(&received);
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = sock.local_addr().unwrap();
     // 對端 RTP 黑洞（只需一個可送達的 port）
@@ -86,15 +96,16 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
     tokio::spawn(async move {
         let _keep = rtp_sink;
         let mut buf = vec![0u8; 65536];
+        let mut invites: std::collections::HashMap<String, String> = Default::default();
         loop {
             let (n, peer) = match sock.recv_from(&mut buf).await {
                 Ok(v) => v,
                 Err(_) => break,
             };
             let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+            received_rx.lock().unwrap().push(raw.clone());
             if raw.starts_with("SIP/2.0") {
-                responses_rx.lock().unwrap().push(raw); // 引擎對伺服器請求的回應
-                continue;
+                continue; // 引擎對伺服器請求的回應
             }
             let method = raw.split_whitespace().next().unwrap_or("").to_string();
             match method.as_str() {
@@ -119,9 +130,28 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                             let bye = server_bye(&raw, "no-such-dialog@127.0.0.1");
                             let _ = sock.send_to(bye.as_bytes(), peer).await;
                         }
+                        UasBehavior::RejectBusyRetransmit => {
+                            let busy = response_with_tag(&raw, "486 Busy Here");
+                            let _ = sock.send_to(busy.as_bytes(), peer).await;
+                            let _ = sock.send_to(busy.as_bytes(), peer).await;
+                        }
+                        UasBehavior::RingNoAnswer => {
+                            let cid = SipParser::call_id(&raw).unwrap_or_default();
+                            invites.insert(cid, raw.clone());
+                            let _ = sock.send_to(ringing_for_invite(&raw).as_bytes(), peer).await;
+                        }
                     }
                 }
-                "BYE" | "CANCEL" => {
+                "CANCEL" => {
+                    let ok = SipMessage::ok_for_server_bye(&raw);
+                    let _ = sock.send_to(ok.as_bytes(), peer).await;
+                    let cid = SipParser::call_id(&raw).unwrap_or_default();
+                    if let Some(invite) = invites.remove(&cid) {
+                        let terminated = response_with_tag(&invite, "487 Request Terminated");
+                        let _ = sock.send_to(terminated.as_bytes(), peer).await;
+                    }
+                }
+                "BYE" => {
                     let ok = SipMessage::ok_for_server_bye(&raw);
                     let _ = sock.send_to(ok.as_bytes(), peer).await;
                 }
@@ -129,7 +159,7 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
             }
         }
     });
-    (addr, responses)
+    (addr, received)
 }
 
 fn test_config(server: SocketAddr) -> Config {
@@ -247,7 +277,7 @@ async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
 
 #[tokio::test]
 async fn bye_for_unknown_dialog_is_still_answered() {
-    let (uas, responses) = spawn_uas(UasBehavior::AnswerThenByeUnknownDialog).await;
+    let (uas, received) = spawn_uas(UasBehavior::AnswerThenByeUnknownDialog).await;
     let cfg = Config {
         cps:                5.0,
         max_total_calls:    Some(1),
@@ -257,9 +287,10 @@ async fn bye_for_unknown_dialog_is_still_answered() {
     };
     Engine::new(cfg).run(None).await.unwrap();
 
-    let responses = responses.lock().unwrap();
-    let answer = responses.iter()
-        .find(|r| SipParser::call_id(r).as_deref() == Some("no-such-dialog@127.0.0.1"));
+    let received = received.lock().unwrap();
+    let answer = received.iter()
+        .find(|r| r.starts_with("SIP/2.0")
+            && SipParser::call_id(r).as_deref() == Some("no-such-dialog@127.0.0.1"));
     let answer = answer.expect("對不存在 dialog 的 BYE 也必須回應，否則伺服器會一直重傳");
     assert!(
         answer.starts_with("SIP/2.0 200") || answer.starts_with("SIP/2.0 481"),
@@ -267,4 +298,65 @@ async fn bye_for_unknown_dialog_is_still_answered() {
         answer.lines().next().unwrap_or("")
     );
     assert_eq!(SipParser::cseq_method(answer).as_deref(), Some("BYE"));
+}
+
+/// 取出 mock 收到的指定方法請求
+fn requests(received: &Mutex<Vec<String>>, method: &str) -> Vec<String> {
+    received.lock().unwrap().iter()
+        .filter(|r| r.starts_with(&format!("{} ", method)))
+        .cloned()
+        .collect()
+}
+
+fn via_branch(raw: &str) -> Option<String> {
+    let via = header_line(raw, &["via", "v"]);
+    via.split(';').find_map(|p| p.trim().strip_prefix("branch=").map(str::to_string))
+}
+
+#[tokio::test]
+async fn rejected_invite_is_acked_once_per_response_and_counted_once() {
+    let (uas, received) = spawn_uas(UasBehavior::RejectBusyRetransmit).await;
+    let cfg = Config {
+        cps:             10.0,
+        max_total_calls: Some(2),
+        duration_secs:   5,
+        ..test_config(uas)
+    };
+    let report = Engine::new(cfg).run(None).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(report.calls_failed, 2, "重傳的 486 不應重複計算失敗");
+    assert_eq!(report.fail_codes.get(&486), Some(&2));
+
+    let invites = requests(&received, "INVITE");
+    let acks    = requests(&received, "ACK");
+    assert_eq!(acks.len(), 4, "每個 486（含重傳）都要回 ACK");
+    for ack in &acks {
+        assert_eq!(SipParser::cseq_method(ack).as_deref(), Some("ACK"));
+        assert_eq!(SipParser::to_tag(ack).as_deref(), Some("uas"), "ACK 的 To 必須帶回應的 tag");
+        let cid = SipParser::call_id(ack);
+        let invite = invites.iter().find(|i| SipParser::call_id(i) == cid).expect("對應的 INVITE");
+        assert_eq!(via_branch(ack), via_branch(invite), "non-2xx ACK 必須沿用 INVITE 的 branch");
+        assert!(ack.starts_with("ACK sip:2000@"), "Request-URI 應與 INVITE 相同：{}", ack.lines().next().unwrap());
+    }
+}
+
+#[tokio::test]
+async fn cancelled_invite_487_is_acked() {
+    let (uas, received) = spawn_uas(UasBehavior::RingNoAnswer).await;
+    let cfg = Config {
+        cps:                 10.0,
+        max_total_calls:     Some(1),
+        duration_secs:       5,
+        invite_timeout_secs: 1, // 1 秒沒接 → CANCEL
+        ..test_config(uas)
+    };
+    let report = Engine::new(cfg).run(None).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(report.calls_timeout, 1);
+    assert_eq!(requests(&received, "CANCEL").len(), 1);
+    let acks = requests(&received, "ACK");
+    assert_eq!(acks.len(), 1, "CANCEL 後收到的 487 必須回 ACK，否則伺服器會持續重傳");
+    assert_eq!(SipParser::cseq_method(&acks[0]).as_deref(), Some("ACK"));
 }

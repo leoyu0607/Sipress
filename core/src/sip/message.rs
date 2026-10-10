@@ -241,6 +241,42 @@ impl SipMessage {
         (via, from, to, call_id, cseq)
     }
 
+    /// 依 INVITE 的非 2xx 最終回應（3xx–6xx）建構 ACK（RFC 3261 §17.1.1.3）
+    ///
+    /// 屬於 INVITE client transaction，不需要 dialog 狀態：
+    /// Via 沿用原 INVITE 的 top Via（同 branch）、To 帶回應的 tag、CSeq 號碼不變，
+    /// Request-URI 與原 INVITE 相同（即 To URI）。
+    pub fn ack_for_non2xx(raw_response: &str) -> String {
+        let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_response);
+        // 只保留 top Via，並移除伺服器加上的 received / rport 值
+        let top_via = via.split("\r\n").next().unwrap_or("");
+        let top_via: Vec<&str> = top_via.split(';')
+            .filter(|p| !p.trim().to_lowercase().starts_with("received="))
+            .map(|p| if p.trim().to_lowercase().starts_with("rport=") { "rport" } else { p })
+            .collect();
+        let to_value = to.split_once(':').map_or("", |(_, v)| v).trim();
+        let request_uri = match (to_value.find('<'), to_value.find('>')) {
+            (Some(s), Some(e)) if s < e => to_value[s + 1..e].to_string(),
+            _ => to_value.split(';').next().unwrap_or("").trim().to_string(),
+        };
+        let cseq_num = cseq.split_once(':')
+            .and_then(|(_, v)| v.split_whitespace().next())
+            .unwrap_or("1");
+        format!(
+            "ACK {uri} SIP/2.0\r\n\
+             {via}\r\n\
+             Max-Forwards: 70\r\n\
+             {from}\r\n\
+             {to}\r\n\
+             {call_id}\r\n\
+             CSeq: {cseq} ACK\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+            uri = request_uri, via = top_via.join(";"), from = from, to = to,
+            call_id = call_id, cseq = cseq_num,
+        )
+    }
+
     /// 對伺服器發來的 BYE 回應 200 OK（不含 SDP）
     pub fn ok_for_server_bye(raw_request: &str) -> String {
         Self::response_for_request(raw_request, "200 OK")
@@ -265,7 +301,15 @@ impl SipMessage {
     }
 
     /// 對伺服器發來的 RE-INVITE 回應 200 OK（含 SDP，維持 PCMA 通話）
-    pub fn ok_for_server_reinvite(raw_request: &str, local_addr: &str, rtp_port: u16) -> String {
+    ///
+    /// `contact_user`: Contact URI 的 user 部分。INVITE 的 2xx 必須帶 Contact
+    /// （RFC 3261 §13.3.1.4），對端以此作為後續請求（ACK/BYE）的目標。
+    pub fn ok_for_server_reinvite(
+        raw_request:  &str,
+        local_addr:   &str,
+        rtp_port:     u16,
+        contact_user: &str,
+    ) -> String {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_request);
         let sdp     = Self::minimal_sdp(local_addr, rtp_port);
         let sdp_len = sdp.len();
@@ -276,6 +320,7 @@ impl SipMessage {
              {to}\r\n\
              {call_id}\r\n\
              {cseq}\r\n\
+             Contact: <sip:{user}@{local};transport=udp>\r\n\
              Content-Type: application/sdp\r\n\
              Content-Length: {sdp_len}\r\n\
              \r\n\
@@ -285,6 +330,8 @@ impl SipMessage {
             to      = to,
             call_id = call_id,
             cseq    = cseq,
+            user    = contact_user,
+            local   = local_addr,
             sdp_len = sdp_len,
             sdp     = sdp,
         )
@@ -561,10 +608,65 @@ mod tests {
                         Call-ID: test123@10.0.0.2\r\n\
                         CSeq: 3 INVITE\r\n\
                         \r\n";
-        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000);
+        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000");
         assert!(ok.starts_with("SIP/2.0 200 OK\r\n"));
         assert!(ok.contains("Content-Type: application/sdp\r\n"));
         assert!(ok.contains("m=audio 18000 RTP/AVP 8\r\n"));
+    }
+
+    #[test]
+    fn ok_for_reinvite_includes_contact() {
+        let reinvite = "INVITE sip:1000@10.0.0.1:5070 SIP/2.0\r\n\
+                        Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-ri\r\n\
+                        From: <sip:2001@10.0.0.2>;tag=srv-tag\r\n\
+                        To: <sip:1000@10.0.0.1>;tag=my-tag\r\n\
+                        Call-ID: test123@10.0.0.2\r\n\
+                        CSeq: 3 INVITE\r\n\
+                        \r\n";
+        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000");
+        let headers = &ok[..ok.find("\r\n\r\n").unwrap()];
+        assert!(
+            headers.contains("\r\nContact: <sip:1000@10.0.0.1:5070;transport=udp>\r\n"),
+            "INVITE 的 2xx 必須帶 Contact：\n{}", headers
+        );
+    }
+
+    // ─── non-2xx ACK ─────────────────────────────────────────────
+
+    const RESP_487: &str = "SIP/2.0 487 Request Terminated\r\n\
+        Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bK-inv1;rport=5070;received=1.2.3.4\r\n\
+        From: <sip:1000@10.0.0.1>;tag=from1\r\n\
+        To: <sip:2001@10.0.0.2:5060>;tag=srv9\r\n\
+        Call-ID: abc@10.0.0.1\r\n\
+        CSeq: 1 INVITE\r\n\
+        Content-Length: 0\r\n\
+        \r\n";
+
+    #[test]
+    fn ack_for_non2xx_mirrors_invite_transaction() {
+        let ack = SipMessage::ack_for_non2xx(RESP_487);
+        assert!(ack.starts_with("ACK sip:2001@10.0.0.2:5060 SIP/2.0\r\n"), "{}", ack);
+        assert!(ack.contains("Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bK-inv1;rport\r\n"),
+            "沿用 INVITE branch 並去掉 received / rport 值：{}", ack);
+        assert!(ack.contains("From: <sip:1000@10.0.0.1>;tag=from1\r\n"));
+        assert!(ack.contains("To: <sip:2001@10.0.0.2:5060>;tag=srv9\r\n"));
+        assert!(ack.contains("Call-ID: abc@10.0.0.1\r\n"));
+        assert!(ack.contains("CSeq: 1 ACK\r\n"));
+        assert!(ack.ends_with("Content-Length: 0\r\n\r\n"));
+    }
+
+    #[test]
+    fn ack_for_non2xx_handles_compact_headers() {
+        let resp = "SIP/2.0 486 Busy Here\r\n\
+            v: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bK-c\r\n\
+            f: <sip:1000@10.0.0.1>;tag=f\r\n\
+            t: sip:2001@10.0.0.2;tag=t\r\n\
+            i: cid@x\r\n\
+            CSeq: 7 INVITE\r\n\r\n";
+        let ack = SipMessage::ack_for_non2xx(resp);
+        assert!(ack.starts_with("ACK sip:2001@10.0.0.2 SIP/2.0\r\n"), "{}", ack);
+        assert!(ack.contains("branch=z9hG4bK-c"));
+        assert!(ack.contains("CSeq: 7 ACK\r\n"));
     }
 
     // ─── Unique ID generation ────────────────────────────────────

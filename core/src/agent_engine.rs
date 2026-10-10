@@ -622,7 +622,7 @@ async fn handle_request(
                 let port = ctx.rtp_session.as_ref()
                     .map(|r| r.local_port())
                     .unwrap_or_else(|| pick_dummy_rtp_port(local_ip));
-                let ok = SipMessage::ok_for_server_reinvite(raw, local_addr, port);
+                let ok = SipMessage::ok_for_server_reinvite(raw, local_addr, port, &account.extension);
                 log.log_message(Direction::Send, &ok, "server");
                 let _ = sock.send(ok.as_bytes()).await;
                 // 更新 RTP 目標地址（對端可能換 port）
