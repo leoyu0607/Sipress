@@ -32,6 +32,8 @@ use tokio::time;
 
 const ACK_TIMEOUT_SECS: u64 = 10;
 const BYE_TIMEOUT_SECS: u64 = 150;
+/// 同一輪 REGISTER 收到 401/407 後最多帶認證重送幾次（避免密碼錯誤時無限重送）
+const MAX_AUTH_RETRIES: u32 = 2;
 
 pub struct AgentEngine {
     config:  Config,
@@ -281,8 +283,9 @@ async fn account_runner(
     let reg_from_tag = SipMessage::new_tag();
     let reg_call_id  = SipMessage::new_call_id(&domain);
     let reg_state    = Arc::new(Mutex::new(RegState {
-        cseq:      0,
-        challenge: None,
+        cseq:         0,
+        challenge:    None,
+        auth_retries: 0,
     }));
 
     let initial_expires = 240u32;
@@ -362,7 +365,7 @@ async fn account_runner(
                 let challenge = st.challenge.clone();
                 drop(st);
                 let auth = challenge.as_ref().map(|c| {
-                    c.build_authorization(&account.username, &account.password, "REGISTER",
+                    c.authorization_header(&account.username, &account.password, "REGISTER",
                                           &format!("sip:{}", server_addr_str))
                 });
                 let req = RegisterMessage::build(
@@ -428,7 +431,7 @@ async fn account_runner(
                 let challenge = st.challenge.clone();
                 drop(st);
                 let auth = challenge.as_ref().map(|c| {
-                    c.build_authorization(&account.username, &account.password, "REGISTER",
+                    c.authorization_header(&account.username, &account.password, "REGISTER",
                                           &format!("sip:{}", server_addr_str))
                 });
                 let req = RegisterMessage::build(
@@ -450,8 +453,10 @@ async fn account_runner(
 // ─── REGISTER 狀態 ────────────────────────────────────────────────
 
 struct RegState {
-    cseq:      u32,
-    challenge: Option<DigestChallenge>,
+    cseq:         u32,
+    challenge:    Option<DigestChallenge>,
+    /// 自上次 200 OK 以來連續帶認證重送的次數
+    auth_retries: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -499,7 +504,7 @@ async fn trigger_re_register(
     let challenge = st.challenge.clone();
     drop(st);
     let auth = challenge.as_ref().map(|c| {
-        c.build_authorization(&account.username, &account.password, "REGISTER",
+        c.authorization_header(&account.username, &account.password, "REGISTER",
                               &format!("sip:{}", server_addr))
     });
     let req = RegisterMessage::build(
@@ -539,6 +544,7 @@ async fn handle_response(
 
     match code {
         200 => {
+            reg_state.lock().await.auth_retries = 0;
             *last_register_at = Instant::now();
             log.log_event(&account.extension, "註冊成功");
             if let Some(exp) = parse_expires(raw) {
@@ -547,13 +553,22 @@ async fn handle_response(
         }
         401 | 407 => {
             if let Some(chal) = DigestChallenge::parse(raw) {
-                let auth = chal.build_authorization(
+                let auth = chal.authorization_header(
                     &account.username, &account.password, "REGISTER",
                     &format!("sip:{}", server_addr_str),
                 );
                 {
                     let mut st = reg_state.lock().await;
                     st.challenge = Some(chal);
+                    if st.auth_retries >= MAX_AUTH_RETRIES {
+                        // 已帶認證仍被拒 → 帳密錯誤，停止重送；等下次 refresh 計時再試
+                        log.log_event(&account.extension, &format!(
+                            "認證失敗（SIP {}，已重試 {} 次），停止重送 REGISTER",
+                            code, st.auth_retries,
+                        ));
+                        return;
+                    }
+                    st.auth_retries += 1;
                     if let Err(e) = send_register(
                         sock, log, server_addr_str, local_addr,
                         account, reg_from_tag, reg_call_id, transport_str,

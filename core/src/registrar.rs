@@ -108,13 +108,13 @@ pub async fn register_once(
                 .ok_or_else(|| anyhow!("無法解析 Digest challenge ({})", code1))?;
 
             let uri = format!("sip:{}", server_addr);
-            let auth_value = chal.build_authorization(username, password, "REGISTER", &uri);
+            let auth_line = chal.authorization_header(username, password, "REGISTER", &uri);
 
             let branch2 = SipMessage::new_branch();
             let req2 = RegisterMessage::build(
                 username, server_addr, &local_sock_str,
                 2, &branch2, &from_tag, &call_id, transport, expires,
-                Some(&auth_value),
+                Some(&auth_line),
             );
             if let Err(e) = sock.send(req2.as_bytes()).await {
                 return Ok(RegisterResult {
