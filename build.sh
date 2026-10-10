@@ -134,7 +134,8 @@ build_gui() {
         darwin*)
             # macOS: dmg (installer) + .app binary (portable)
             local dmg; dmg=$(find "$GUI_BUNDLE_DIR/dmg"   -name "*.dmg" 2>/dev/null | head -1)
-            local app_bin="$GUI_BUNDLE_DIR/macos/${GUI_BIN}.app/Contents/MacOS/${GUI_BIN}"
+            # .app 名稱取自 tauri.conf.json 的 productName（sipress），內含的執行檔為 cargo bin 名稱
+            local app_bin="$GUI_BUNDLE_DIR/macos/sipress.app/Contents/MacOS/${GUI_BIN}"
             _copy_to_dist "$dmg"     "${GUI_BIN}-macos-${arch}-installer.dmg"
             _copy_to_dist "$app_bin" "${GUI_BIN}-macos-${arch}-portable"
             ;;

@@ -33,8 +33,7 @@ jobs:
     name: Prepare release
     runs-on: ubuntu-latest
     outputs:
-      publish:    ${{ steps.mode.outputs.publish }}
-      release_id: ${{ steps.release.outputs.id }}
+      publish: ${{ steps.mode.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +72,6 @@ jobs:
 
       # 先建立草稿：所有檔案上傳成功後才由 publish job 正式發佈；重跑時沿用既有草稿
       - name: Create draft release
-        id: release
         if: steps.mode.outputs.publish == 'true'
         run: |
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
@@ -84,7 +82,6 @@ jobs:
             echo "::error::${TAG} 的 release 已發佈；要重新發佈請先刪除該 release"
             exit 1
           fi
-          echo "id=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
 
   test:
     name: Test
@@ -204,23 +201,54 @@ jobs:
         working-directory: gui
         run: npm ci
 
-      # 有 releaseId 時打包並上傳至草稿 release；試跑時只打包
-      - uses: tauri-apps/tauri-action@v0
-        with:
-          projectPath: gui
-          args: ${{ matrix.args }}
-          releaseId: ${{ needs.prepare.outputs.release_id }}
+      - name: Build
+        working-directory: gui
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      # 檔名與 build.sh 一致：sipress-gui-<os>-<arch>-{installer,setup,portable}.<ext>
+      - name: Package
+        run: |
+          rel="target/release"
+          [[ -n "${{ matrix.target }}" ]] && rel="target/${{ matrix.target }}/release"
+          bundle="$rel/bundle"
+          prefix="sipress-gui-${{ matrix.label }}"
+          mkdir -p out
+          take() {
+            local src
+            src=$(compgen -G "$1" | head -1) || true
+            if [[ -z "$src" ]]; then echo "::error::找不到打包產出：${1}"; exit 1; fi
+            cp "$src" "out/$2"
+            echo "${src} → out/${2}"
+          }
+          case "$RUNNER_OS" in
+            Windows)
+              take "$bundle/msi/*.msi"        "$prefix-installer.msi"
+              take "$bundle/nsis/*-setup.exe" "$prefix-setup.exe"
+              take "$rel/sipress-gui.exe"     "$prefix-portable.exe"
+              ;;
+            Linux)
+              take "$bundle/deb/*.deb"           "$prefix-installer.deb"
+              take "$bundle/appimage/*.AppImage" "$prefix-portable.AppImage"
+              ;;
+            macOS)
+              take "$bundle/dmg/*.dmg"                                   "$prefix-installer.dmg"
+              take "$bundle/macos/sipress.app/Contents/MacOS/sipress-gui" "$prefix-portable"
+              ;;
+          esac
+          cd out
+          for f in *; do
+            if command -v sha256sum > /dev/null; then sha256sum "$f" > "$f.sha256"; else shasum -a 256 "$f" > "$f.sha256"; fi
+          done
+          ls -l
 
       - uses: actions/upload-artifact@v4
         with:
           name: gui-${{ matrix.label }}
-          if-no-files-found: error
-          path: |
-            target/**/release/bundle/dmg/*.dmg
-            target/**/release/bundle/msi/*.msi
-            target/**/release/bundle/nsis/*.exe
-            target/**/release/bundle/deb/*.deb
-            target/**/release/bundle/appimage/*.AppImage
+          path: out/*
+
+      - name: Upload to release
+        if: needs.prepare.outputs.publish == 'true'
+        run: gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
 
   publish:
     name: Publish release
