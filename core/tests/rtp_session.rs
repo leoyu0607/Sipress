@@ -104,3 +104,24 @@ async fn sending_survives_temporarily_unreachable_remote() {
     );
     session.stop();
 }
+
+#[tokio::test]
+async fn stop_releases_the_rtp_port() {
+    let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let session = start_session(remote.local_addr().unwrap(), 44000).await;
+    let port = session.local_port();
+    tokio::time::sleep(Duration::from_millis(50)).await; // 讓接收 task 進入阻塞等待
+
+    session.stop();
+    drop(session);
+    // 收發 task 結束後 socket 才會釋放；接收 task 若錯過停止通知會永遠占用此 port
+    let mut rebound = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if UdpSocket::bind(("127.0.0.1", port)).await.is_ok() {
+            rebound = true;
+            break;
+        }
+    }
+    assert!(rebound, "stop 後 RTP port {} 應在 200ms 內釋放", port);
+}

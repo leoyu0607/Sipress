@@ -14,7 +14,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::UdpSocket, sync::Mutex, time};
+use tokio::{net::UdpSocket, sync::{Mutex, Notify}, time};
 use tracing::debug;
 
 /// RTP session 設定
@@ -54,6 +54,8 @@ struct RemoteTarget {
 pub struct RtpSession {
     pub stats:      Arc<RtpStats>,
     stop_flag:      Arc<AtomicBool>,
+    /// 喚醒阻塞在 recv 的接收 task（notify_one 會保留 permit，不會錯過）
+    stop_notify:    Arc<Notify>,
     remote:         Arc<std::sync::Mutex<RemoteTarget>>,
     local_rtp_port: u16,
 }
@@ -81,7 +83,8 @@ impl RtpSession {
         let remote = Arc::new(std::sync::Mutex::new(RemoteTarget { addr: remote_addr, latched: false, previous: None }));
 
         let stats     = Arc::new(RtpStats::new());
-        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag   = Arc::new(AtomicBool::new(false));
+        let stop_notify = Arc::new(Notify::new());
         let ssrc      = config.ssrc.unwrap_or_else(|| rand::thread_rng().gen());
 
         // ── Task A：傳送（每 20ms 一個 frame）──
@@ -95,7 +98,7 @@ impl RtpSession {
             tokio::spawn(async move {
                 let mut source = match &audio_path {
                     Some(p) => {
-                        match AudioSource::from_file(p) {
+                        match AudioSource::from_file_cached(p).await {
                             Ok(src) => {
                                 tracing::info!(
                                     "音檔載入成功: {:?}  frames={} duration={:.1}s PT={}",
@@ -155,15 +158,19 @@ impl RtpSession {
         {
             let socket = Arc::clone(&socket);
             let stats  = Arc::clone(&stats);
-            let stop   = Arc::clone(&stop_flag);
+            let notify = Arc::clone(&stop_notify);
             let remote = Arc::clone(&remote);
 
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 1500];
                 loop {
-                    if stop.load(Ordering::Relaxed) { break; }
-                    match time::timeout(Duration::from_millis(50), socket.recv_from(&mut buf)).await {
-                        Ok(Ok((n, src))) => {
+                    // 阻塞等待封包或停止通知（不再每 50ms 逾時輪詢停止旗標）
+                    let res = tokio::select! {
+                        r = socket.recv_from(&mut buf) => r,
+                        _ = notify.notified() => break,
+                    };
+                    match res {
+                        Ok((n, src)) => {
                             if let Some(pkt) = RtpPacket::decode(&buf[..n]) {
                                 latch_remote(&remote, src);
                                 let now_us = SystemTime::now()
@@ -174,24 +181,29 @@ impl RtpSession {
                                 debug!("RTP recv seq={} ts={}", pkt.sequence, pkt.timestamp);
                             }
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             // 暫時性錯誤不中止接收；稍候再試避免空轉
                             debug!("RTP 接收錯誤: {}", e);
                             time::sleep(Duration::from_millis(20)).await;
                         }
-                        Err(_) => {} // timeout，繼續
                     }
                 }
             });
         }
 
-        Ok(Self { stats, stop_flag, remote, local_rtp_port: local_port })
+        Ok(Self { stats, stop_flag, stop_notify, remote, local_rtp_port: local_port })
     }
 
     /// 停止 RTP session，回傳統計快照
     pub fn stop(&self) -> RtpStatsSnapshot {
-        self.stop_flag.store(true, Ordering::Relaxed);
+        self.signal_stop();
         self.stats.snapshot()
+    }
+
+    /// 通知傳送 task（檢查旗標）與接收 task（Notify）結束
+    fn signal_stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.stop_notify.notify_one();
     }
 
     /// RE-INVITE 後更新 RTP 對端地址，並重新學習實際來源位址
@@ -256,6 +268,6 @@ fn latch_remote(remote: &std::sync::Mutex<RemoteTarget>, src: SocketAddr) {
 
 impl Drop for RtpSession {
     fn drop(&mut self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
+        self.signal_stop();
     }
 }

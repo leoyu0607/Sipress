@@ -20,6 +20,11 @@ use tracing::{debug, warn};
 
 pub type ProgressCallback = Arc<dyn Fn(StatsSnapshot, f64) + Send + Sync>;
 
+/// 主迴圈每輪最多補發的通話數（避免大量補發時延遲處理 SIP 回應）
+const MAX_CALLS_PER_TICK: usize = 200;
+/// 沒有 SIP 事件時，檢查逾時 / 重傳 / BYE 排程的最長間隔
+const SCAN_INTERVAL: Duration = Duration::from_millis(10);
+
 pub struct Engine {
     config: Config,
     stop_tx: watch::Sender<bool>,
@@ -140,7 +145,7 @@ impl Engine {
         let udp_recv  = Arc::clone(&udp);
         let ev_tx2    = ev_tx.clone();
         let log_recv  = Arc::clone(&sip_log);
-        tokio::spawn(async move {
+        let recv_task = tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
             loop {
                 let n = match udp_recv.socket.recv(&mut buf).await {
@@ -254,6 +259,12 @@ impl Engine {
         let mut draining_until: Option<Instant> = None;
 
         let mut next_call = Instant::now();
+        // 等待期間收到的第一個 SIP 事件（下一輪 ① 優先處理）
+        let mut pending_event: Option<SipEvent> = None;
+        let mut next_scan = Instant::now();
+        // 已送 CANCEL、仍在等待 INVITE 最終回應（487）的通話（Call-ID → CANCEL 送出時間）。
+        // dialog 送 CANCEL 後即移除，收尾時需靠此表等待 487，確保接收 task 仍在、能回 ACK
+        let mut awaiting_invite_final: HashMap<String, Instant> = HashMap::new();
 
         loop {
             let now = Instant::now();
@@ -265,9 +276,12 @@ impl Engine {
             }
 
             // ① 處理所有收到的 SIP 事件（回應 / 伺服器請求）
-            while let Ok(ev) = ev_rx.try_recv() {
+            while let Some(ev) = pending_event.take().or_else(|| ev_rx.try_recv().ok()) {
                 match ev {
                 SipEvent::Response { call_id, code, to_tag, method, remote_rtp_addr, contact_uri } => {
+                if code >= 200 && method.as_deref() == Some("INVITE") {
+                    awaiting_invite_final.remove(&call_id);
+                }
                 // 先取出預分配的 RTP socket（若有），再鎖 dialogs，消除 TOCTOU
                 let pre_socket = if cfg.enable_rtp && code == 200 && method.as_deref() == Some("INVITE") {
                     pre_bound_rtp.lock().await.remove(&call_id)
@@ -507,8 +521,12 @@ impl Engine {
                 } // match ev
             }
 
-            // ② 掃描逾時 & 應該 BYE 的通話
-            {
+            // ② 掃描逾時 & 應該 BYE 的通話（O(n)，最多每 SCAN_INTERVAL 一次，
+            //    避免高 CPS 下每個 SIP 事件都觸發全表掃描）
+            if now >= next_scan {
+                next_scan = now + SCAN_INTERVAL;
+                // 對端始終未回 487 的 CANCEL：超過 invite_timeout 即放棄等待
+                awaiting_invite_final.retain(|_, sent| now.duration_since(*sent) <= invite_to);
                 let mut dialogs = dialogs.lock().await;
                 let mut to_send: Vec<String> = Vec::new();
 
@@ -533,6 +551,7 @@ impl Engine {
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
+                                awaiting_invite_final.insert(dialog.call_id.clone(), now);
                                 if cfg.enable_rtp {
                                     pre_bound_rtp.lock().await.remove(&dialog.call_id);
                                 }
@@ -611,14 +630,17 @@ impl Engine {
             }
 
             // ③ 發起新通話（停止中不再發起）
-            let total_limit_reached = cfg.max_total_calls
-                .map_or(false, |max| live.calls_initiated.load(std::sync::atomic::Ordering::Relaxed) >= max);
+            // 依排程補發：主迴圈每輪間隔可能長於 1/CPS，落後時同一輪發出所有到期的通話，
+            // 否則實際 CPS 會被迴圈頻率限制住
+            let total_reached = || cfg.max_total_calls
+                .is_some_and(|max| live.calls_initiated.load(std::sync::atomic::Ordering::Relaxed) >= max);
+            let mut total_limit_reached = total_reached();
 
             let deadline_reached = deadline.is_some_and(|d| now >= d);
 
             if draining_until.is_none() && !stopped && !total_limit_reached
                 && !deadline_reached && now >= next_call {
-                let concurrent = {
+                let mut concurrent = {
                     let dialogs = dialogs.lock().await;
                     dialogs.values().filter(|d| matches!(
                         d.state,
@@ -626,8 +648,15 @@ impl Engine {
                         DialogState::Ringing | DialogState::Connected
                     )).count()
                 };
+                let mut issued = 0;
 
-                if concurrent < cfg.max_concurrent_calls {
+                while now >= next_call && issued < MAX_CALLS_PER_TICK && !total_limit_reached {
+                    if concurrent >= cfg.max_concurrent_calls {
+                        // 受並發上限限制：不累積欠額，空出名額後依原速率繼續
+                        next_call = now;
+                        break;
+                    }
+
                     let callee = match &cfg.callee_fixed {
                         Some(num) if !num.is_empty() => num.clone(),
                         _ => format!(
@@ -680,16 +709,13 @@ impl Engine {
                     dialogs.lock().await.insert(call_id, dialog);
                     live.on_invite();
 
-                    let udp_inv    = Arc::clone(&udp);
-                    let log_invite = Arc::clone(&sip_log);
-                    let server     = cfg.server_addr.clone();
-                    let inv_log    = invite.clone();
-                    tokio::spawn(async move {
-                        log_invite.log_message(Direction::Send, &inv_log, &server);
-                        let _ = udp_inv.send(&inv_log).await;
-                    });
+                    sip_log.log_message(Direction::Send, &invite, &cfg.server_addr);
+                    let _ = udp.send(&invite).await;
 
-                    next_call = now + cps_interval;
+                    concurrent += 1;
+                    issued     += 1;
+                    next_call  += cps_interval;
+                    total_limit_reached = total_reached();
                 }
             }
 
@@ -722,6 +748,7 @@ impl Engine {
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
+                                awaiting_invite_final.insert(dialog.call_id.clone(), now);
                                 if cfg.enable_rtp {
                                     pre_bound_rtp.lock().await.remove(&dialog.call_id);
                                 }
@@ -768,13 +795,25 @@ impl Engine {
 
             if let Some(until) = draining_until {
                 let active = live.calls_active.load(std::sync::atomic::Ordering::Relaxed);
-                if active <= 0 || now >= until { break; }
+                if (active <= 0 && awaiting_invite_final.is_empty()) || now >= until { break; }
             }
 
-            time::sleep(Duration::from_micros(500)).await;
+            // 事件驅動等待：有 SIP 事件立即喚醒；否則睡到下一通電話的發話時間，
+            // 最久 SCAN_INTERVAL（逾時 / 重傳 / BYE 排程的檢查粒度）
+            let wake_at = if next_call > now {
+                next_call.min(now + SCAN_INTERVAL)
+            } else {
+                now + SCAN_INTERVAL
+            };
+            tokio::select! {
+                ev = ev_rx.recv() => pending_event = ev,
+                _ = time::sleep_until(wake_at.into()) => {}
+            }
         }
 
         engine_finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        // 接收 task 是無限迴圈：結束時主動停止，釋放 SIP socket 與 log（GUI 會重複執行壓測）
+        recv_task.abort();
 
         // ── 產生最終報告 ──
         let snap    = live.snapshot();

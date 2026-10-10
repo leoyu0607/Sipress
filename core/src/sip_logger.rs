@@ -4,11 +4,30 @@
 use anyhow::{Context, Result};
 use std::{
     fs,
-    io::Write,
+    io::{BufWriter, Write},
     path::PathBuf,
     sync::Mutex,
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
+
+/// 緩衝寫入的最長 flush 間隔（tail -f 觀察 log 時最多延遲這麼久）
+const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 緩衝寫入器：每則記錄一次寫入，定期 flush，避免高 CPS 下每則訊息多次 syscall
+struct LogWriter {
+    out:        BufWriter<fs::File>,
+    last_flush: Instant,
+}
+
+impl LogWriter {
+    fn write_record(&mut self, record: &str) {
+        let _ = self.out.write_all(record.as_bytes());
+        if self.last_flush.elapsed() >= FLUSH_INTERVAL {
+            let _ = self.out.flush();
+            self.last_flush = Instant::now();
+        }
+    }
+}
 
 /// 壓測角色
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,7 +49,7 @@ impl SipRole {
 
 /// 單次壓測的 SIP log 寫入器
 pub struct SipLogger {
-    file:     Mutex<fs::File>,
+    file:     Mutex<LogWriter>,
     pub path: PathBuf,
     #[allow(dead_code)]
     role:     SipRole,
@@ -62,7 +81,10 @@ impl SipLogger {
         writeln!(file)?;
 
         Ok(Self {
-            file: Mutex::new(file),
+            file: Mutex::new(LogWriter {
+                out:        BufWriter::with_capacity(64 * 1024, file),
+                last_flush: Instant::now(),
+            }),
             path,
             role,
         })
@@ -82,36 +104,33 @@ impl SipLogger {
             ts, arrow, peer, direction.label()
         );
 
+        // 確保每則訊息之間有空行分隔
+        let sep = if msg.ends_with('\n') { "\n" } else { "\n\n" };
+        let record = format!("{}\n{}\n{}", header, msg, sep);
         if let Ok(mut f) = self.file.lock() {
-            let _ = writeln!(f, "{}", header);
-            let _ = writeln!(f, "{}", msg);
-            // 確保每則訊息之間有空行分隔
-            if !msg.ends_with('\n') {
-                let _ = writeln!(f);
-            }
-            let _ = writeln!(f);
-            let _ = f.flush();
+            f.write_record(&record);
         }
     }
 
     /// 記錄引擎事件（非 SIP 原始訊息，例如逾時/錯誤）
     pub fn log_event(&self, call_id: &str, event: &str) {
         let ts = Self::now_str();
+        let record = format!("── {} [EVENT] call-id={} → {} ──\n\n", ts, call_id, event);
         if let Ok(mut f) = self.file.lock() {
-            let _ = writeln!(f, "── {} [EVENT] call-id={} → {} ──", ts, call_id, event);
-            let _ = writeln!(f);
-            let _ = f.flush();
+            f.write_record(&record);
         }
     }
 
     /// 記錄壓測摘要（寫在 log 尾端）
     pub fn log_summary(&self, summary: &str) {
         if let Ok(mut f) = self.file.lock() {
-            let _ = writeln!(f, "# ════════════════════════════════════");
-            let _ = writeln!(f, "# 壓測結束摘要");
-            let _ = writeln!(f, "# ════════════════════════════════════");
-            let _ = writeln!(f, "{}", summary);
-            let _ = f.flush();
+            let out = &mut f.out;
+            let _ = writeln!(out, "# ════════════════════════════════════");
+            let _ = writeln!(out, "# 壓測結束摘要");
+            let _ = writeln!(out, "# ════════════════════════════════════");
+            let _ = writeln!(out, "{}", summary);
+            let _ = out.flush();
+            f.last_flush = Instant::now();
         }
     }
 
@@ -214,5 +233,24 @@ mod tests {
         // 2024-05-01 14:30:22 UTC = 1714573822
         let ts2 = SipLogger::secs_to_datetime(1714573822);
         assert_eq!(ts2, "20240501_143022");
+    }
+
+    #[test]
+    fn records_are_complete_after_summary_flush() {
+        let dir = std::env::temp_dir().join(format!("sipress-logger-test-{}", std::process::id()));
+        let log = SipLogger::new(&dir.to_string_lossy(), SipRole::Agent).unwrap();
+        log.log_message(Direction::Send, "INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n", "1.2.3.4:5060");
+        log.log_message(Direction::Recv, "SIP/2.0 200 OK", "1.2.3.4:5060");
+        log.log_event("x", "TIMEOUT");
+        log.log_summary("done");
+
+        // 不 drop logger：摘要寫入時必須已 flush 到檔案
+        let content = fs::read_to_string(&log.path).unwrap();
+        // 格式與改用緩衝寫入前相同：header、訊息、（不以換行結尾時補一行）、空行
+        assert!(content.contains(">>> 1.2.3.4:5060 [→ SERVER] ──\nINVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n\n\n── "));
+        assert!(content.contains("<<< 1.2.3.4:5060 [← SERVER] ──\nSIP/2.0 200 OK\n\n\n── "));
+        assert!(content.contains("[EVENT] call-id=x → TIMEOUT ──\n\n"));
+        assert!(content.trim_end().ends_with("done"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
