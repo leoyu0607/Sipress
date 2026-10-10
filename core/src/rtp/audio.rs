@@ -119,6 +119,15 @@ impl AudioSource {
         Some(frame)
     }
 
+    /// 跳過 n 個 frame（RTP 傳送卡頓時讓音檔進度跟上實際時間）
+    pub fn skip(&mut self, n: usize) {
+        let len = self.frames.len();
+        if len == 0 || n == 0 {
+            return;
+        }
+        self.cursor = if self.looping { (self.cursor + n) % len } else { (self.cursor + n).min(len) };
+    }
+
     /// 重置到開頭
     pub fn reset(&mut self) {
         self.cursor = 0;
@@ -424,6 +433,19 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, vec![0xD5u8; 160 * frames]).unwrap();
         path
+    }
+
+    #[test]
+    fn skip_wraps_when_looping_and_stops_at_end_otherwise() {
+        let frames: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 160]).collect();
+        let mut src = AudioSource { frames: Arc::new(frames.clone()), cursor: 0, looping: true, payload_type: 8 };
+        src.next_frame();        // cursor 1
+        src.skip(6);             // (1 + 6) % 5 = 2
+        assert_eq!(src.next_frame().unwrap()[0], 2);
+
+        let mut once = AudioSource { frames: Arc::new(frames), cursor: 0, looping: false, payload_type: 8 };
+        once.skip(10);
+        assert_eq!(once.next_frame(), None, "非循環模式跳過結尾後應結束");
     }
 
     #[tokio::test]

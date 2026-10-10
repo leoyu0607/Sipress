@@ -125,13 +125,26 @@ impl RtpSession {
                     if payload_type == 8 { "PCMA/A-law" } else { "PCMU/μ-law" });
 
                 let mut seq: u16 = rand::thread_rng().gen();
-                let mut ts:  u32 = rand::thread_rng().gen();
+                let ts0:     u32 = rand::thread_rng().gen();
                 let ptime = Duration::from_millis(20);
                 let mut interval = time::interval(ptime);
+                // CPU 卡頓錯過的 tick 直接略過，不事後補送（Burst 會讓接收端看到人為 jitter）
+                interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                let start = time::Instant::now();
+                let mut last_tick: Option<u32> = None;
 
                 loop {
-                    interval.tick().await;
+                    let tick_at = interval.tick().await;
                     if stop.load(Ordering::Relaxed) { break; }
+
+                    // timestamp 依實際經過的 20ms 數計算：卡頓呈現為 timestamp 跳躍，
+                    // 音檔進度也同步跳過（與真實話機卡頓時的行為一致）
+                    let tick = (tick_at.saturating_duration_since(start).as_millis() / 20) as u32;
+                    if let Some(prev) = last_tick {
+                        source.skip(tick.saturating_sub(prev + 1) as usize);
+                    }
+                    last_tick = Some(tick);
+                    let ts = ts0.wrapping_add(tick.wrapping_mul(160));
 
                     let frame = match source.next_frame() {
                         Some(f) => f,
@@ -149,7 +162,6 @@ impl RtpSession {
                     }
 
                     seq = seq.wrapping_add(1);
-                    ts  = ts.wrapping_add(160);
                 }
             });
         }

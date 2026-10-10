@@ -220,15 +220,29 @@ impl RtpStatsSnapshot {
     }
 }
 
+/// 聚合多通電話的 RTP 統計
+///
+/// - 掉包率：依封包數加權（Σ掉包 / Σ(收到 + 掉包)），與 `lost_packets` 加總一致
+/// - Jitter：依收到的封包數加權，未收到封包的通話不會拉低平均
+/// - MOS：每通電話平均（每通通話的體驗各占一票）
 pub fn aggregate_snapshots(snapshots: &[RtpStatsSnapshot]) -> Option<RtpStatsSnapshot> {
     if snapshots.is_empty() { return None; }
     let n = snapshots.len() as f64;
+    let recv: u64 = snapshots.iter().map(|s| s.recv_packets).sum();
+    let lost: u64 = snapshots.iter().map(|s| s.lost_packets).sum();
+    let expected  = recv + lost;
+    let loss_rate_pct = if expected > 0 { lost as f64 / expected as f64 * 100.0 } else { 0.0 };
+    let jitter_ms = if recv > 0 {
+        snapshots.iter().map(|s| s.jitter_ms * s.recv_packets as f64).sum::<f64>() / recv as f64
+    } else {
+        0.0
+    };
     Some(RtpStatsSnapshot {
         sent_packets:  snapshots.iter().map(|s| s.sent_packets).sum(),
-        recv_packets:  snapshots.iter().map(|s| s.recv_packets).sum(),
-        lost_packets:  snapshots.iter().map(|s| s.lost_packets).sum(),
-        loss_rate_pct: snapshots.iter().map(|s| s.loss_rate_pct).sum::<f64>() / n,
-        jitter_ms:     snapshots.iter().map(|s| s.jitter_ms).sum::<f64>() / n,
+        recv_packets:  recv,
+        lost_packets:  lost,
+        loss_rate_pct,
+        jitter_ms,
         mos:           snapshots.iter().map(|s| s.mos).sum::<f64>() / n,
         out_of_order:  snapshots.iter().map(|s| s.out_of_order).sum(),
         duplicates:    snapshots.iter().map(|s| s.duplicates).sum(),
@@ -344,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_snapshots_averages_rates() {
+    fn test_aggregate_snapshots_weights_by_packets() {
         let a = RtpStatsSnapshot {
             sent_packets: 100, recv_packets: 90, lost_packets: 10,
             loss_rate_pct: 10.0, jitter_ms: 20.0, mos: 3.0,
@@ -358,11 +372,33 @@ mod tests {
         let agg = aggregate_snapshots(&[a, b]).unwrap();
         assert_eq!(agg.sent_packets, 300);
         assert_eq!(agg.recv_packets, 288);
-        assert!((agg.loss_rate_pct - 5.5).abs() < 0.001);
-        assert!((agg.jitter_ms - 12.5).abs() < 0.001);
+        // 掉包率依封包數加權：12 / 300（而非兩通電話 10% 與 1% 的平均 5.5%）
+        assert!((agg.loss_rate_pct - 4.0).abs() < 0.001, "loss={}", agg.loss_rate_pct);
+        assert_eq!(agg.lost_packets, 12);
+        // jitter 依收到封包數加權：(20×90 + 5×198) / 288
+        assert!((agg.jitter_ms - 9.6875).abs() < 0.001, "jitter={}", agg.jitter_ms);
+        // MOS 為每通電話平均
         assert!((agg.mos - 3.75).abs() < 0.001);
         assert_eq!(agg.out_of_order, 2);
         assert_eq!(agg.duplicates, 1);
+    }
+
+    #[test]
+    fn test_aggregate_ignores_silent_calls_for_jitter() {
+        let talking = RtpStatsSnapshot {
+            sent_packets: 100, recv_packets: 100, lost_packets: 0,
+            loss_rate_pct: 0.0, jitter_ms: 30.0, mos: 4.0,
+            out_of_order: 0, duplicates: 0,
+        };
+        // 送出但完全沒收到（單向）：掉包 100%，沒有 jitter 樣本
+        let one_way = RtpStatsSnapshot {
+            sent_packets: 100, recv_packets: 0, lost_packets: 100,
+            loss_rate_pct: 100.0, jitter_ms: 0.0, mos: 1.0,
+            out_of_order: 0, duplicates: 0,
+        };
+        let agg = aggregate_snapshots(&[talking, one_way]).unwrap();
+        assert!((agg.jitter_ms - 30.0).abs() < 0.001, "沒收到封包的通話不應拉低 jitter");
+        assert!((agg.loss_rate_pct - 50.0).abs() < 0.001);
     }
 
     #[test]

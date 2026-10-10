@@ -115,11 +115,28 @@ impl Engine {
         });
         let local_domain = local_domain_owned.as_str();
 
-        // 對話表（Call-ID → Dialog）
-        let dialogs: Arc<Mutex<HashMap<String, Dialog>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        // 對話內請求 / ACK 的組裝（事件處理、② 掃描與收尾共用）
+        let build_ack = |d: &Dialog| SipMessage::ack(
+            &d.call_id, &cfg.caller_number, local_domain, &d.callee,
+            d.to_tag.as_deref().unwrap_or(""), &cfg.server_addr, &local_addr,
+            d.cseq, &SipMessage::new_branch(), &d.from_tag, "UDP",
+            d.remote_contact.as_deref(),  // 2xx ACK 使用 Contact URI 作為 Request-URI
+        );
+        let build_cancel = |d: &Dialog| SipMessage::cancel(
+            &d.call_id, &cfg.caller_number, local_domain, &d.callee,
+            &cfg.server_addr, &local_addr, d.cseq, &d.branch, &d.from_tag, "UDP",
+        );
+        let build_bye = |d: &Dialog| SipMessage::bye(
+            &d.call_id, &cfg.caller_number, local_domain, &d.callee,
+            d.to_tag.as_deref().unwrap_or(""), &cfg.server_addr, &local_addr,
+            d.cseq + 1, &SipMessage::new_branch(), &d.from_tag, "UDP",
+            d.remote_contact.as_deref(),
+        );
 
-        // RTP session 表（Call-ID → RtpSession）
+        // 對話表（Call-ID → Dialog）：只有主迴圈存取，不需上鎖
+        let mut dialogs: HashMap<String, Dialog> = HashMap::new();
+
+        // RTP session 表（Call-ID → RtpSession）：進度回報 task 也會讀取，故共用
         let rtp_sessions: Arc<Mutex<HashMap<String, RtpSession>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -131,12 +148,10 @@ impl Engine {
 
         // 預分配但尚未啟動的 RTP socket（Call-ID → 已綁定 UdpSocket）
         // 解決 TOCTOU：INVITE 前綁定，200 OK 後移交 RtpSession
-        let pre_bound_rtp: Arc<Mutex<HashMap<String, TokioUdpSocket>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let mut pre_bound_rtp: HashMap<String, TokioUdpSocket> = HashMap::new();
 
-        // 累計 RTP 統計
-        let rtp_snapshots: Arc<Mutex<Vec<RtpStatsSnapshot>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        // 已結束通話的 RTP 統計
+        let mut rtp_snapshots: Vec<RtpStatsSnapshot> = Vec::new();
 
         // 事件 channel
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<SipEvent>();
@@ -282,14 +297,12 @@ impl Engine {
                 if code >= 200 && method.as_deref() == Some("INVITE") {
                     awaiting_invite_final.remove(&call_id);
                 }
-                // 先取出預分配的 RTP socket（若有），再鎖 dialogs，消除 TOCTOU
+                // 取出預分配的 RTP socket（若有），200 OK 後移交 RtpSession
                 let pre_socket = if cfg.enable_rtp && code == 200 && method.as_deref() == Some("INVITE") {
-                    pre_bound_rtp.lock().await.remove(&call_id)
+                    pre_bound_rtp.remove(&call_id)
                 } else {
                     None
                 };
-
-                let mut dialogs = dialogs.lock().await;
 
                 if let Some(dialog) = dialogs.get_mut(&call_id) {
                     match code {
@@ -308,27 +321,12 @@ impl Engine {
                             if !first_answer {
                                 // 200 OK 重傳（對端沒收到 ACK）→ 只重送 ACK，不重複計數 / 啟動 RTP
                                 if dialog.state == DialogState::Connected {
-                                    let ack = SipMessage::ack(
-                                        &dialog.call_id,
-                                        &cfg.caller_number,
-                                        local_domain,
-                                        &dialog.callee,
-                                        dialog.to_tag.as_deref().unwrap_or(""),
-                                        &cfg.server_addr,
-                                        &local_addr,
-                                        dialog.cseq,
-                                        &SipMessage::new_branch(),
-                                        &dialog.from_tag,
-                                        "UDP",
-                                        dialog.remote_contact.as_deref(),
-                                    );
-                                    sip_log.log_message(Direction::Send, &ack, &cfg.server_addr);
-                                    let _ = udp.send(&ack).await;
+                                    let ack = build_ack(dialog);
+                                    send_sip(&udp, &sip_log, &cfg.server_addr, &ack).await;
                                 }
                                 continue;
                             }
-                            let tag = to_tag.unwrap_or_default();
-                            dialog.on_ok(tag.clone());
+                            dialog.on_ok(to_tag.unwrap_or_default());
                             // 儲存對端 Contact URI（BYE/ACK Request-URI 使用）
                             dialog.remote_contact = contact_uri.clone();
                             live.on_answered();
@@ -383,28 +381,8 @@ impl Engine {
                             }
 
                             // 送 ACK（2xx ACK 使用 Contact URI 作為 Request-URI）
-                            let ack = SipMessage::ack(
-                                &dialog.call_id,
-                                &cfg.caller_number,
-                                local_domain,
-                                &dialog.callee,
-                                &tag,
-                                &cfg.server_addr,
-                                &local_addr,
-                                dialog.cseq,
-                                &SipMessage::new_branch(),
-                                &dialog.from_tag,
-                                "UDP",
-                                dialog.remote_contact.as_deref(),
-                            );
-                            let udp_ack  = Arc::clone(&udp);
-                            let log_ack  = Arc::clone(&sip_log);
-                            let server   = cfg.server_addr.clone();
-                            let ack_copy = ack.clone();
-                            tokio::spawn(async move {
-                                log_ack.log_message(Direction::Send, &ack_copy, &server);
-                                let _ = udp_ack.send(&ack_copy).await;
-                            });
+                            let ack = build_ack(dialog);
+                            send_sip(&udp, &sip_log, &cfg.server_addr, &ack).await;
                         }
                         // BYE 的任何最終回應（200，或 481/408 等錯誤）都代表 dialog 已結束
                         200..=699 if method.as_deref() == Some("BYE")
@@ -413,7 +391,7 @@ impl Engine {
                                 detail.record_duration(a.elapsed().as_secs_f64());
                             }
                             if cfg.enable_rtp {
-                                stop_rtp_session(&call_id, &rtp_sessions, &rtp_snapshots, &live).await;
+                                stop_rtp_session(&call_id, &rtp_sessions, &mut rtp_snapshots, &live).await;
                             }
                             dialog.on_bye_ok();
                             live.on_completed();
@@ -425,7 +403,7 @@ impl Engine {
                                 DialogState::Calling | DialogState::Trying | DialogState::Ringing) => {
                             // 清理預分配但未使用的 RTP socket
                             if cfg.enable_rtp {
-                                pre_bound_rtp.lock().await.remove(&call_id);
+                                pre_bound_rtp.remove(&call_id);
                             }
                             detail.record_fail_code(code);
                             dialog.on_error(code);
@@ -436,7 +414,6 @@ impl Engine {
                 }
                 } // SipEvent::Response
                 SipEvent::IncomingRequest { call_id, method, raw: req_raw } => {
-                    let mut dialogs = dialogs.lock().await;
                     if let Some(dialog) = dialogs.get_mut(&call_id) {
                         match method.as_str() {
                             "INVITE" => {
@@ -450,14 +427,7 @@ impl Engine {
                                 let ok      = SipMessage::ok_for_server_reinvite(
                                     &req_raw, &local_addr, local_port, &cfg.caller_number,
                                 );
-                                let udp_ok  = Arc::clone(&udp);
-                                let log_ok  = Arc::clone(&sip_log);
-                                let server  = cfg.server_addr.clone();
-                                let ok_copy = ok.clone();
-                                tokio::spawn(async move {
-                                    log_ok.log_message(Direction::Send, &ok_copy, &server);
-                                    let _ = udp_ok.send(&ok_copy).await;
-                                });
+                                send_sip(&udp, &sip_log, &cfg.server_addr, &ok).await;
 
                                 // 解析 RE-INVITE SDP 中的新 RTP 地址，更新 RTP session 目標
                                 if cfg.enable_rtp {
@@ -479,14 +449,7 @@ impl Engine {
                                 // 伺服器主動掛斷 → 200 OK 並結束本通話
                                 sip_log.log_event(&call_id, "收到伺服器 BYE，回應 200 OK");
                                 let ok      = SipMessage::ok_for_server_bye(&req_raw);
-                                let udp_ok  = Arc::clone(&udp);
-                                let log_ok  = Arc::clone(&sip_log);
-                                let server  = cfg.server_addr.clone();
-                                let ok_copy = ok.clone();
-                                tokio::spawn(async move {
-                                    log_ok.log_message(Direction::Send, &ok_copy, &server);
-                                    let _ = udp_ok.send(&ok_copy).await;
-                                });
+                                send_sip(&udp, &sip_log, &cfg.server_addr, &ok).await;
 
                                 if matches!(dialog.state, DialogState::Connected | DialogState::Terminating) {
                                     if let Some(a) = dialog.answered_at {
@@ -494,7 +457,7 @@ impl Engine {
                                     }
                                 }
                                 if cfg.enable_rtp && matches!(dialog.state, DialogState::Connected | DialogState::Terminating) {
-                                    stop_rtp_session(&call_id, &rtp_sessions, &rtp_snapshots, &live).await;
+                                    stop_rtp_session(&call_id, &rtp_sessions, &mut rtp_snapshots, &live).await;
                                 }
 
                                 if matches!(dialog.state, DialogState::Connected | DialogState::Terminating) {
@@ -514,8 +477,7 @@ impl Engine {
                         };
                         sip_log.log_event(&call_id, &format!("收到未知 dialog 的 {}，回應 {}", method, status));
                         let resp = SipMessage::response_for_request(&req_raw, status);
-                        sip_log.log_message(Direction::Send, &resp, &cfg.server_addr);
-                        let _ = udp.send(&resp).await;
+                        send_sip(&udp, &sip_log, &cfg.server_addr, &resp).await;
                     }
                 } // SipEvent::IncomingRequest
                 } // match ev
@@ -527,7 +489,6 @@ impl Engine {
                 next_scan = now + SCAN_INTERVAL;
                 // 對端始終未回 487 的 CANCEL：超過 invite_timeout 即放棄等待
                 awaiting_invite_final.retain(|_, sent| now.duration_since(*sent) <= invite_to);
-                let mut dialogs = dialogs.lock().await;
                 let mut to_send: Vec<String> = Vec::new();
 
                 for dialog in dialogs.values_mut() {
@@ -536,24 +497,13 @@ impl Engine {
                         DialogState::Calling | DialogState::Trying | DialogState::Ringing => {
                             if now.duration_since(dialog.invite_sent_at) > invite_to {
                                 sip_log.log_event(&dialog.call_id, "TIMEOUT — 發送 CANCEL");
-                                let cancel = SipMessage::cancel(
-                                    &dialog.call_id,
-                                    &cfg.caller_number,
-                                    local_domain,
-                                    &dialog.callee,
-                                    &cfg.server_addr,
-                                    &local_addr,
-                                    dialog.cseq,
-                                    &dialog.branch,
-                                    &dialog.from_tag,
-                                    "UDP",
-                                );
+                                let cancel = build_cancel(dialog);
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
                                 awaiting_invite_final.insert(dialog.call_id.clone(), now);
                                 if cfg.enable_rtp {
-                                    pre_bound_rtp.lock().await.remove(&dialog.call_id);
+                                    pre_bound_rtp.remove(&dialog.call_id);
                                 }
                             }
                         }
@@ -561,21 +511,7 @@ impl Engine {
                         DialogState::Connected => {
                             if let Some(ans) = dialog.answered_at {
                                 if now.duration_since(ans) >= call_dur && call_dur.as_secs() > 0 {
-                                    let bye_branch = SipMessage::new_branch();
-                                    let bye = SipMessage::bye(
-                                        &dialog.call_id,
-                                        &cfg.caller_number,
-                                        local_domain,
-                                        &dialog.callee,
-                                        dialog.to_tag.as_deref().unwrap_or(""),
-                                        &cfg.server_addr,
-                                        &local_addr,
-                                        dialog.cseq + 1,
-                                        &bye_branch,
-                                        &dialog.from_tag,
-                                        "UDP",
-                                        dialog.remote_contact.as_deref(),
-                                    );
+                                    let bye = build_bye(dialog);
                                     dialog.on_bye_sent();
                                     dialog.arm_retransmit(bye.clone(), now);
                                     to_send.push(bye);
@@ -588,7 +524,7 @@ impl Engine {
                                 if now.duration_since(bye_sent) > invite_to {
                                     sip_log.log_event(&dialog.call_id, "BYE TIMEOUT — 強制結束通話");
                                     if cfg.enable_rtp {
-                                        stop_rtp_session(&dialog.call_id, &rtp_sessions, &rtp_snapshots, &live).await;
+                                        stop_rtp_session(&dialog.call_id, &rtp_sessions, &mut rtp_snapshots, &live).await;
                                     }
                                     if let Some(a) = dialog.answered_at {
                                         detail.record_duration(a.elapsed().as_secs_f64());
@@ -610,14 +546,7 @@ impl Engine {
                 }
 
                 for msg in to_send {
-                    let udp_s   = Arc::clone(&udp);
-                    let log_bye = Arc::clone(&sip_log);
-                    let server  = cfg.server_addr.clone();
-                    let msg_log = msg.clone();
-                    tokio::spawn(async move {
-                        log_bye.log_message(Direction::Send, &msg_log, &server);
-                        let _ = udp_s.send(&msg_log).await;
-                    });
+                    send_sip(&udp, &sip_log, &cfg.server_addr, &msg).await;
                 }
 
                 // 清理已結束的 dialog
@@ -640,14 +569,11 @@ impl Engine {
 
             if draining_until.is_none() && !stopped && !total_limit_reached
                 && !deadline_reached && now >= next_call {
-                let mut concurrent = {
-                    let dialogs = dialogs.lock().await;
-                    dialogs.values().filter(|d| matches!(
-                        d.state,
-                        DialogState::Calling | DialogState::Trying |
-                        DialogState::Ringing | DialogState::Connected
-                    )).count()
-                };
+                let mut concurrent = dialogs.values().filter(|d| matches!(
+                    d.state,
+                    DialogState::Calling | DialogState::Trying |
+                    DialogState::Ringing | DialogState::Connected
+                )).count();
                 let mut issued = 0;
 
                 while now >= next_call && issued < MAX_CALLS_PER_TICK && !total_limit_reached {
@@ -687,7 +613,7 @@ impl Engine {
 
                     // 儲存預分配的 socket
                     if let Some(sock) = pre_socket {
-                        pre_bound_rtp.lock().await.insert(call_id.clone(), sock);
+                        pre_bound_rtp.insert(call_id.clone(), sock);
                     }
 
                     let invite = SipMessage::invite(
@@ -706,11 +632,10 @@ impl Engine {
 
                     let mut dialog = Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
                     dialog.arm_retransmit(invite.clone(), now);
-                    dialogs.lock().await.insert(call_id, dialog);
+                    dialogs.insert(call_id, dialog);
                     live.on_invite();
 
-                    sip_log.log_message(Direction::Send, &invite, &cfg.server_addr);
-                    let _ = udp.send(&invite).await;
+                    send_sip(&udp, &sip_log, &cfg.server_addr, &invite).await;
 
                     concurrent += 1;
                     issued     += 1;
@@ -726,49 +651,22 @@ impl Engine {
             if draining_until.is_none() && (deadline_reached || all_done || stopped) {
                 // 對所有進行中通話發 BYE / 未接通的發 CANCEL
                 {
-                    let mut dialogs = dialogs.lock().await;
                     let mut to_send: Vec<String> = Vec::new();
-                    let local_domain = local_domain_owned.as_str();
 
                     for dialog in dialogs.values_mut() {
                         match &dialog.state {
                             DialogState::Calling | DialogState::Trying | DialogState::Ringing => {
-                                let cancel = SipMessage::cancel(
-                                    &dialog.call_id,
-                                    &cfg.caller_number,
-                                    local_domain,
-                                    &dialog.callee,
-                                    &cfg.server_addr,
-                                    &local_addr,
-                                    dialog.cseq,
-                                    &dialog.branch,
-                                    &dialog.from_tag,
-                                    "UDP",
-                                );
+                                let cancel = build_cancel(dialog);
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
                                 awaiting_invite_final.insert(dialog.call_id.clone(), now);
                                 if cfg.enable_rtp {
-                                    pre_bound_rtp.lock().await.remove(&dialog.call_id);
+                                    pre_bound_rtp.remove(&dialog.call_id);
                                 }
                             }
                             DialogState::Connected => {
-                                let bye_branch = SipMessage::new_branch();
-                                let bye = SipMessage::bye(
-                                    &dialog.call_id,
-                                    &cfg.caller_number,
-                                    local_domain,
-                                    &dialog.callee,
-                                    dialog.to_tag.as_deref().unwrap_or(""),
-                                    &cfg.server_addr,
-                                    &local_addr,
-                                    dialog.cseq + 1,
-                                    &bye_branch,
-                                    &dialog.from_tag,
-                                    "UDP",
-                                    dialog.remote_contact.as_deref(),
-                                );
+                                let bye = build_bye(dialog);
                                 dialog.on_bye_sent();
                                 dialog.arm_retransmit(bye.clone(), now);
                                 to_send.push(bye);
@@ -778,14 +676,7 @@ impl Engine {
                     }
 
                     for msg in to_send {
-                        let udp_s   = Arc::clone(&udp);
-                        let log_s   = Arc::clone(&sip_log);
-                        let server  = cfg.server_addr.clone();
-                        let msg_log = msg.clone();
-                        tokio::spawn(async move {
-                            log_s.log_message(Direction::Send, &msg_log, &server);
-                            let _ = udp_s.send(&msg_log).await;
-                        });
+                        send_sip(&udp, &sip_log, &cfg.server_addr, &msg).await;
                     }
                 }
 
@@ -826,71 +717,13 @@ impl Engine {
         ));
 
         let rtp_agg = if cfg.enable_rtp {
-            {
-                let mut sessions = rtp_sessions.lock().await;
-                let mut snaps    = rtp_snapshots.lock().await;
-                for (_, s) in sessions.drain() { snaps.push(s.stop()); }
-            }
-            let snaps = rtp_snapshots.lock().await;
-            aggregate_snapshots(&snaps)
+            for (_, s) in rtp_sessions.lock().await.drain() { rtp_snapshots.push(s.stop()); }
+            aggregate_snapshots(&rtp_snapshots)
         } else {
             None
         };
 
-        // HDR histogram 數據（std::sync::MutexGuard，不可跨 await）
-        let us_to_ms = |h: &hdrhistogram::Histogram<u64>, q: f64| {
-            h.value_at_quantile(q) as f64 / 1000.0
-        };
-        let (pdd_p50, pdd_p95, pdd_p99, pdd_max,
-             setup_p50, setup_p95, setup_p99, setup_max,
-             acd_secs) = {
-            let pdd_h   = detail.pdd_hist.lock().unwrap();
-            let setup_h = detail.setup_hist.lock().unwrap();
-            let dur_h   = detail.dur_hist.lock().unwrap();
-            let acd = if snap.calls_completed > 0 { dur_h.mean() / 1000.0 } else { 0.0 };
-            (
-                us_to_ms(&pdd_h, 0.50), us_to_ms(&pdd_h, 0.95),
-                us_to_ms(&pdd_h, 0.99), pdd_h.max() as f64 / 1000.0,
-                us_to_ms(&setup_h, 0.50), us_to_ms(&setup_h, 0.95),
-                us_to_ms(&setup_h, 0.99), setup_h.max() as f64 / 1000.0,
-                acd,
-            )
-        };
-
-        let fail_codes = detail.fail_codes.lock().unwrap().clone();
-
-        Ok(FinalReport {
-            calls_initiated: snap.calls_initiated,
-            calls_answered:  snap.calls_answered,
-            calls_completed: snap.calls_completed,
-            calls_failed:    snap.calls_failed,
-            calls_timeout:   snap.calls_timeout,
-            duration_secs:   elapsed,
-            asr:             snap.asr,
-            ccr: if snap.calls_initiated > 0 {
-                snap.calls_completed as f64 / snap.calls_initiated as f64 * 100.0
-            } else { 0.0 },
-            actual_cps:   snap.calls_initiated as f64 / elapsed,
-            pdd_p50_ms:   pdd_p50,
-            pdd_p95_ms:   pdd_p95,
-            pdd_p99_ms:   pdd_p99,
-            pdd_max_ms:   pdd_max,
-            setup_p50_ms: setup_p50,
-            setup_p95_ms: setup_p95,
-            setup_p99_ms: setup_p99,
-            setup_max_ms: setup_max,
-            acd_secs,
-            fail_4xx: detail.fail_4xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_5xx: detail.fail_5xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_6xx: detail.fail_6xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_codes,
-            mos:              rtp_agg.as_ref().map(|a| a.mos),
-            loss_rate_pct:    rtp_agg.as_ref().map(|a| a.loss_rate_pct),
-            jitter_ms:        rtp_agg.as_ref().map(|a| a.jitter_ms),
-            rtp_sent:         rtp_agg.as_ref().map(|a| a.sent_packets),
-            rtp_recv:         rtp_agg.as_ref().map(|a| a.recv_packets),
-            rtp_out_of_order: rtp_agg.as_ref().map(|a| a.out_of_order),
-        })
+        Ok(FinalReport::build(&snap, &detail, elapsed, rtp_agg.as_ref()))
     }
 }
 
@@ -898,13 +731,19 @@ impl Engine {
 async fn stop_rtp_session(
     call_id:   &str,
     sessions:  &Mutex<HashMap<String, RtpSession>>,
-    snapshots: &Mutex<Vec<RtpStatsSnapshot>>,
+    snapshots: &mut Vec<RtpStatsSnapshot>,
     live:      &LiveStats,
 ) {
     let session = sessions.lock().await.remove(call_id);
     if let Some(session) = session {
         let snap = session.stop();
         live.on_rtp_stop();
-        snapshots.lock().await.push(snap);
+        snapshots.push(snap);
     }
+}
+
+/// 記錄並送出一則 SIP 訊息（UDP 送出不會阻塞，不需另開 task）
+async fn send_sip(udp: &SharedUdpSocket, log: &SipLogger, server: &str, msg: &str) {
+    log.log_message(Direction::Send, msg, server);
+    let _ = udp.send(msg).await;
 }

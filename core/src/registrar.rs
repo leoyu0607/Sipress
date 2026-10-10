@@ -1,7 +1,7 @@
 /// 座席帳號註冊器：對 SIP server 發送 REGISTER，處理 Digest 認證
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
-    SipMessage,
+    SipMessage, SipParser,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -92,13 +92,13 @@ pub async fn register_once(
         }
     };
 
-    let code1 = parse_status_code(&resp1).unwrap_or(0);
+    let code1 = SipParser::status_code(&resp1).unwrap_or(0);
 
     match code1 {
         200 => Ok(RegisterResult {
             status:       RegisterStatus::Registered,
             message:      format!("註冊成功 ({})", username),
-            expires_secs: Some(parse_expires(&resp1).unwrap_or(expires)),
+            expires_secs: Some(SipParser::expires(&resp1).unwrap_or(expires)),
             sip_code:     Some(200),
         }),
 
@@ -137,12 +137,12 @@ pub async fn register_once(
                 }
             };
 
-            let code2 = parse_status_code(&resp2).unwrap_or(0);
+            let code2 = SipParser::status_code(&resp2).unwrap_or(0);
             match code2 {
                 200 => Ok(RegisterResult {
                     status:       RegisterStatus::Registered,
                     message:      format!("註冊成功 ({})", username),
-                    expires_secs: Some(parse_expires(&resp2).unwrap_or(expires)),
+                    expires_secs: Some(SipParser::expires(&resp2).unwrap_or(expires)),
                     sip_code:     Some(200),
                 }),
                 401 | 403 | 407 => Ok(RegisterResult {
@@ -193,42 +193,11 @@ async fn recv_with_timeout(sock: &UdpSocket, dur: Duration) -> Result<String> {
             Err(_) => anyhow::bail!("逾時"),
         };
         let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-        let code = parse_status_code(&raw).unwrap_or(0);
+        let code = SipParser::status_code(&raw).unwrap_or(0);
         // 100/180 / provisional → 繼續等
         if (100..200).contains(&code) {
             continue;
         }
         return Ok(raw);
     }
-}
-
-fn parse_status_code(raw: &str) -> Option<u16> {
-    let line = raw.lines().next()?;
-    line.split_whitespace().nth(1)?.parse().ok()
-}
-
-fn parse_expires(raw: &str) -> Option<u32> {
-    // 優先看 Expires 標頭，其次看 Contact 中的 expires=
-    for line in raw.lines() {
-        let lower = line.to_lowercase();
-        if lower.starts_with("expires:") {
-            if let Some(val) = line.splitn(2, ':').nth(1) {
-                if let Ok(n) = val.trim().parse::<u32>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    for line in raw.lines() {
-        if line.to_lowercase().starts_with("contact:") {
-            if let Some(idx) = line.to_lowercase().find("expires=") {
-                let rest = &line[idx + 8..];
-                let val: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(n) = val.parse::<u32>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    None
 }

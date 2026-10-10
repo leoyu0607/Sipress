@@ -125,3 +125,33 @@ async fn stop_releases_the_rtp_port() {
     }
     assert!(rebound, "stop 後 RTP port {} 應在 200ms 內釋放", port);
 }
+
+#[tokio::test]
+async fn cpu_stall_does_not_burst_packets_and_shows_as_timestamp_gap() {
+    let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let session = start_session(receiver.local_addr().unwrap(), 45000).await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // 模擬 CPU 卡頓：阻塞單執行緒 runtime 200ms（期間 RTP task 無法執行，錯過約 10 個 tick）
+    std::thread::sleep(Duration::from_millis(200));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    session.stop();
+
+    let mut buf = [0u8; 1500];
+    let mut pkts = Vec::new();
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(20), receiver.recv(&mut buf)).await {
+        pkts.push(RtpPacket::decode(&buf[..n]).unwrap());
+    }
+    // 約 400ms 的時間軸：卡頓期間的封包不應事後補送（Burst 會送滿 ~20 個）
+    assert!(pkts.len() <= 15, "卡頓後不應一次補送錯過的封包（收到 {} 個）", pkts.len());
+
+    // 卡頓應呈現為 timestamp 跳躍（序號連續、時間戳跳過卡頓期間），而非連續 timestamp
+    let max_ts_gap = pkts.windows(2)
+        .filter(|w| w[1].sequence == w[0].sequence.wrapping_add(1))
+        .map(|w| w[1].timestamp.wrapping_sub(w[0].timestamp))
+        .max()
+        .unwrap();
+    assert!(max_ts_gap >= 160 * 5, "卡頓應反映在 RTP timestamp（最大間隔 {}）", max_ts_gap);
+    assert!(pkts.windows(2).all(|w| w[1].timestamp.wrapping_sub(w[0].timestamp) % 160 == 0),
+        "timestamp 必須維持 20ms（160）的整數倍");
+}

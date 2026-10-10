@@ -176,54 +176,7 @@ impl AgentEngine {
             snap.calls_failed, elapsed,
         ));
 
-        let us_to_ms = |h: &hdrhistogram::Histogram<u64>, q: f64| {
-            h.value_at_quantile(q) as f64 / 1000.0
-        };
-        let (pdd_p50, pdd_p95, pdd_p99, pdd_max,
-             setup_p50, setup_p95, setup_p99, setup_max,
-             acd_secs) = {
-            let pdd_h   = detail.pdd_hist.lock().unwrap();
-            let setup_h = detail.setup_hist.lock().unwrap();
-            let dur_h   = detail.dur_hist.lock().unwrap();
-            let acd = if snap.calls_completed > 0 { dur_h.mean() / 1000.0 } else { 0.0 };
-            (
-                us_to_ms(&pdd_h, 0.50), us_to_ms(&pdd_h, 0.95),
-                us_to_ms(&pdd_h, 0.99), pdd_h.max() as f64 / 1000.0,
-                us_to_ms(&setup_h, 0.50), us_to_ms(&setup_h, 0.95),
-                us_to_ms(&setup_h, 0.99), setup_h.max() as f64 / 1000.0,
-                acd,
-            )
-        };
-
-        let fail_codes = detail.fail_codes.lock().unwrap().clone();
-
-        Ok(FinalReport {
-            calls_initiated: snap.calls_initiated,
-            calls_answered:  snap.calls_answered,
-            calls_completed: snap.calls_completed,
-            calls_failed:    snap.calls_failed,
-            calls_timeout:   snap.calls_timeout,
-            duration_secs:   elapsed,
-            asr:             snap.asr,
-            ccr: if snap.calls_initiated > 0 {
-                snap.calls_completed as f64 / snap.calls_initiated as f64 * 100.0
-            } else { 0.0 },
-            actual_cps: snap.calls_initiated as f64 / elapsed.max(0.001),
-            pdd_p50_ms: pdd_p50, pdd_p95_ms: pdd_p95, pdd_p99_ms: pdd_p99, pdd_max_ms: pdd_max,
-            setup_p50_ms: setup_p50, setup_p95_ms: setup_p95,
-            setup_p99_ms: setup_p99, setup_max_ms: setup_max,
-            acd_secs,
-            fail_4xx: detail.fail_4xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_5xx: detail.fail_5xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_6xx: detail.fail_6xx.load(std::sync::atomic::Ordering::Relaxed),
-            fail_codes,
-            mos:            rtp_final.as_ref().map(|r| r.mos),
-            loss_rate_pct:  rtp_final.as_ref().map(|r| r.loss_rate_pct),
-            jitter_ms:      rtp_final.as_ref().map(|r| r.jitter_ms),
-            rtp_sent:       rtp_final.as_ref().map(|r| r.sent_packets),
-            rtp_recv:       rtp_final.as_ref().map(|r| r.recv_packets),
-            rtp_out_of_order: rtp_final.as_ref().map(|r| r.out_of_order),
-        })
+        Ok(FinalReport::build(&snap, &detail, elapsed, rtp_final.as_ref()))
     }
 }
 
@@ -560,8 +513,8 @@ async fn handle_response(
     last_register_at:   &mut Instant,
     reg_state:          Arc<Mutex<RegState>>,
 ) {
-    let code = SipResponse::status_code(raw).unwrap_or(0);
-    let method = SipResponse::cseq_method(raw);
+    let code = SipParser::status_code(raw).unwrap_or(0);
+    let method = SipParser::cseq_method(raw);
 
     if method.as_deref() != Some("REGISTER") {
         return;
@@ -572,7 +525,7 @@ async fn handle_response(
             reg_state.lock().await.auth_retries = 0;
             *last_register_at = Instant::now();
             log.log_event(&account.extension, "註冊成功");
-            if let Some(exp) = parse_expires(raw) {
+            if let Some(exp) = SipParser::expires(raw) {
                 *current_expires = exp;
             }
         }
@@ -676,13 +629,13 @@ async fn handle_request(
                 let remote_from_tag = SipParser::from_tag(raw).unwrap_or_default();
 
                 // 100 Trying
-                let trying = build_response_no_body(raw, "100 Trying", "");
+                let trying = SipMessage::response_with_to_tag(raw, "100 Trying", "");
                 log.log_message(Direction::Send, &trying, "server");
                 let _ = sock.send(trying.as_bytes()).await;
 
 
                 // 180 Ringing
-                let ringing = build_response_no_body(raw, "180 Ringing", &local_to_tag);
+                let ringing = SipMessage::response_with_to_tag(raw, "180 Ringing", &local_to_tag);
                 log.log_message(Direction::Send, &ringing, "server");
                 let _ = sock.send(ringing.as_bytes()).await;
 
@@ -795,7 +748,7 @@ async fn handle_request(
             }
         }
         "OPTIONS" => {
-            let ok = build_response_no_body(raw, "200 OK", "");
+            let ok = SipMessage::response_with_to_tag(raw, "200 OK", "");
             log.log_message(Direction::Send, &ok, "server");
             let _ = sock.send(ok.as_bytes()).await;
         }
@@ -808,27 +761,10 @@ async fn handle_request(
 
 // ─── 共用：建構回應訊息 ─────────────────────────────────────────────
 
-fn build_response_no_body(raw_request: &str, status_line: &str, extra_to_tag: &str) -> String {
-    let (via, from, to, call_id, cseq) = extract_request_headers_for_response(raw_request);
-    let to_with_tag = inject_to_tag_if_missing(&to, extra_to_tag);
-    format!(
-        "SIP/2.0 {status}\r\n\
-         {via}\r\n\
-         {from}\r\n\
-         {to}\r\n\
-         {call_id}\r\n\
-         {cseq}\r\n\
-         Content-Length: 0\r\n\
-         \r\n",
-        status = status_line, via = via, from = from,
-        to = to_with_tag, call_id = call_id, cseq = cseq,
-    )
-}
-
 fn build_response_with_sdp(raw_request: &str, status_line: &str, to_tag: &str,
                             local_addr: &str, rtp_port: u16) -> String {
-    let (via, from, to, call_id, cseq) = extract_request_headers_for_response(raw_request);
-    let to_with_tag = inject_to_tag_if_missing(&to, to_tag);
+    let (via, from, to, call_id, cseq) = SipMessage::extract_request_headers(raw_request);
+    let to_with_tag = crate::sip::message::inject_to_tag_if_missing(&to, to_tag);
     let ip = local_addr.split(':').next().unwrap_or(local_addr);
     let sdp = format!(
         "v=0\r\n\
@@ -869,7 +805,7 @@ fn build_response_with_sdp(raw_request: &str, status_line: &str, to_tag: &str,
 /// 從 INVITE 原始訊息建構座席端主動 BYE
 fn build_bye_from_dialog(invite_raw: &str, local_to_tag: &str, remote_from_tag: &str,
                           local_addr: &str, account: &AgentAccount) -> String {
-    let (_, from, _to, call_id_line, _) = extract_request_headers_for_response(invite_raw);
+    let (_, from, _to, call_id_line, _) = SipMessage::extract_request_headers(invite_raw);
     let call_id_val = call_id_line.splitn(2, ':').nth(1)
         .map(|s| s.trim()).unwrap_or("");
     let remote_uri = extract_uri(&from).unwrap_or_default();
@@ -897,37 +833,7 @@ fn build_bye_from_dialog(invite_raw: &str, local_to_tag: &str, remote_from_tag: 
     )
 }
 
-fn extract_request_headers_for_response(raw: &str) -> (String, String, String, String, String) {
-    let mut vias = Vec::<String>::new();
-    let (mut from, mut to, mut call_id, mut cseq) =
-        (String::new(), String::new(), String::new(), String::new());
-    for line in raw.lines() {
-        let lower = line.to_lowercase();
-        if lower.starts_with("via:") || lower.starts_with("v:") {
-            vias.push(line.to_string());
-        } else if from.is_empty() && (lower.starts_with("from:") || lower.starts_with("f:")) {
-            from = line.to_string();
-        } else if to.is_empty() && (lower.starts_with("to:") || lower.starts_with("t:")) {
-            to = line.to_string();
-        } else if call_id.is_empty() && (lower.starts_with("call-id:") || lower.starts_with("i:")) {
-            call_id = line.to_string();
-        } else if cseq.is_empty() && lower.starts_with("cseq:") {
-            cseq = line.to_string();
-        }
-    }
-    (vias.join("\r\n"), from, to, call_id, cseq)
-}
 
-fn inject_to_tag_if_missing(to_line: &str, tag: &str) -> String {
-    if tag.is_empty() {
-        return to_line.to_string();
-    }
-    if to_line.to_lowercase().contains(";tag=") {
-        to_line.to_string()
-    } else {
-        format!("{};tag={}", to_line.trim_end(), tag)
-    }
-}
 
 fn extract_uri(header_line: &str) -> Option<String> {
     let start = header_line.find('<')? + 1;
@@ -935,29 +841,6 @@ fn extract_uri(header_line: &str) -> Option<String> {
     Some(header_line[start..end].to_string())
 }
 
-fn parse_expires(raw: &str) -> Option<u32> {
-    for line in raw.lines() {
-        if line.to_lowercase().starts_with("expires:") {
-            if let Some(val) = line.splitn(2, ':').nth(1) {
-                if let Ok(n) = val.trim().parse::<u32>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    for line in raw.lines() {
-        if line.to_lowercase().starts_with("contact:") {
-            if let Some(idx) = line.to_lowercase().find("expires=") {
-                let rest = &line[idx + 8..];
-                let val: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(n) = val.parse::<u32>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    None
-}
 
 fn pick_dummy_rtp_port(_local_ip: &str) -> u16 {
     use rand::Rng;

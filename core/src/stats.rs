@@ -1,4 +1,5 @@
 /// 指標收集：ASR / ACD / PDD / 延遲直方圖
+use crate::rtp::stats::RtpStatsSnapshot;
 use hdrhistogram::Histogram;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -253,6 +254,54 @@ pub struct FinalReport {
 }
 
 impl FinalReport {
+    /// 由即時計數、延遲直方圖與 RTP 聚合結果組出最終報告（Caller / Agent 共用）
+    pub fn build(
+        snap:         &StatsSnapshot,
+        detail:       &DetailedStats,
+        elapsed_secs: f64,
+        rtp:          Option<&RtpStatsSnapshot>,
+    ) -> Self {
+        // 直方圖單位為 µs，報告為 ms
+        let us_to_ms = |h: &Histogram<u64>, q: f64| h.value_at_quantile(q) as f64 / 1000.0;
+        let pdd_h   = detail.pdd_hist.lock().unwrap();
+        let setup_h = detail.setup_hist.lock().unwrap();
+        let dur_h   = detail.dur_hist.lock().unwrap();
+
+        Self {
+            calls_initiated: snap.calls_initiated,
+            calls_answered:  snap.calls_answered,
+            calls_completed: snap.calls_completed,
+            calls_failed:    snap.calls_failed,
+            calls_timeout:   snap.calls_timeout,
+            duration_secs:   elapsed_secs,
+            asr:             snap.asr,
+            ccr: if snap.calls_initiated > 0 {
+                snap.calls_completed as f64 / snap.calls_initiated as f64 * 100.0
+            } else { 0.0 },
+            actual_cps:   snap.calls_initiated as f64 / elapsed_secs.max(0.001),
+            // 通話時長直方圖單位為 µs → 秒
+            acd_secs:     if snap.calls_completed > 0 { dur_h.mean() / 1_000_000.0 } else { 0.0 },
+            pdd_p50_ms:   us_to_ms(&pdd_h, 0.50),
+            pdd_p95_ms:   us_to_ms(&pdd_h, 0.95),
+            pdd_p99_ms:   us_to_ms(&pdd_h, 0.99),
+            pdd_max_ms:   pdd_h.max() as f64 / 1000.0,
+            setup_p50_ms: us_to_ms(&setup_h, 0.50),
+            setup_p95_ms: us_to_ms(&setup_h, 0.95),
+            setup_p99_ms: us_to_ms(&setup_h, 0.99),
+            setup_max_ms: setup_h.max() as f64 / 1000.0,
+            fail_4xx:     detail.fail_4xx.load(Ordering::Relaxed),
+            fail_5xx:     detail.fail_5xx.load(Ordering::Relaxed),
+            fail_6xx:     detail.fail_6xx.load(Ordering::Relaxed),
+            fail_codes:   detail.fail_codes.lock().unwrap().clone(),
+            mos:              rtp.map(|r| r.mos),
+            loss_rate_pct:    rtp.map(|r| r.loss_rate_pct),
+            jitter_ms:        rtp.map(|r| r.jitter_ms),
+            rtp_sent:         rtp.map(|r| r.sent_packets),
+            rtp_recv:         rtp.map(|r| r.recv_packets),
+            rtp_out_of_order: rtp.map(|r| r.out_of_order),
+        }
+    }
+
     /// 輸出為 JSON 字串
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()

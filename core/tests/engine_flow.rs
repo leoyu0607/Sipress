@@ -427,3 +427,21 @@ async fn lost_bye_is_retransmitted_until_answered() {
     assert!(started.elapsed() < Duration::from_secs(3),
         "應靠 BYE 重傳結束，而非等 BYE 逾時（實際 {:?}）", started.elapsed());
 }
+
+#[tokio::test]
+async fn acd_is_reported_in_seconds() {
+    let (uas, _) = spawn_uas(UasBehavior::Answer).await;
+    let cfg = Config {
+        cps:                10.0,
+        max_total_calls:    Some(2),
+        call_duration_secs: 1,
+        duration_secs:      5,
+        ..test_config(uas)
+    };
+    let report = Engine::new(cfg).run(None).await.unwrap();
+    assert_eq!(report.calls_completed, 2);
+    assert!(
+        report.acd_secs >= 0.9 && report.acd_secs < 1.5,
+        "通話 1 秒，ACD 應約 1 秒（實際 {}）", report.acd_secs
+    );
+}

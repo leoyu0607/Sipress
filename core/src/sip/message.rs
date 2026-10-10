@@ -220,7 +220,7 @@ impl SipMessage {
 /// 建構對伺服器發來請求的 200 OK 回應（RE-INVITE / BYE）
 impl SipMessage {
     /// 從請求訊息中擷取必要標頭（Via / From / To / Call-ID / CSeq）
-    fn extract_request_headers(raw: &str) -> (String, String, String, String, String) {
+    pub(crate) fn extract_request_headers(raw: &str) -> (String, String, String, String, String) {
         let (mut vias, mut from, mut to, mut call_id, mut cseq) =
             (Vec::<String>::new(), String::new(), String::new(), String::new(), String::new());
         for line in raw.lines() {
@@ -285,7 +285,13 @@ impl SipMessage {
     /// 對伺服器發來的請求回應任意狀態（不含 body），鏡射 Via/From/To/Call-ID/CSeq
     /// `status_line` 例："481 Call/Transaction Does Not Exist"
     pub fn response_for_request(raw_request: &str, status_line: &str) -> String {
+        Self::response_with_to_tag(raw_request, status_line, "")
+    }
+
+    /// 同 `response_for_request`，並在 To 尚無 tag 時加上本端 tag（UAS 對 INVITE 的 1xx/最終回應）
+    pub fn response_with_to_tag(raw_request: &str, status_line: &str, to_tag: &str) -> String {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_request);
+        let to = inject_to_tag_if_missing(&to, to_tag);
         format!(
             "SIP/2.0 {status}\r\n\
              {via}\r\n\
@@ -338,46 +344,19 @@ impl SipMessage {
     }
 }
 
-/// 解析 SIP 回應狀態碼與 To tag
+/// To 標頭尚無 tag 時附加 tag（tag 為空字串則原樣回傳）
+pub(crate) fn inject_to_tag_if_missing(to_line: &str, tag: &str) -> String {
+    if tag.is_empty() || to_line.to_lowercase().contains(";tag=") {
+        to_line.to_string()
+    } else {
+        format!("{};tag={}", to_line.trim_end(), tag)
+    }
+}
+
+/// SIP 回應 SDP 解析（一般標頭解析請用 `SipParser`）
 pub struct SipResponse;
 
 impl SipResponse {
-    /// 從原始回應取得狀態碼（例如 200, 100, 180, 4xx, 5xx）
-    pub fn status_code(raw: &str) -> Option<u16> {
-        // SIP/2.0 200 OK
-        let line = raw.lines().next()?;
-        let mut parts = line.splitn(3, ' ');
-        parts.next()?; // "SIP/2.0"
-        parts.next()?.parse().ok()
-    }
-
-    /// 從 To header 取得 tag（200 OK 時軟交換機會加 To tag）
-    pub fn to_tag(raw: &str) -> Option<String> {
-        for line in raw.lines() {
-            let lower = line.to_lowercase();
-            if lower.starts_with("to:") || lower.starts_with("t:") {
-                if let Some(pos) = lower.find(";tag=") {
-                    let tag_start = pos + 5;
-                    let tag = &line[tag_start..];
-                    let tag = tag.split(';').next().unwrap_or(tag).trim();
-                    return Some(tag.to_string());
-                }
-            }
-        }
-        None
-    }
-
-    /// 取得 CSeq method（用來辨別是哪個請求的回應）
-    pub fn cseq_method(raw: &str) -> Option<String> {
-        for line in raw.lines() {
-            if line.to_lowercase().starts_with("cseq:") {
-                let val = line[5..].trim();
-                return val.split_whitespace().nth(1).map(|s| s.to_uppercase());
-            }
-        }
-        None
-    }
-
     /// 從 200 OK 的 SDP body 中解析對端 RTP 地址（IP:port）
     /// 同時解析 c= connection line 與 m=audio port，回傳 "ip:port" 字串。
     /// 若 c= 不存在，以 fallback_ip（SIP server IP）代替。
@@ -440,24 +419,6 @@ impl SipResponse {
 
         rtp_port.map(|p| format!("{}:{}", conn_ip, p))
     }
-
-    /// 從 200 OK 的 SDP body 中解析對端 RTP port（向下相容用，只取 port）
-    pub fn sdp_rtp_port(raw: &str) -> Option<u16> {
-        let body_start = raw.find("\r\n\r\n").map(|i| i + 4)
-            .or_else(|| raw.find("\n\n").map(|i| i + 2))?;
-        let body = &raw[body_start..];
-        for line in body.lines() {
-            if line.trim().starts_with("m=audio") || line.trim().starts_with("m=") {
-                let parts: Vec<&str> = line.splitn(4, ' ').collect();
-                if parts.len() >= 2 {
-                    if let Ok(port) = parts[1].parse::<u16>() {
-                        return Some(port);
-                    }
-                }
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -511,12 +472,6 @@ mod tests {
                    m=audio 16000 RTP/AVP 8\r\n";
         let addr = SipResponse::sdp_rtp_addr(raw, "10.1.1.1");
         assert_eq!(addr, Some("10.1.1.1:16000".to_string()));
-    }
-
-    #[test]
-    fn sdp_rtp_port_basic() {
-        let raw = "SIP/2.0 200 OK\r\n\r\nm=audio 18000 RTP/AVP 8\r\n";
-        assert_eq!(SipResponse::sdp_rtp_port(raw), Some(18000));
     }
 
     // ─── SIP message construction ────────────────────────────────
