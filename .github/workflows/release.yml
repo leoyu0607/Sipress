@@ -1,0 +1,232 @@
+name: Release
+
+# 發佈：git tag v0.2.0 && git push origin v0.2.0
+# 試跑：Actions → Release → Run workflow，tag 留空 → 只建置，檔案存為 workflow artifact
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要發佈的既有 tag（例如 v0.2.0）；留空 = 只建置不發佈（試跑）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+  GH_TOKEN: ${{ github.token }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      publish:    ${{ steps.mode.outputs.publish }}
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
+
+      - name: Determine mode
+        id: mode
+        run: |
+          if [[ -n "$TAG" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "發佈 ${TAG}"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "試跑：只建置，不建立 release"
+          fi
+
+      # tag 必須與所有版本號一致，避免發佈的檔案版本與 tag 不符
+      - name: Verify versions match tag
+        if: steps.mode.outputs.publish == 'true'
+        run: |
+          want="${TAG#v}"
+          fail=0
+          check() {
+            if [[ "$2" != "$want" ]]; then
+              echo "::error file=${1}::版本 ${2} 與 tag ${TAG} 不符（應為 ${want}）"
+              fail=1
+            else
+              echo "${1}: ${2} ✓"
+            fi
+          }
+          check cli/Cargo.toml           "$(grep -m1 '^version' cli/Cargo.toml | cut -d'"' -f2)"
+          check gui/src-tauri/Cargo.toml "$(grep -m1 '^version' gui/src-tauri/Cargo.toml | cut -d'"' -f2)"
+          check gui/src-tauri/tauri.conf.json "$(jq -r .version gui/src-tauri/tauri.conf.json)"
+          check gui/package.json         "$(jq -r .version gui/package.json)"
+          exit $fail
+
+      # 先建立草稿：所有檔案上傳成功後才由 publish job 正式發佈；重跑時沿用既有草稿
+      - name: Create draft release
+        id: release
+        if: steps.mode.outputs.publish == 'true'
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "sipress $TAG" --generate-notes
+          fi
+          if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]]; then
+            echo "::error::${TAG} 的 release 已發佈；要重新發佈請先刪除該 release"
+            exit 1
+          fi
+          echo "id=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p sipress-core -p sipress
+
+  cli:
+    name: CLI ${{ matrix.asset }}
+    needs: [prepare, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl 靜態連結（.cargo/config.toml 指定 rust-lld，不需 C toolchain）
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  asset: sipress-linux-x86_64,      smoke: true }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, asset: sipress-linux-arm64,       smoke: false }
+          - { os: macos-latest,   target: aarch64-apple-darwin,       asset: sipress-macos-arm64,       smoke: true }
+          - { os: macos-latest,   target: x86_64-apple-darwin,        asset: sipress-macos-x86_64,      smoke: true }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,     asset: sipress-windows-x86_64.exe, smoke: true }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p sipress --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p out
+          bin="target/${{ matrix.target }}/release/sipress"
+          [[ "${{ matrix.target }}" == *windows* ]] && bin="$bin.exe"
+          cp "$bin" "out/${{ matrix.asset }}"
+          cd out
+          if command -v sha256sum > /dev/null; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+          cat "${{ matrix.asset }}.sha256"
+
+      # 確認產出的執行檔可在該平台執行（arm64 Linux 為交叉編譯，無法在 runner 上執行）
+      - name: Smoke test
+        if: matrix.smoke
+        run: ./out/${{ matrix.asset }} --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.asset }}
+          path: out/*
+
+      - name: Upload to release
+        if: needs.prepare.outputs.publish == 'true'
+        run: gh release upload "$TAG" out/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  gui:
+    name: GUI ${{ matrix.label }}
+    needs: [prepare, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   label: macos-arm64,    target: aarch64-apple-darwin,     args: '--target aarch64-apple-darwin' }
+          - { os: macos-latest,   label: macos-x86_64,   target: x86_64-apple-darwin,      args: '--target x86_64-apple-darwin' }
+          - { os: windows-latest, label: windows-x86_64, target: '',                       args: '' }
+          # 22.04 的 glibc 較舊，AppImage / deb 可在較多發行版上執行
+          - { os: ubuntu-22.04,   label: linux-x86_64,   target: '',                       args: '' }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.sha }}
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.label }}
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+
+      # 有 releaseId 時打包並上傳至草稿 release；試跑時只打包
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: gui
+          args: ${{ matrix.args }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-${{ matrix.label }}
+          if-no-files-found: error
+          path: |
+            target/**/release/bundle/dmg/*.dmg
+            target/**/release/bundle/msi/*.msi
+            target/**/release/bundle/nsis/*.exe
+            target/**/release/bundle/deb/*.deb
+            target/**/release/bundle/appimage/*.AppImage
+
+  publish:
+    name: Publish release
+    needs: [prepare, cli, gui]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish draft
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

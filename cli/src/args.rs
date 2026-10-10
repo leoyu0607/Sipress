@@ -5,7 +5,7 @@ use clap::Parser;
 #[command(
     name    = "sipress",
     about   = "SIP 軟體交換機壓測工具",
-    version = "0.1.0",
+    version,  // 取自 Cargo.toml，release 時只需改 Cargo.toml / tauri.conf.json
     long_about = None,
 )]
 pub struct Args {
