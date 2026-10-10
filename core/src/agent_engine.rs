@@ -14,7 +14,7 @@
 use crate::config::{AgentAccount, Config};
 use crate::engine::ProgressCallback;
 use crate::rtp::session::{RtpSession, RtpSessionConfig};
-use crate::rtp::stats::{aggregate_snapshots, RtpStatsSnapshot};
+use crate::rtp::stats::{aggregate_snapshots, RtpStats, RtpStatsSnapshot};
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
     SipMessage, SipParser, SipResponse,
@@ -84,9 +84,8 @@ impl AgentEngine {
         // RTP port 計數器（所有 runner 共用）
         let rtp_port_counter = Arc::new(Mutex::new(cfg.rtp_base_port));
 
-        // 所有活躍 RTP sessions（用於即時品質聚合）
-        let rtp_sessions: Arc<Mutex<Vec<Arc<crate::rtp::stats::RtpStats>>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        // RTP 統計登記表（進行中 → 即時品質；已結束 → 最終報告）
+        let rtp_registry: SharedRtpRegistry = Arc::default();
 
         // ── 進度回報 task ──
         let engine_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -95,7 +94,7 @@ impl AgentEngine {
             let finished  = Arc::clone(&engine_finished);
             let duration  = cfg.duration_secs as f64;
             let unlimited = cfg.duration_secs == 0;
-            let sessions  = Arc::clone(&rtp_sessions);
+            let registry  = Arc::clone(&rtp_registry);
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(1));
                 loop {
@@ -103,11 +102,8 @@ impl AgentEngine {
                     let elapsed = start.elapsed().as_secs_f64();
                     let progress = if unlimited { 0.0 } else { (elapsed / duration).min(1.0) };
 
-                    // 聚合即時 RTP 品質
-                    let rtp_agg = {
-                        let sessions = sessions.lock().await;
-                        aggregate_rtp_stats(&sessions)
-                    };
+                    // 聚合即時 RTP 品質（只含進行中的通話）
+                    let rtp_agg = registry.lock().await.live_aggregate();
 
                     let mut snap = live2.snapshot();
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
@@ -136,10 +132,10 @@ impl AgentEngine {
             let log       = Arc::clone(&sip_log);
             let stop_rx   = self.stop_tx.subscribe();
             let port_ctr  = Arc::clone(&rtp_port_counter);
-            let sessions  = Arc::clone(&rtp_sessions);
+            let registry  = Arc::clone(&rtp_registry);
             let h = tokio::spawn(async move {
                 if let Err(e) = account_runner(
-                    acc, server, cfg, live, detail_r, log, stop_rx, port_ctr, sessions,
+                    acc, server, cfg, live, detail_r, log, stop_rx, port_ctr, registry,
                 ).await {
                     eprintln!("[sipress agent] runner 結束: {}", e);
                 }
@@ -167,11 +163,8 @@ impl AgentEngine {
 
         engine_finished.store(true, std::sync::atomic::Ordering::Relaxed);
 
-        // ── 收集 RTP 統計 ──
-        let rtp_final = {
-            let sessions = rtp_sessions.lock().await;
-            aggregate_rtp_stats(&sessions)
-        };
+        // ── 收集 RTP 統計（已結束 + 收尾時仍在進行的通話）──
+        let rtp_final = rtp_registry.lock().await.final_aggregate();
 
         // ── 產生最終報告 ──
         let snap = live.snapshot();
@@ -234,9 +227,46 @@ impl AgentEngine {
     }
 }
 
-fn aggregate_rtp_stats(stats_list: &[Arc<crate::rtp::stats::RtpStats>]) -> Option<RtpStatsSnapshot> {
-    let snaps: Vec<_> = stats_list.iter().map(|s| s.snapshot()).collect();
-    aggregate_snapshots(&snaps)
+/// 所有 runner 共用的 RTP 統計登記表
+#[derive(Default)]
+struct RtpRegistry {
+    /// 進行中通話（Call-ID → 即時統計），用於即時品質聚合
+    active:   HashMap<String, Arc<RtpStats>>,
+    /// 已結束通話的最終快照，用於最終報告
+    finished: Vec<RtpStatsSnapshot>,
+}
+
+type SharedRtpRegistry = Arc<Mutex<RtpRegistry>>;
+
+impl RtpRegistry {
+    /// 即時品質：只聚合進行中的通話
+    fn live_aggregate(&self) -> Option<RtpStatsSnapshot> {
+        let snaps: Vec<_> = self.active.values().map(|s| s.snapshot()).collect();
+        aggregate_snapshots(&snaps)
+    }
+
+    /// 最終報告：已結束通話 + 仍在進行的通話
+    fn final_aggregate(&self) -> Option<RtpStatsSnapshot> {
+        let mut snaps = self.finished.clone();
+        snaps.extend(self.active.values().map(|s| s.snapshot()));
+        aggregate_snapshots(&snaps)
+    }
+}
+
+/// 停止通話的 RTP session，將最終統計移入登記表的已結束列表
+async fn stop_call_rtp(
+    call_id:  &str,
+    ctx:      &mut DialogCtx,
+    registry: &Mutex<RtpRegistry>,
+    live:     &LiveStats,
+) {
+    if let Some(rtp) = ctx.rtp_session.take() {
+        let snap = rtp.stop();
+        let mut reg = registry.lock().await;
+        reg.active.remove(call_id);
+        reg.finished.push(snap);
+        live.on_rtp_stop();
+    }
 }
 
 // ─── 單一帳號 runner ──────────────────────────────────────────────
@@ -267,7 +297,7 @@ async fn account_runner(
     log:          Arc<SipLogger>,
     mut stop:     watch::Receiver<bool>,
     port_counter: Arc<Mutex<u16>>,
-    rtp_sessions: Arc<Mutex<Vec<Arc<crate::rtp::stats::RtpStats>>>>,
+    rtp_registry: SharedRtpRegistry,
 ) -> Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
     sock.connect(server).await?;
@@ -343,7 +373,7 @@ async fn account_runner(
                     let needs_reregister = handle_request(
                         &raw, &sock, &log, &local_addr, &local_ip,
                         &account, &cfg, &live, &detail, Arc::clone(&dialogs),
-                        &port_counter, &rtp_sessions,
+                        &port_counter, &rtp_registry,
                     ).await;
                     if needs_reregister {
                         trigger_re_register(
@@ -397,10 +427,7 @@ async fn account_runner(
                         );
                         log.log_message(Direction::Send, &bye, &server.to_string());
                         let _ = sock.send(bye.as_bytes()).await;
-                        // 停止 RTP
-                        if let Some(rtp) = ctx.rtp_session.take() {
-                            rtp.stop();
-                        }
+                        stop_call_rtp(&call_id, &mut ctx, &rtp_registry, &live).await;
                         detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                         live.on_completed();
                         // 通話結束後 re-REGISTER 維持在線
@@ -419,10 +446,8 @@ async fn account_runner(
                 // 停止所有 RTP sessions
                 {
                     let mut dlgs = dialogs.lock().await;
-                    for (_, ctx) in dlgs.iter_mut() {
-                        if let Some(rtp) = ctx.rtp_session.take() {
-                            rtp.stop();
-                        }
+                    for (call_id, ctx) in dlgs.iter_mut() {
+                        stop_call_rtp(call_id, ctx, &rtp_registry, &live).await;
                     }
                 }
                 let mut st = reg_state.lock().await;
@@ -602,7 +627,7 @@ async fn handle_request(
     detail:       &DetailedStats,
     dialogs:      Arc<Mutex<HashMap<String, DialogCtx>>>,
     port_counter: &Arc<Mutex<u16>>,
-    rtp_sessions: &Arc<Mutex<Vec<Arc<crate::rtp::stats::RtpStats>>>>,
+    rtp_registry: &SharedRtpRegistry,
 ) -> bool {
     let method = raw.lines().next()
         .and_then(|l| l.split_whitespace().next())
@@ -642,7 +667,7 @@ async fn handle_request(
                 log.log_event(&account.extension, &format!("[{}] 回應 RE-INVITE", short(&call_id)));
             } else {
                 // ── 新通話：100 Trying → 180 Ringing → 200 OK + SDP ──
-                let invite_recv_at = Instant::now();
+                // 座席端立即自動接聽，PDD / 建立時間只會量到本機處理時間，故不記錄
                 live.on_invite();
 
                 let local_to_tag = SipMessage::new_tag();
@@ -655,7 +680,6 @@ async fn handle_request(
                 log.log_message(Direction::Send, &trying, "server");
                 let _ = sock.send(trying.as_bytes()).await;
 
-                detail.record_pdd(invite_recv_at.elapsed().as_secs_f64() * 1000.0);
 
                 // 180 Ringing
                 let ringing = build_response_no_body(raw, "180 Ringing", &local_to_tag);
@@ -686,7 +710,6 @@ async fn handle_request(
                 let _ = sock.send(ok.as_bytes()).await;
 
                 let answered_at = Instant::now();
-                detail.record_setup(answered_at.duration_since(invite_recv_at).as_secs_f64() * 1000.0);
                 live.on_answered();
 
                 // 啟動 RTP session（若啟用且有遠端地址）
@@ -702,8 +725,10 @@ async fn handle_request(
                         };
                         match RtpSession::start(rtp_cfg, Arc::clone(port_counter), pre_bound).await {
                             Ok(session) => {
-                                // 將 stats 加入全域列表（用於即時品質聚合）
-                                rtp_sessions.lock().await.push(Arc::clone(&session.stats));
+                                // 登記為進行中（用於即時品質聚合）
+                                rtp_registry.lock().await.active
+                                    .insert(call_id.clone(), Arc::clone(&session.stats));
+                                live.on_rtp_start();
                                 log.log_event(&account.extension,
                                     &format!("[{}] RTP 啟動 port={} → {}", short(&call_id), rtp_port, remote_addr));
                                 Some(session)
@@ -748,9 +773,7 @@ async fn handle_request(
 
             let mut dlgs = dialogs.lock().await;
             if let Some(mut ctx) = dlgs.remove(&call_id) {
-                if let Some(rtp) = ctx.rtp_session.take() {
-                    rtp.stop();
-                }
+                stop_call_rtp(&call_id, &mut ctx, rtp_registry, live).await;
                 detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                 live.on_completed();
                 log.log_event(&account.extension, &format!("[{}] 通話結束 → re-REGISTER", short(&call_id)));
@@ -758,19 +781,17 @@ async fn handle_request(
             }
         }
         "CANCEL" => {
-            let ok = SipMessage::ok_for_server_bye(raw);
-            log.log_message(Direction::Send, &ok, "server");
-            let _ = sock.send(ok.as_bytes()).await;
-            let mut dlgs = dialogs.lock().await;
-            if let Some(mut ctx) = dlgs.remove(&call_id) {
-                if let Some(rtp) = ctx.rtp_session.take() {
-                    rtp.stop();
-                }
-                let resp = build_response_no_body(&ctx.invite_raw, "487 Request Terminated", &ctx.local_to_tag);
-                log.log_message(Direction::Send, &resp, "server");
-                let _ = sock.send(resp.as_bytes()).await;
-                detail.record_fail_code(487);
-                live.on_failed();
+            // 座席收到 INVITE 即同步回 200 OK，CANCEL 到達時 INVITE transaction 必定已完成：
+            // 依 RFC 3261 §9.2，CANCEL 回 200 OK 但不影響已建立的通話（由後續 BYE 結束）；
+            // 找不到對應通話則回 481
+            let known = dialogs.lock().await.contains_key(&call_id);
+            let status = if known { "200 OK" } else { "481 Call/Transaction Does Not Exist" };
+            let resp = SipMessage::response_for_request(raw, status);
+            log.log_message(Direction::Send, &resp, "server");
+            let _ = sock.send(resp.as_bytes()).await;
+            if known {
+                log.log_event(&account.extension,
+                    &format!("[{}] 已接聽後收到 CANCEL，忽略（等待 BYE）", short(&call_id)));
             }
         }
         "OPTIONS" => {
