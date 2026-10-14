@@ -115,7 +115,7 @@ export type TestStatus = 'idle' | 'running' | 'done' | 'error'
 export type SeriesKey = 'cps' | 'conc' | 'asr' | 'ccr' | 'pdd' | 'fail' | 'mos'
 
 // Rust StatsSnapshot shape
-interface RustSnapshot {
+export interface RustSnapshot {
   calls_initiated:  number
   calls_answered:   number
   calls_completed:  number
@@ -138,7 +138,7 @@ interface RustSnapshot {
 }
 
 // Rust FinalReport shape (subset we use)
-interface RustReport {
+export interface RustReport {
   calls_initiated:  number
   calls_answered:   number
   calls_completed:  number
@@ -160,7 +160,7 @@ interface RustReport {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const MAX_SERIES  = 90
+export const MAX_SERIES  = 90
 const MAX_LOG     = 300
 const STORAGE_KEY = 'sipress-config'
 

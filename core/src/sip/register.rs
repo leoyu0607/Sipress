@@ -79,7 +79,7 @@ impl DigestChallenge {
         for line in raw.lines() {
             let lower = line.to_lowercase();
             if lower.starts_with("www-authenticate:") || lower.starts_with("proxy-authenticate:") {
-                let val = line.splitn(2, ':').nth(1)?.trim();
+                let val = line.split_once(':')?.1.trim();
                 auth_value = val.to_string();
                 joining = true;
                 proxy = lower.starts_with("proxy-authenticate:");

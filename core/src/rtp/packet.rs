@@ -1,5 +1,5 @@
-/// RTP 封包（RFC 3550）
-/// 僅實作壓測所需的最小欄位集合
+//! RTP 封包（RFC 3550）
+//! 僅實作壓測所需的最小欄位集合
 
 /// RTP 固定 header 大小（bytes）
 pub const RTP_HEADER_SIZE: usize = 12;

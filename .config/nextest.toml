@@ -1,0 +1,14 @@
+# cargo-nextest 設定（CI 使用 --profile ci）
+# 本機一樣可用：cargo nextest run -p sipress-core -p sipress
+
+[profile.ci]
+# 網路 / 計時相關的測試在共享 runner 上偶爾受排程影響：失敗自動重試 2 次，
+# 重試後才通過的測試會在報告中標示為 FLAKY，不會被隱藏
+retries = 2
+fail-fast = false
+# 單一測試超過 30 秒標示為 slow，120 秒強制終止（避免卡死的測試拖垮整個 job）
+slow-timeout = { period = "30s", terminate-after = 4 }
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"

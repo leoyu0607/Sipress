@@ -171,7 +171,7 @@ impl DetailedStats {
     /// 目前為止的平均 PDD（ms）；尚無樣本時回傳 None
     pub fn pdd_mean_ms(&self) -> Option<f64> {
         let h = self.pdd_hist.lock().ok()?;
-        (h.len() > 0).then(|| h.mean() / 1000.0)
+        (!h.is_empty()).then(|| h.mean() / 1000.0)
     }
 
     /// 記錄通話建立時間（ms → µs）

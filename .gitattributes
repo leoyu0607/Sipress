@@ -1,0 +1,2 @@
+# 前端 ↔ Rust 契約 fixtures：vitest 以字串逐字比對，跨平台固定 LF
+gui/contract/** text eol=lf

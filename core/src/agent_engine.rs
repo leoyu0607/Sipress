@@ -552,7 +552,7 @@ async fn handle_response(
                     if let Err(e) = send_register(
                         sock, log, server_addr_str, local_addr,
                         account, reg_from_tag, reg_call_id, transport_str,
-                        *current_expires, Some(&auth), &mut *st,
+                        *current_expires, Some(&auth), &mut st,
                     ).await {
                         log.log_event(&account.extension, &format!("認證重送失敗: {}", e));
                     }
@@ -811,7 +811,7 @@ fn build_response_with_sdp(raw_request: &str, status_line: &str, to_tag: &str,
 fn build_bye_from_dialog(invite_raw: &str, local_to_tag: &str, remote_from_tag: &str,
                           local_addr: &str, account: &AgentAccount) -> String {
     let (_, from, _to, call_id_line, _) = SipMessage::extract_request_headers(invite_raw);
-    let call_id_val = call_id_line.splitn(2, ':').nth(1)
+    let call_id_val = call_id_line.split_once(':').map(|x| x.1)
         .map(|s| s.trim()).unwrap_or("");
     let remote_uri = extract_uri(&from).unwrap_or_default();
     let my_uri = format!("sip:{}@{}", account.extension, local_addr);

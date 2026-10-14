@@ -3,17 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// CPS 負載模式
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum CpsPattern {
+    #[default]
     Flat,
     Ramp { start: f64, end: f64 },
     Step { levels: Vec<CpsStep> },
     Spike { base: f64, peak: f64, spike_at_pct: f64, spike_duration_secs: u64 },
-}
-
-impl Default for CpsPattern {
-    fn default() -> Self { Self::Flat }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,15 +52,12 @@ impl CpsPattern {
 }
 
 /// 音訊 Codec
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Codec {
+    #[default]
     Pcma,
     Pcmu,
-}
-
-impl Default for Codec {
-    fn default() -> Self { Self::Pcma }
 }
 
 impl Codec {
@@ -90,19 +84,14 @@ impl Codec {
 }
 
 /// 壓測模式：民眾端（主動撥出）vs 座席端（接聽）
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// 民眾端：壓測程式主動發 INVITE
+    #[default]
     Caller,
     /// 座席端：模擬 SIP 話機，REGISTER 後等待來電並自動接聽
     Agent,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Self::Caller
-    }
 }
 
 /// 座席帳號
@@ -115,17 +104,12 @@ pub struct AgentAccount {
 }
 
 /// 傳輸層協定
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
+    #[default]
     Udp,
     Tcp,
-}
-
-impl Default for Transport {
-    fn default() -> Self {
-        Self::Udp
-    }
 }
 
 impl std::fmt::Display for Transport {

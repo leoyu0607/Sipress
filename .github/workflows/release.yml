@@ -128,10 +128,12 @@ jobs:
         run: cargo build --release --locked -p sipress --target ${{ matrix.target }}
 
       - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           mkdir -p out
-          bin="target/${{ matrix.target }}/release/sipress"
-          [[ "${{ matrix.target }}" == *windows* ]] && bin="$bin.exe"
+          bin="target/${TARGET}/release/sipress"
+          [[ "$TARGET" == *windows* ]] && bin="$bin.exe"
           cp "$bin" "out/${{ matrix.asset }}"
           cd out
           if command -v sha256sum > /dev/null; then

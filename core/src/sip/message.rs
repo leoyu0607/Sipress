@@ -6,6 +6,7 @@ pub struct SipMessage;
 
 impl SipMessage {
     /// 建構 INVITE 請求
+    #[allow(clippy::too_many_arguments)]
     pub fn invite(
         call_id:      &str,
         from_number:  &str,
@@ -57,6 +58,7 @@ impl SipMessage {
     ///
     /// `request_uri`: 2xx ACK 應使用 Contact URI（RFC 3261 §13.2.2.4）；
     ///                non-2xx ACK 傳 None，回退使用 sip:{to}@{server}。
+    #[allow(clippy::too_many_arguments)]
     pub fn ack(
         call_id:     &str,
         from_number: &str,
@@ -103,6 +105,7 @@ impl SipMessage {
     ///
     /// `request_uri`: 應傳入 200 OK Contact URI（RFC 3261 §12.2.1.1）；
     ///                None 時回退使用 sip:{to}@{server}。
+    #[allow(clippy::too_many_arguments)]
     pub fn bye(
         call_id:     &str,
         from_number: &str,
@@ -146,6 +149,7 @@ impl SipMessage {
     }
 
     /// 建構 CANCEL
+    #[allow(clippy::too_many_arguments)]
     pub fn cancel(
         call_id:     &str,
         from_number: &str,

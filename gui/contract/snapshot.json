@@ -1,0 +1,18 @@
+{
+  "asr": 75.0,
+  "calls_answered": 30,
+  "calls_completed": 20,
+  "calls_concurrent": 14,
+  "calls_failed": 4,
+  "calls_initiated": 40,
+  "calls_timeout": 2,
+  "error_rate": 15.0,
+  "finished": false,
+  "pdd_avg_ms": 150.0,
+  "rtp_jitter_ms": 12.5,
+  "rtp_loss_pct": 0.5,
+  "rtp_mos": 4.1,
+  "rtp_recv_packets": 4975,
+  "rtp_sent_packets": 5000,
+  "rtp_sessions": 10
+}

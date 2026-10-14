@@ -263,4 +263,113 @@ mod tests {
         assert_eq!(snap.calls_initiated, 7, "既有的即時數據應保留");
         assert!(state.report.lock().unwrap().is_some());
     }
+
+    // ── 前端 ↔ Rust 資料契約 ───────────────────────────────────────
+    // fixtures 位於 gui/contract/，與前端 vitest 共用：
+    //   config-*.json        前端 buildRustConfig() 的輸出（由 vitest 產生）→ 這裡驗證 Rust 能正確解析
+    //   snapshot/report.json Rust 輸出的範例（由這裡產生）→ vitest 餵給 store 驗證欄位對應
+
+    use serde_json::Value;
+    use sipress_core::{rtp::stats::RtpStatsSnapshot, stats::{DetailedStats, LiveStats}};
+    use std::path::PathBuf;
+
+    fn contract_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../contract")
+    }
+
+    /// 比對 Rust 的序列化結果與 fixture；設定 UPDATE_CONTRACT=1 時改為重新產生
+    fn check_fixture(name: &str, actual: Value) {
+        let path = contract_dir().join(name);
+        if std::env::var_os("UPDATE_CONTRACT").is_some() {
+            std::fs::write(&path, serde_json::to_string_pretty(&actual).unwrap() + "\n").unwrap();
+            return;
+        }
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("讀取 {} 失敗：{}", path.display(), e));
+        let expected: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            expected, actual,
+            "gui/contract/{} 與 Rust 輸出不一致。若是刻意變更欄位，請執行 \
+             `UPDATE_CONTRACT=1 cargo test -p sipress-gui` 重新產生，並同步更新前端型別與 vitest",
+            name
+        );
+    }
+
+    /// 前端送出的每個欄位都必須是 Rust 認得的（serde 預設會默默忽略未知欄位，拼錯不會報錯）
+    fn assert_known_keys(sent: &Value, known: &Value, path: &str) {
+        match (sent, known) {
+            (Value::Object(s), Value::Object(k)) => {
+                for (key, v) in s {
+                    let kv = k.get(key)
+                        .unwrap_or_else(|| panic!("{}.{} 不是 Rust Config 的欄位（會被忽略）", path, key));
+                    assert_known_keys(v, kv, &format!("{}.{}", path, key));
+                }
+            }
+            (Value::Array(s), Value::Array(k)) => {
+                for (i, (sv, kv)) in s.iter().zip(k).enumerate() {
+                    assert_known_keys(sv, kv, &format!("{}[{}]", path, i));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn gui_config_payloads_deserialize_into_rust_config() {
+        let mut checked = 0;
+        for entry in std::fs::read_dir(contract_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !(name.starts_with("config-") && name.ends_with(".json")) {
+                continue;
+            }
+            let sent: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let cfg: Config = serde_json::from_value(sent.clone())
+                .unwrap_or_else(|e| panic!("{} 無法解析為 Config：{}", name, e));
+            cfg.validate().unwrap_or_else(|e| panic!("{} 未通過 Config::validate：{}", name, e));
+            assert_known_keys(&sent, &serde_json::to_value(&cfg).unwrap(), &name);
+            checked += 1;
+        }
+        assert!(checked >= 5, "gui/contract 應有前端產生的 config-*.json（目前 {} 個）", checked);
+    }
+
+    #[test]
+    fn snapshot_fixture_matches_rust_output() {
+        let live = LiveStats::default();
+        for _ in 0..40 { live.on_invite(); }
+        for _ in 0..30 { live.on_answered(); }
+        for _ in 0..20 { live.on_completed(); }
+        for _ in 0..4  { live.on_failed(); }
+        for _ in 0..2  { live.on_timeout(); }
+        for _ in 0..10 { live.on_rtp_start(); }
+        let mut snap = live.snapshot();
+        snap.rtp_mos          = Some(4.1);
+        snap.rtp_loss_pct     = Some(0.5);
+        snap.rtp_jitter_ms    = Some(12.5);
+        snap.rtp_sent_packets = Some(5000);
+        snap.rtp_recv_packets = Some(4975);
+        snap.pdd_avg_ms       = Some(150.0);
+        check_fixture("snapshot.json", serde_json::to_value(&snap).unwrap());
+    }
+
+    #[test]
+    fn report_fixture_matches_rust_output() {
+        let live = LiveStats::default();
+        for _ in 0..40 { live.on_invite(); }
+        for _ in 0..30 { live.on_answered(); }
+        for _ in 0..30 { live.on_completed(); }
+        for _ in 0..8  { live.on_failed(); }
+        for _ in 0..2  { live.on_timeout(); }
+        let detail = DetailedStats::default();
+        for ms in [100.0, 150.0, 200.0] { detail.record_pdd(ms); }
+        for ms in [300.0, 400.0] { detail.record_setup(ms); }
+        for s in [20.0, 40.0] { detail.record_duration(s); }
+        for code in [486, 486, 486, 486, 486, 503, 503, 404] { detail.record_fail_code(code); }
+        let rtp = RtpStatsSnapshot {
+            sent_packets: 9000, recv_packets: 8900, lost_packets: 100, loss_rate_pct: 1.1,
+            jitter_ms: 8.0, mos: 3.9, out_of_order: 3, duplicates: 1,
+        };
+        let report = FinalReport::build(&live.snapshot(), &detail, 20.0, Some(&rtp));
+        check_fixture("report.json", serde_json::to_value(&report).unwrap());
+    }
 }

@@ -1,5 +1,5 @@
-/// SIP 回應解析器
-/// 處理常見 header 縮寫（t: = To:, v: = Via: 等）
+//! SIP 回應解析器
+//! 處理常見 header 縮寫（t: = To:, v: = Via: 等）
 
 pub struct SipParser;
 

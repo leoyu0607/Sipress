@@ -1,0 +1,31 @@
+{
+  "server_addr": "192.168.166.60:5066",
+  "local_addr": null,
+  "local_domain": null,
+  "caller_number": "0938530031",
+  "callee_prefix": "2",
+  "callee_range": 9999,
+  "callee_fixed": "0912345678",
+  "cps": 10,
+  "cps_pattern": {
+    "type": "ramp",
+    "start": 2,
+    "end": 40
+  },
+  "max_concurrent_calls": 100,
+  "max_total_calls": 500,
+  "duration_secs": 120,
+  "call_duration_secs": 0,
+  "invite_timeout_secs": 8,
+  "transport": "tcp",
+  "logs_dir": "logs",
+  "rtp_base_port": 16000,
+  "audio_file": "C:/audio/prompt 1.wav",
+  "codec": "pcmu",
+  "enable_rtp": true,
+  "dtmf_sequence": "123#",
+  "mode": "caller",
+  "agent_accounts": [],
+  "agent_ack_timeout_secs": 10,
+  "agent_bye_timeout_secs": 150
+}

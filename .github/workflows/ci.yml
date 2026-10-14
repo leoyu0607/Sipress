@@ -1,10 +1,20 @@
 name: CI
 
+# 關卡（ci-success 彙整，可設為 branch protection 的 required check）：
+#   lint      clippy（警告即失敗）+ workflow 語法檢查
+#   test      core / CLI 單元、流程、CLI 端到端測試（Linux / macOS / Windows）
+#   frontend  型別檢查 + vitest（store 邏輯、前端 ↔ Rust 契約 fixtures）+ 建置
+#   gui       Tauri 後端 clippy + 測試（含契約 fixtures 驗證）
+# 資訊性（不擋合併）：
+#   coverage  覆蓋率摘要
+#   audit     相依套件弱點掃描（另外每週排程執行一次）
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 1'   # 每週一 01:00 UTC：抓 toolchain / 相依套件更新造成的問題
 
 permissions:
   contents: read
@@ -16,11 +26,44 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # clippy 固定版本：新版 Rust 會加入新 lint，避免與程式碼無關的 CI 失敗；升級時改這裡並修正新警告
+  LINT_TOOLCHAIN: '1.95.0'
+  NODE_VERSION: '22'
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  core:
-    name: core + CLI (${{ matrix.os }})
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LINT_TOOLCHAIN }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # sipress-gui 需要前端建置產物，於 gui job 檢查
+      - name: Clippy (core + CLI)
+        run: cargo clippy -p sipress-core -p sipress --all-targets --locked -- -D warnings
+
+      - name: Lint workflows (actionlint)
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  test:
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -32,17 +75,79 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # 單元測試 + loopback mock SIP server 的流程測試
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # 單元測試 + loopback mock SIP server 流程測試 + CLI 端到端測試
+      # （失敗自動重試、逾時終止、JUnit 報告：見 .config/nextest.toml）
       - name: Test
-        run: cargo test -p sipress-core -p sipress
+        run: cargo nextest run -p sipress-core -p sipress --locked --profile ci
+
+      # nextest 不執行 doctest
+      - name: Doc tests
+        run: cargo test -p sipress-core --doc --locked
 
       # 確保 benchmark 範例仍可編譯
       - name: Build examples
-        run: cargo build -p sipress-core --examples
+        run: cargo build -p sipress-core --examples --locked
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check (vue-tsc)
+        run: npm run typecheck
+
+      # CI 環境下 vitest 不會改寫 fixtures：gui/contract 與程式不一致即失敗
+      - name: Unit & contract tests (vitest)
+        run: npm test
+
+      - name: Contract fixtures are committed
+        run: |
+          if [[ -n "$(git status --porcelain contract)" ]]; then
+            git status --porcelain contract
+            echo "::error::gui/contract 有未 commit 的變更：請在本機執行 npm test -- -u 並 commit 更新後的 fixtures"
+            exit 1
+          fi
+
+      - name: Build
+        run: npx vite build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: gui/dist
+          retention-days: 1
 
   gui:
-    name: GUI (Tauri)
+    name: GUI backend (Tauri)
+    needs: frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -59,22 +164,89 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             patchelf
 
-      - uses: actions/setup-node@v4
+      # tauri::generate_context! 需要前端建置產物
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
+          name: frontend-dist
+          path: gui/dist
 
-      # vue-tsc 型別檢查 + vite build，產生 Tauri 需要的 gui/dist
-      - name: Build frontend
-        working-directory: gui
-        run: |
-          npm ci
-          npm run build
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LINT_TOOLCHAIN }}
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Test GUI backend
-        run: cargo test -p sipress-gui
+      - name: Clippy
+        run: cargo clippy -p sipress-gui --all-targets --locked -- -D warnings
+
+      # 含前端 ↔ Rust 契約：config-*.json 可被 Config 解析；snapshot / report fixtures 與 Rust 輸出一致
+      - name: Test
+        run: cargo test -p sipress-gui --locked
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+
+      - name: Measure
+        run: cargo llvm-cov nextest -p sipress-core -p sipress --locked --profile ci --lcov --output-path lcov.info
+
+      - name: Summary
+        run: |
+          {
+            echo '## Rust 覆蓋率（core + CLI）'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: npm audit
+        working-directory: gui
+        run: npm audit --audit-level=high
+
+  # 彙整關卡：任一必要 job 失敗或被取消即失敗
+  ci-success:
+    name: CI passed
+    if: always()
+    needs: [lint, test, frontend, gui]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null

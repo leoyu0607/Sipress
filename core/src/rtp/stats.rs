@@ -1,5 +1,5 @@
-/// RTP 品質統計
-/// 實作 RFC 3550 §A.8 jitter 計算 + E-Model MOS 估算
+//! RTP 品質統計
+//! 實作 RFC 3550 §A.8 jitter 計算 + E-Model MOS 估算
 
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -104,7 +104,7 @@ impl RtpStats {
                 let recv_diff_8k = ((recv_us.wrapping_sub(prev_us)) as f64
                     / 1_000_000.0 * 8000.0) as i64;
                 let rtp_diff = rtp_ts.wrapping_sub(prev_ts) as i64;
-                let d = (recv_diff_8k - rtp_diff).unsigned_abs() as u64;
+                let d = (recv_diff_8k - rtp_diff).unsigned_abs();
                 let j = self.jitter_x16_us.load(Ordering::Relaxed);
                 let new_j = j.saturating_add(d).saturating_sub(j / 16);
                 self.jitter_x16_us.store(new_j, Ordering::Relaxed);
@@ -259,7 +259,7 @@ pub fn estimate_mos(loss_rate: f64, jitter_ms: f64) -> f64 {
     let bpl = 4.3_f64;
     let ie_eff = ie + (95.0 - ie) * ppl / (ppl + bpl);
     let id = if jitter_ms < 150.0 { 0.0 } else { (jitter_ms - 150.0) * 0.1 };
-    let r  = (r0 - ie_eff - id).max(0.0).min(100.0);
+    let r  = (r0 - ie_eff - id).clamp(0.0, 100.0);
     r_to_mos(r)
 }
 
@@ -268,7 +268,7 @@ fn r_to_mos(r: f64) -> f64 {
     if r <= 0.0 { return 1.0; }
     if r >= 100.0 { return 4.5; }
     let mos = 1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6;
-    mos.max(1.0).min(5.0)
+    mos.clamp(1.0, 5.0)
 }
 
 /// MOS 文字等級
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn test_mos_range() {
         let mos = estimate_mos(0.05, 80.0);
-        assert!(mos >= 1.0 && mos <= 5.0, "MOS={} out of range", mos);
+        assert!((1.0..=5.0).contains(&mos), "MOS={} out of range", mos);
     }
 
     #[test]
@@ -351,7 +351,7 @@ mod tests {
             loss_rate_pct: 5.0, jitter_ms: 10.0, mos: 4.0,
             out_of_order: 2, duplicates: 1,
         };
-        let agg = aggregate_snapshots(&[snap.clone()]).unwrap();
+        let agg = aggregate_snapshots(std::slice::from_ref(&snap)).unwrap();
         assert_eq!(agg.sent_packets, 100);
         assert_eq!(agg.recv_packets, 95);
         assert!((agg.mos - 4.0).abs() < 0.001);

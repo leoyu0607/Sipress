@@ -1,11 +1,13 @@
-/// 音檔讀取與 G.711 編碼
-/// 支援輸入格式（全部自動轉換為 G.711A / PCMA / PT=8 輸出）：
-///   - WAV PCM16（8kHz/16kHz mono/stereo，自動重新取樣至 8kHz）
-///   - WAV A-law（format=6，直接使用原始 bytes）
-///   - WAV μ-law（format=7，decode → A-law 重新編碼）
-///   - raw G.711 μ-law（.ul/.ulaw/.pcmu）→ decode → A-law 重新編碼
-///   - raw G.711 A-law（.al/.alaw/.pcma）→ 直接使用
-/// 輸出：循環播放的 160-byte（20ms @ 8kHz）G.711A（PCMA，PT=8）封包流
+//! 音檔讀取與 G.711 編碼
+//! 支援輸入格式（全部自動轉換為 G.711A / PCMA / PT=8 輸出）：
+//!
+//!   - WAV PCM16（8kHz/16kHz mono/stereo，自動重新取樣至 8kHz）
+//!   - WAV A-law（format=6，直接使用原始 bytes）
+//!   - WAV μ-law（format=7，decode → A-law 重新編碼）
+//!   - raw G.711 μ-law（.ul/.ulaw/.pcmu）→ decode → A-law 重新編碼
+//!   - raw G.711 A-law（.al/.alaw/.pcma）→ 直接使用
+//!
+//! 輸出：循環播放的 160-byte（20ms @ 8kHz）G.711A（PCMA，PT=8）封包流
 
 use anyhow::{bail, Context, Result};
 use std::{
@@ -257,7 +259,7 @@ impl AudioSource {
                 return Ok((audio_format, channels, sample_rate, bits));
             }
             i += 8 + chunk_size;
-            if chunk_size % 2 != 0 { i += 1; }
+            if !chunk_size.is_multiple_of(2) { i += 1; }
         }
         // fallback：嘗試固定偏移（舊版簡單 WAV）
         if data.len() >= 36 {
@@ -290,7 +292,7 @@ impl AudioSource {
                 return Ok(data[start..end].to_vec());
             }
             i += 8 + chunk_size;
-            if chunk_size % 2 != 0 { i += 1; } // padding byte
+            if !chunk_size.is_multiple_of(2) { i += 1; } // padding byte
         }
         bail!("WAV 檔案中找不到 data chunk");
     }
@@ -389,8 +391,8 @@ pub fn linear_to_ulaw(sample: i16) -> u8 {
 
     let exponent = ULAW_EXP_TABLE[((s >> 7) & 0xFF) as usize];
     let mantissa = ((s >> (exponent as u32 + 3)) & 0x0F) as u8;
-    let ulaw     = !(sign | ((exponent << 4) as u8) | mantissa);
-    ulaw
+    
+    !(sign | (exponent << 4) | mantissa)
 }
 
 /// μ-law → 16-bit linear（用於 MOS 計算對比）

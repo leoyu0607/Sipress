@@ -142,7 +142,7 @@ impl Engine {
 
         // RTP port 分配計數器
         let rtp_port_counter = Arc::new(Mutex::new(
-            if cfg.rtp_base_port % 2 == 0 { cfg.rtp_base_port }
+            if cfg.rtp_base_port.is_multiple_of(2) { cfg.rtp_base_port }
             else { cfg.rtp_base_port + 1 },
         ));
 
@@ -501,17 +501,16 @@ impl Engine {
                 for dialog in dialogs.values_mut() {
                     match &dialog.state {
                         // INVITE 逾時 → 發 CANCEL
-                        DialogState::Calling | DialogState::Trying | DialogState::Ringing => {
-                            if now.duration_since(dialog.invite_sent_at) > invite_to {
-                                sip_log.log_event(&dialog.call_id, "TIMEOUT — 發送 CANCEL");
-                                let cancel = build_cancel(dialog);
-                                to_send.push(cancel);
-                                dialog.on_timeout();
-                                live.on_timeout();
-                                awaiting_invite_final.insert(dialog.call_id.clone(), now);
-                                if cfg.enable_rtp {
-                                    pre_bound_rtp.remove(&dialog.call_id);
-                                }
+                        DialogState::Calling | DialogState::Trying | DialogState::Ringing
+                            if now.duration_since(dialog.invite_sent_at) > invite_to => {
+                            sip_log.log_event(&dialog.call_id, "TIMEOUT — 發送 CANCEL");
+                            let cancel = build_cancel(dialog);
+                            to_send.push(cancel);
+                            dialog.on_timeout();
+                            live.on_timeout();
+                            awaiting_invite_final.insert(dialog.call_id.clone(), now);
+                            if cfg.enable_rtp {
+                                pre_bound_rtp.remove(&dialog.call_id);
                             }
                         }
                         // 通話時長到 → 發 BYE（使用 Contact URI 作為 Request-URI）
