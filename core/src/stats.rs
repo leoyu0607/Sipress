@@ -87,6 +87,7 @@ impl LiveStats {
             rtp_jitter_ms:    None,
             rtp_sent_packets: None,
             rtp_recv_packets: None,
+            pdd_avg_ms:       None,
             finished:         false,
         }
     }
@@ -115,6 +116,9 @@ pub struct StatsSnapshot {
     pub rtp_jitter_ms:     Option<f64>,
     pub rtp_sent_packets:  Option<u64>,
     pub rtp_recv_packets:  Option<u64>,
+    /// 目前為止的平均 PDD（ms；None = 尚無樣本）
+    #[serde(default)]
+    pub pdd_avg_ms:        Option<f64>,
     /// 引擎是否已結束（用於前端偵測 max_total_calls 完成）
     pub finished: bool,
 }
@@ -160,6 +164,12 @@ impl DetailedStats {
         if let Ok(mut h) = self.pdd_hist.lock() {
             let _ = h.record(us.max(1));
         }
+    }
+
+    /// 目前為止的平均 PDD（ms）；尚無樣本時回傳 None
+    pub fn pdd_mean_ms(&self) -> Option<f64> {
+        let h = self.pdd_hist.lock().ok()?;
+        (h.len() > 0).then(|| h.mean() / 1000.0)
     }
 
     /// 記錄通話建立時間（ms → µs）
@@ -256,5 +266,55 @@ impl FinalReport {
     /// 輸出為 JSON 字串
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+}
+
+// ─── 每通通話明細（CDR）────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallDetailRecord {
+    pub call_id:       String,
+    pub callee:        String,
+    pub result:        String,
+    pub response_code: u16,
+    pub pdd_ms:        Option<f64>,
+    pub setup_ms:      Option<f64>,
+    pub duration_secs: Option<f64>,
+    pub mos:           Option<f64>,
+}
+
+impl CallDetailRecord {
+    pub fn csv_header() -> &'static str {
+        "call_id,callee,result,response_code,pdd_ms,setup_ms,duration_secs,mos"
+    }
+
+    pub fn to_csv_row(&self) -> String {
+        format!("{},{},{},{},{},{},{},{}",
+            self.call_id,
+            self.callee,
+            self.result,
+            self.response_code,
+            self.pdd_ms.map_or("-".into(), |v| format!("{:.1}", v)),
+            self.setup_ms.map_or("-".into(), |v| format!("{:.1}", v)),
+            self.duration_secs.map_or("-".into(), |v| format!("{:.2}", v)),
+            self.mos.map_or("-".into(), |v| format!("{:.2}", v)),
+        )
+    }
+}
+
+#[derive(Default)]
+pub struct CdrCollector {
+    records: Mutex<Vec<CallDetailRecord>>,
+}
+
+impl CdrCollector {
+    pub fn push(&self, cdr: CallDetailRecord) {
+        if let Ok(mut v) = self.records.lock() {
+            v.push(cdr);
+        }
+    }
+
+    pub fn take(&self) -> Vec<CallDetailRecord> {
+        self.records.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
     }
 }

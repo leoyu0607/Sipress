@@ -161,3 +161,9 @@ pub fn get_html_report(
         .ok_or_else(|| "尚無測試結果，請先完成或停止一次壓測".to_string())?;
     Ok(HtmlReporter::render(&report, &timestamp, &server_addr))
 }
+
+/// 將文字內容寫入使用者在「另存新檔」對話框選定的路徑
+#[tauri::command]
+pub fn save_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| format!("寫入 {} 失敗: {}", path, e))
+}

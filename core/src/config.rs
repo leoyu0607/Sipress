@@ -2,6 +2,93 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// CPS 負載模式
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum CpsPattern {
+    Flat,
+    Ramp { start: f64, end: f64 },
+    Step { levels: Vec<CpsStep> },
+    Spike { base: f64, peak: f64, spike_at_pct: f64, spike_duration_secs: u64 },
+}
+
+impl Default for CpsPattern {
+    fn default() -> Self { Self::Flat }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpsStep {
+    pub cps: f64,
+    pub duration_secs: u64,
+}
+
+impl CpsPattern {
+    pub fn current_cps(&self, elapsed: Duration, base_cps: f64, total_duration: Duration) -> f64 {
+        match self {
+            Self::Flat => base_cps,
+            Self::Ramp { start, end } => {
+                let total = total_duration.as_secs_f64();
+                if total <= 0.0 { return *end; }
+                let t = (elapsed.as_secs_f64() / total).clamp(0.0, 1.0);
+                start + (end - start) * t
+            }
+            Self::Step { levels } => {
+                let mut acc = 0u64;
+                for step in levels {
+                    acc += step.duration_secs;
+                    if elapsed.as_secs() < acc {
+                        return step.cps;
+                    }
+                }
+                levels.last().map_or(base_cps, |s| s.cps)
+            }
+            Self::Spike { base, peak, spike_at_pct, spike_duration_secs } => {
+                let total = total_duration.as_secs_f64();
+                if total <= 0.0 { return *base; }
+                let spike_start = total * spike_at_pct / 100.0;
+                let spike_end = spike_start + *spike_duration_secs as f64;
+                let t = elapsed.as_secs_f64();
+                if t >= spike_start && t < spike_end { *peak } else { *base }
+            }
+        }
+    }
+}
+
+/// 音訊 Codec
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    Pcma,
+    Pcmu,
+}
+
+impl Default for Codec {
+    fn default() -> Self { Self::Pcma }
+}
+
+impl Codec {
+    pub fn payload_type(&self) -> u8 {
+        match self {
+            Self::Pcma => 8,
+            Self::Pcmu => 0,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Pcma => "PCMA",
+            Self::Pcmu => "PCMU",
+        }
+    }
+
+    pub fn sdp_rtpmap(&self) -> &'static str {
+        match self {
+            Self::Pcma => "a=rtpmap:8 PCMA/8000",
+            Self::Pcmu => "a=rtpmap:0 PCMU/8000",
+        }
+    }
+}
+
 /// 壓測模式：民眾端（主動撥出）vs 座席端（接聽）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -74,8 +161,12 @@ pub struct Config {
     /// 固定被叫號碼（Some = 所有通話打給同一個號碼，覆蓋 prefix/range 隨機產生）
     pub callee_fixed: Option<String>,
 
-    /// 每秒通話數（CPS）
+    /// 每秒通話數（CPS），作為 Flat 模式的基準值
     pub cps: f64,
+
+    /// CPS 負載模式（Flat / Ramp / Step / Spike）
+    #[serde(default)]
+    pub cps_pattern: CpsPattern,
 
     /// 最大並發通話數
     pub max_concurrent_calls: usize,
@@ -101,8 +192,16 @@ pub struct Config {
     /// 音檔路徑（None = 靜音）
     pub audio_file: Option<std::path::PathBuf>,
 
+    /// 音訊 Codec（預設 PCMA）
+    #[serde(default)]
+    pub codec: Codec,
+
     /// 是否啟用 RTP 傳送（false = 只做 SIP signaling）
     pub enable_rtp: bool,
+
+    /// DTMF 序列（接通後自動送出，格式："1,w2000,2,w500,#"）
+    #[serde(default)]
+    pub dtmf_sequence: Option<String>,
 
     /// 總通話上限（None = 不限，依 duration_secs 決定結束）
     pub max_total_calls: Option<u64>,
@@ -115,31 +214,47 @@ pub struct Config {
     /// 座席帳號列表（Agent 模式必填，Caller 模式忽略）
     #[serde(default)]
     pub agent_accounts: Vec<AgentAccount>,
+
+    /// Agent 模式：等待 ACK 的逾時秒數（預設 10）
+    #[serde(default = "default_ack_timeout")]
+    pub agent_ack_timeout_secs: u64,
+
+    /// Agent 模式：等待 BYE 的逾時秒數（預設 150）
+    #[serde(default = "default_bye_timeout")]
+    pub agent_bye_timeout_secs: u64,
 }
+
+fn default_ack_timeout() -> u64 { 10 }
+fn default_bye_timeout() -> u64 { 150 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            server_addr:          "127.0.0.1:5060".to_string(),
-            local_addr:           None,
-            local_domain:         None,
-            caller_number:        "1000".to_string(),
-            callee_prefix:        "2".to_string(),
-            callee_range:         9999,
-            callee_fixed:         None,
-            cps:                  10.0,
-            max_concurrent_calls: 100,
-            duration_secs:        60,
-            call_duration_secs:   30,
-            invite_timeout_secs:  8,
-            transport:            Transport::Udp,
-            logs_dir:             "logs".to_string(),
-            rtp_base_port:        16000,
-            audio_file:           None,
-            enable_rtp:           false,
-            max_total_calls:      None,
-            mode:                 Mode::Caller,
-            agent_accounts:       Vec::new(),
+            server_addr:              "127.0.0.1:5060".to_string(),
+            local_addr:               None,
+            local_domain:             None,
+            caller_number:            "1000".to_string(),
+            callee_prefix:            "2".to_string(),
+            callee_range:             9999,
+            callee_fixed:             None,
+            cps:                      10.0,
+            cps_pattern:              CpsPattern::default(),
+            max_concurrent_calls:     100,
+            duration_secs:            60,
+            call_duration_secs:       30,
+            invite_timeout_secs:      8,
+            transport:                Transport::Udp,
+            logs_dir:                 "logs".to_string(),
+            rtp_base_port:            16000,
+            audio_file:               None,
+            codec:                    Codec::default(),
+            enable_rtp:               false,
+            dtmf_sequence:            None,
+            max_total_calls:          None,
+            mode:                     Mode::Caller,
+            agent_accounts:           Vec::new(),
+            agent_ack_timeout_secs:   default_ack_timeout(),
+            agent_bye_timeout_secs:   default_bye_timeout(),
         }
     }
 }
@@ -179,5 +294,62 @@ impl Config {
             call_duration_secs,
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flat_pattern_returns_base_cps() {
+        let p = CpsPattern::Flat;
+        let cps = p.current_cps(Duration::from_secs(30), 10.0, Duration::from_secs(60));
+        assert!((cps - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ramp_interpolates_linearly() {
+        let p = CpsPattern::Ramp { start: 10.0, end: 50.0 };
+        let total = Duration::from_secs(100);
+
+        let at_0 = p.current_cps(Duration::from_secs(0), 0.0, total);
+        assert!((at_0 - 10.0).abs() < 0.01);
+
+        let at_50 = p.current_cps(Duration::from_secs(50), 0.0, total);
+        assert!((at_50 - 30.0).abs() < 0.01);
+
+        let at_100 = p.current_cps(Duration::from_secs(100), 0.0, total);
+        assert!((at_100 - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn step_selects_correct_level() {
+        let p = CpsPattern::Step {
+            levels: vec![
+                CpsStep { cps: 5.0, duration_secs: 10 },
+                CpsStep { cps: 20.0, duration_secs: 10 },
+                CpsStep { cps: 50.0, duration_secs: 10 },
+            ],
+        };
+        let total = Duration::from_secs(30);
+        assert!((p.current_cps(Duration::from_secs(5), 1.0, total) - 5.0).abs() < 0.01);
+        assert!((p.current_cps(Duration::from_secs(15), 1.0, total) - 20.0).abs() < 0.01);
+        assert!((p.current_cps(Duration::from_secs(25), 1.0, total) - 50.0).abs() < 0.01);
+        assert!((p.current_cps(Duration::from_secs(35), 1.0, total) - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn spike_activates_at_correct_time() {
+        let p = CpsPattern::Spike {
+            base: 10.0,
+            peak: 100.0,
+            spike_at_pct: 50.0,
+            spike_duration_secs: 10,
+        };
+        let total = Duration::from_secs(100);
+        assert!((p.current_cps(Duration::from_secs(40), 0.0, total) - 10.0).abs() < 0.01);
+        assert!((p.current_cps(Duration::from_secs(55), 0.0, total) - 100.0).abs() < 0.01);
+        assert!((p.current_cps(Duration::from_secs(65), 0.0, total) - 10.0).abs() < 0.01);
     }
 }

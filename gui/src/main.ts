@@ -2,11 +2,15 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 
-// Google Fonts (JetBrains Mono + IBM Plex Sans)
-const link = document.createElement('link')
-link.rel = 'stylesheet'
-link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap'
-document.head.appendChild(link)
+// 本地打包字型（內網/離線環境也能正確顯示）
+import '@fontsource/jetbrains-mono/latin-300.css'
+import '@fontsource/jetbrains-mono/latin-400.css'
+import '@fontsource/jetbrains-mono/latin-500.css'
+import '@fontsource/jetbrains-mono/latin-700.css'
+import '@fontsource/ibm-plex-sans/latin-300.css'
+import '@fontsource/ibm-plex-sans/latin-400.css'
+import '@fontsource/ibm-plex-sans/latin-500.css'
+import '@fontsource/ibm-plex-sans/latin-600.css'
 
 const app = createApp(App)
 app.use(createPinia())

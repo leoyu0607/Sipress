@@ -31,6 +31,8 @@ pub struct RtpSessionConfig {
     pub ssrc:        Option<u32>,
     /// 預先分配的本機 RTP port（Some = 跳過動態分配）
     pub local_port:  Option<u16>,
+    /// Codec payload type（8=PCMA, 0=PCMU，預設 8）
+    pub codec_pt:    u8,
 }
 
 /// 單通通話的 RTP session handle
@@ -78,6 +80,7 @@ impl RtpSession {
             let stop       = Arc::clone(&stop_flag);
             let audio_path = config.audio_file.clone();
 
+            let codec_pt = config.codec_pt;
             tokio::spawn(async move {
                 let mut source = match &audio_path {
                     Some(p) => {
@@ -101,8 +104,13 @@ impl RtpSession {
                     None => AudioSource::silence(),
                 };
 
-                // 使用音檔偵測到的 payload type（0=PCMU / 8=PCMA）
-                let payload_type = source.payload_type;
+                // 音檔自帶 PT 優先，靜音模式用設定的 codec
+                let payload_type = if source.payload_type == 8 && codec_pt != 8 {
+                    source.payload_type = codec_pt;
+                    codec_pt
+                } else {
+                    source.payload_type
+                };
                 tracing::debug!("RTP 傳送 payload_type={} ({})",
                     payload_type,
                     if payload_type == 8 { "PCMA/A-law" } else { "PCMU/μ-law" });
@@ -170,6 +178,39 @@ impl RtpSession {
     pub fn stop(&self) -> RtpStatsSnapshot {
         self.stop_flag.store(true, Ordering::Relaxed);
         self.stats.snapshot()
+    }
+
+    /// 傳送 DTMF 序列（在背景 task 中執行，不阻塞主迴圈）
+    pub fn send_dtmf_sequence(&self, sequence: String, ssrc: u32) {
+        let socket = Arc::clone(&self.socket);
+        let stop = Arc::clone(&self.stop_flag);
+        tokio::spawn(async move {
+            let actions = crate::rtp::dtmf::parse_dtmf_sequence(&sequence);
+            let mut seq: u16 = rand::thread_rng().gen();
+            let mut ts: u32 = rand::thread_rng().gen();
+
+            for action in &actions {
+                if stop.load(Ordering::Relaxed) { break; }
+                match action {
+                    crate::rtp::dtmf::DtmfAction::Digit(ch, dur_ms) => {
+                        if let Some((pkts, advance)) =
+                            crate::rtp::dtmf::build_dtmf_packets(*ch, *dur_ms, seq, ts, ssrc)
+                        {
+                            for pkt in &pkts {
+                                if stop.load(Ordering::Relaxed) { break; }
+                                let _ = socket.send(&pkt.encode()).await;
+                                time::sleep(Duration::from_millis(20)).await;
+                            }
+                            seq = seq.wrapping_add(pkts.len() as u16);
+                            ts = ts.wrapping_add(advance);
+                        }
+                    }
+                    crate::rtp::dtmf::DtmfAction::Wait(ms) => {
+                        time::sleep(Duration::from_millis(*ms as u64)).await;
+                    }
+                }
+            }
+        });
     }
 
     /// RE-INVITE 後更新 RTP 對端地址（connected UDP socket 重新 connect 即可切換目標）

@@ -30,8 +30,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex};
 use tokio::time;
 
-const ACK_TIMEOUT_SECS: u64 = 10;
-const BYE_TIMEOUT_SECS: u64 = 150;
 
 pub struct AgentEngine {
     config:  Config,
@@ -88,6 +86,7 @@ impl AgentEngine {
         let engine_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(cb) = on_progress {
             let live2     = Arc::clone(&live);
+            let detail2   = Arc::clone(&detail);
             let finished  = Arc::clone(&engine_finished);
             let duration  = cfg.duration_secs as f64;
             let unlimited = cfg.duration_secs == 0;
@@ -106,6 +105,7 @@ impl AgentEngine {
                     };
 
                     let mut snap = live2.snapshot();
+                    snap.pdd_avg_ms = detail2.pdd_mean_ms();
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
                     if let Some(agg) = &rtp_agg {
                         snap.rtp_mos          = Some(agg.mos);
@@ -244,11 +244,13 @@ struct DialogCtx {
     remote_from_tag: String,
     rtp_session:     Option<RtpSession>,
     ack_received:    bool,
+    ack_timeout_secs: u64,
+    bye_timeout_secs: u64,
 }
 
 impl DialogCtx {
     fn deadline(&self) -> Instant {
-        let secs = if self.ack_received { BYE_TIMEOUT_SECS } else { ACK_TIMEOUT_SECS };
+        let secs = if self.ack_received { self.bye_timeout_secs } else { self.ack_timeout_secs };
         self.answered_at + Duration::from_secs(secs)
     }
 }
@@ -682,6 +684,7 @@ async fn handle_request(
                             audio_file:  cfg.audio_file.clone(),
                             ssrc:        None,
                             local_port:  Some(rtp_port),
+                            codec_pt:    cfg.codec.payload_type(),
                         };
                         match RtpSession::start(rtp_cfg, Arc::clone(port_counter), pre_bound).await {
                             Ok(session) => {
@@ -713,6 +716,8 @@ async fn handle_request(
                     remote_from_tag,
                     rtp_session,
                     ack_received:    false,
+                    ack_timeout_secs: cfg.agent_ack_timeout_secs,
+                    bye_timeout_secs: cfg.agent_bye_timeout_secs,
                 };
                 dlgs.insert(call_id.clone(), ctx);
                 log.log_event(&account.extension, &format!("[{}] 接聽來電", short(&call_id)));

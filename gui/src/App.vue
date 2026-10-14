@@ -8,15 +8,17 @@ import RightPanel  from './components/RightPanel.vue'
 import LogPanel    from './components/LogPanel.vue'
 
 // ── Theme ─────────────────────────────────────────────────────────
-const isDark = ref(true)
+const isDark = ref(localStorage.getItem('sipress-theme') !== 'light')
 
 function toggleTheme() {
   isDark.value = !isDark.value
-  document.documentElement.setAttribute('data-theme', isDark.value ? 'dark' : 'light')
+  const theme = isDark.value ? 'dark' : 'light'
+  document.documentElement.setAttribute('data-theme', theme)
+  localStorage.setItem('sipress-theme', theme)
 }
 
 // Set initial attribute
-document.documentElement.setAttribute('data-theme', 'dark')
+document.documentElement.setAttribute('data-theme', isDark.value ? 'dark' : 'light')
 
 // Provide to all children
 provide('isDark', isDark)
@@ -60,11 +62,19 @@ provide('toggleTheme', toggleTheme)
   --blue:    #3d9fff;
   --warn:    #f5a623;
   --danger:  #ff4d4d;
+  --purple:  #a855f7;
+
+  /* RGB triplets for rgba(var(--x-rgb), alpha) */
+  --accent-rgb: 0,229,192;
+  --blue-rgb:   61,159,255;
+  --warn-rgb:   245,166,35;
+  --danger-rgb: 255,77,77;
+  --purple-rgb: 168,85,247;
 
   --text0: #e8eaf0;
-  --text1: #7c8296;
-  --text2: #464c5e;
-  --text3: #2a2e3d;
+  --text1: #8a90a4;
+  --text2: #6b7287;
+  --text3: #4f5568;
 
   --input-bg:     #0b0d12;
   --input-border: rgba(255,255,255,0.11);
@@ -88,15 +98,22 @@ provide('toggleTheme', toggleTheme)
   --border2: rgba(0,0,0,0.12);
   --border3: rgba(0,0,0,0.20);
 
-  --accent:  #00b89a;
+  --accent:  #00a189;
   --blue:    #1a7fd4;
-  --warn:    #d4860a;
+  --warn:    #c27a08;
   --danger:  #d93636;
+  --purple:  #8b3fd9;
+
+  --accent-rgb: 0,161,137;
+  --blue-rgb:   26,127,212;
+  --warn-rgb:   194,122,8;
+  --danger-rgb: 217,54,54;
+  --purple-rgb: 139,63,217;
 
   --text0: #1a1c22;
   --text1: #4a5068;
-  --text2: #8892a4;
-  --text3: #c0c6d4;
+  --text2: #6b7488;
+  --text3: #a3aab8;
 
   --input-bg:     #ffffff;
   --input-border: rgba(0,0,0,0.14);
@@ -124,7 +141,7 @@ html, body, #app {
 }
 
 /* ── Scrollbar ─────────────────────────────── */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 2px; }
 
@@ -154,22 +171,29 @@ html, body, #app {
 
 .btn-accent {
   color: var(--accent);
-  border-color: rgba(0,184,154,0.3);
-  background: rgba(0,184,154,0.06);
+  border-color: rgba(var(--accent-rgb),0.3);
+  background: rgba(var(--accent-rgb),0.06);
 }
-.btn-accent:hover { background: rgba(0,184,154,0.14); border-color: rgba(0,184,154,0.5); color: var(--accent); }
+.btn-accent:hover { background: rgba(var(--accent-rgb),0.14); border-color: rgba(var(--accent-rgb),0.5); color: var(--accent); }
 
 .btn-danger {
   color: var(--danger);
-  border-color: rgba(217,54,54,0.3);
-  background: rgba(217,54,54,0.07);
+  border-color: rgba(var(--danger-rgb),0.3);
+  background: rgba(var(--danger-rgb),0.07);
 }
-.btn-danger:hover { background: rgba(217,54,54,0.16); border-color: rgba(217,54,54,0.5); }
+.btn-danger:hover { background: rgba(var(--danger-rgb),0.16); border-color: rgba(var(--danger-rgb),0.5); }
+
+/* ── Keyboard focus ────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb),0.6);
+  outline-offset: 1px;
+}
+.btn:focus-visible { outline: 2px solid rgba(var(--accent-rgb),0.6); }
 
 /* ── Fonts (referenced by components) ─────── */
 :root {
-  --mono: 'JetBrains Mono', 'Cascadia Code', monospace;
-  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Microsoft JhengHei', monospace;
+  --sans: 'IBM Plex Sans', 'Microsoft JhengHei', system-ui, sans-serif;
   --radius-sm: 4px;
   --radius:    6px;
   --radius-lg: 10px;

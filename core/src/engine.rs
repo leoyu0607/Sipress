@@ -196,6 +196,7 @@ impl Engine {
             let cb        = Arc::clone(cb);
             let live      = Arc::clone(&live);
             let rtp_sess  = Arc::clone(&rtp_sessions);
+            let detail    = Arc::clone(&detail);
             let finished  = Arc::clone(&engine_finished);
             let duration  = cfg.duration_secs as f64;
             let unlimited = cfg.duration_secs == 0;
@@ -206,6 +207,7 @@ impl Engine {
                     let elapsed  = start.elapsed().as_secs_f64();
                     let progress = if unlimited { 0.0 } else { (elapsed / duration).min(1.0) };
                     let mut snap = live.snapshot();
+                    snap.pdd_avg_ms = detail.pdd_mean_ms();
 
                     {
                         let sessions = rtp_sess.lock().await;
@@ -228,7 +230,8 @@ impl Engine {
         }
 
         // ── 主控迴圈 ──
-        let cps_interval   = Duration::from_secs_f64(1.0 / cfg.cps);
+        let cps_pattern    = cfg.cps_pattern.clone();
+        let total_dur      = cfg.duration();
         let unlimited_time = cfg.duration_secs == 0;
         let deadline       = if unlimited_time {
             start + Duration::from_secs(u64::MAX / 2)
@@ -313,16 +316,22 @@ impl Engine {
                                     audio_file:  audio_path,
                                     ssrc:        None,
                                     local_port:  if local_pre > 0 { Some(local_pre) } else { None },
+                                    codec_pt:    cfg.codec.payload_type(),
                                 };
                                 let pc                 = Arc::clone(&rtp_port_counter);
                                 let rtp_sessions_clone = Arc::clone(&rtp_sessions);
                                 let log_rtp            = Arc::clone(&sip_log);
                                 let live_rtp           = Arc::clone(&live);
                                 let cid                = call_id.clone();
+                                let dtmf_seq           = cfg.dtmf_sequence.clone();
+                                let dtmf_ssrc          = rand::thread_rng().gen::<u32>();
                                 tokio::spawn(async move {
                                     match RtpSession::start(rtp_cfg, pc, pre_socket).await {
                                         Ok(session) => {
                                             live_rtp.on_rtp_start();
+                                            if let Some(ref seq) = dtmf_seq {
+                                                session.send_dtmf_sequence(seq.clone(), dtmf_ssrc);
+                                            }
                                             rtp_sessions_clone.lock().await.insert(cid, session);
                                         }
                                         Err(e) => {
@@ -676,7 +685,8 @@ impl Engine {
                         let _ = udp_inv.send(&inv_log).await;
                     });
 
-                    next_call = now + cps_interval;
+                    let current_cps = cps_pattern.current_cps(now - start, cfg.cps, total_dur);
+                    next_call = now + Duration::from_secs_f64(1.0 / current_cps.max(0.1));
                 }
             }
 

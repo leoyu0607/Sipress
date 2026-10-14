@@ -192,8 +192,11 @@ impl SipMessage {
              s=sipress\r\n\
              c=IN IP4 {ip}\r\n\
              t=0 0\r\n\
-             m=audio {port} RTP/AVP 8\r\n\
+             m=audio {port} RTP/AVP 8 0 101\r\n\
              a=rtpmap:8 PCMA/8000\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a=rtpmap:101 telephone-event/8000\r\n\
+             a=fmtp:101 0-16\r\n\
              a=ptime:20\r\n\
              a=sendrecv\r\n",
             ip = ip,
@@ -479,7 +482,7 @@ mod tests {
         assert!(msg.contains("CSeq: 1 INVITE\r\n"));
         assert!(msg.contains("From: <sip:1000@10.0.0.1:5060>;tag=tag123\r\n"));
         assert!(msg.contains("To: <sip:2001@10.0.0.2:5060>\r\n"));
-        assert!(msg.contains("m=audio 16000 RTP/AVP 8\r\n"));
+        assert!(msg.contains("m=audio 16000 RTP/AVP 8 0 101\r\n"));
         assert!(msg.contains("Content-Type: application/sdp\r\n"));
     }
 
@@ -557,7 +560,7 @@ mod tests {
         let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000);
         assert!(ok.starts_with("SIP/2.0 200 OK\r\n"));
         assert!(ok.contains("Content-Type: application/sdp\r\n"));
-        assert!(ok.contains("m=audio 18000 RTP/AVP 8\r\n"));
+        assert!(ok.contains("m=audio 18000 RTP/AVP 8 0 101\r\n"));
     }
 
     // ─── Unique ID generation ────────────────────────────────────

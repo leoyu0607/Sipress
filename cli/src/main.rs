@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
         callee_range:         args.callee_range,
         callee_fixed:         args.callee_fixed.clone(),
         cps:                  args.cps,
+        cps_pattern:          Default::default(),
         max_concurrent_calls: args.max_concurrent,
         duration_secs:        args.duration,
         call_duration_secs:   args.call_duration,
@@ -53,10 +54,14 @@ async fn main() -> Result<()> {
         logs_dir:             args.logs_dir.clone(),
         rtp_base_port:        args.rtp_base_port,
         audio_file:           args.audio_file.clone(),
+        codec:                Default::default(),
         enable_rtp:           args.enable_rtp,
+        dtmf_sequence:        None,
         max_total_calls:      if args.max_calls > 0 { Some(args.max_calls) } else { None },
         mode:                 Mode::Caller,
         agent_accounts:       Vec::new(),
+        agent_ack_timeout_secs: 10,
+        agent_bye_timeout_secs: 150,
     };
 
     let engine = Engine::new(config.clone());

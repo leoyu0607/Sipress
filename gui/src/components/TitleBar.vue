@@ -21,9 +21,21 @@ const timerDisplay = computed(() => {
   return `${m}:${sec}`
 })
 
+const STATUS_LABEL: Record<string, string> = {
+  idle: '待命', running: '執行中', done: '已完成', error: '錯誤',
+}
+
 const btnLabel = computed(() =>
-  store.status === 'running' ? '■ stop test' : '▶ start test'
+  store.status === 'running' ? '■ 停止測試' : '▶ 開始測試'
 )
+const startBlocked = computed(() =>
+  store.status !== 'running' && store.validationErrors.length > 0
+)
+const btnTitle = computed(() =>
+  startBlocked.value ? ['無法開始：', ...store.validationErrors.map(e => `• ${e}`)].join('\n') : ''
+)
+const hasSeries = computed(() => store.series.cps.length > 0)
+const hasReport = computed(() => store.status === 'done')
 const btnClass = computed(() =>
   store.status === 'running' ? 'btn btn-danger' : 'btn btn-accent'
 )
@@ -37,20 +49,13 @@ function toggleTest() {
 <template>
   <header class="titlebar" data-tauri-drag-region>
 
-    <!-- Window controls -->
-    <div class="wc-group">
-      <div class="wc wc-close"  @click="closeWindow"></div>
-      <div class="wc wc-min"    @click="minimizeWindow"></div>
-      <div class="wc wc-max"    @click="maximizeWindow"></div>
-    </div>
-
     <div class="logo">sip<em>ress</em></div>
     <div class="sep-v"></div>
 
     <!-- Status badge -->
     <div class="status-badge" :class="store.status">
       <div class="dot" :class="{ pulse: store.status === 'running' }"></div>
-      <span>{{ store.status.toUpperCase() }}</span>
+      <span>{{ STATUS_LABEL[store.status] }}</span>
     </div>
 
     <!-- Target -->
@@ -71,13 +76,16 @@ function toggleTest() {
     <div class="actions">
       <button class="btn btn-sm"
               @click="store.exportJson()"
-              :disabled="store.series.cps.length === 0">↓ JSON</button>
+              :disabled="!hasSeries"
+              :title="hasSeries ? '匯出 JSON 報告' : '尚無測試資料'">↓ JSON</button>
       <button class="btn btn-sm"
               @click="store.exportCsv()"
-              :disabled="store.series.cps.length === 0">↓ CSV</button>
+              :disabled="!hasSeries"
+              :title="hasSeries ? '匯出每秒時序 CSV' : '尚無測試資料'">↓ CSV</button>
       <button class="btn btn-sm"
               @click="store.exportHtml()"
-              :disabled="store.status === 'idle' || store.status === 'running'">↓ HTML</button>
+              :disabled="!hasReport"
+              :title="hasReport ? '匯出 HTML 報告' : '測試完成後可匯出'">↓ HTML</button>
 
       <div class="sep-v"></div>
 
@@ -101,13 +109,27 @@ function toggleTest() {
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
           </svg>
         </span>
-        {{ isDark ? 'Light' : 'Dark' }}
       </button>
 
       <div class="sep-v"></div>
 
-      <button :class="btnClass + ' btn-sm'" @click="toggleTest">
-        {{ btnLabel }}
+      <span class="start-wrap" :title="btnTitle">
+        <button :class="btnClass + ' btn-sm'" :disabled="startBlocked" @click="toggleTest">
+          {{ btnLabel }}
+        </button>
+      </span>
+    </div>
+
+    <!-- Window controls (Windows style) -->
+    <div class="wc-group">
+      <button class="wc" title="最小化" aria-label="最小化" @click="minimizeWindow">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor"/></svg>
+      </button>
+      <button class="wc" title="最大化 / 還原" aria-label="最大化" @click="maximizeWindow">
+        <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor"/></svg>
+      </button>
+      <button class="wc wc-close" title="關閉" aria-label="關閉" @click="closeWindow">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0L10 10M10 0L0 10" stroke="currentColor"/></svg>
       </button>
     </div>
   </header>
@@ -118,7 +140,7 @@ function toggleTest() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 0 0 14px;
   height: 44px;
   background: var(--bg1);
   border-bottom: 1px solid var(--border);
@@ -127,17 +149,20 @@ function toggleTest() {
   transition: background 0.25s, border-color 0.25s;
 }
 
-.wc-group { display: flex; gap: 6px; flex-shrink: 0; }
+.wc-group { display: flex; align-self: stretch; flex-shrink: 0; margin-left: 4px; }
 .wc {
-  width: 12px; height: 12px;
-  border-radius: 50%;
+  width: 44px;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text1);
   cursor: pointer;
-  transition: filter 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
-.wc:hover { filter: brightness(1.4); }
-.wc-close { background: #ff5f57; }
-.wc-min   { background: #febc2e; }
-.wc-max   { background: #28c840; }
+.wc:hover { background: var(--bg3); color: var(--text0); }
+.wc-close:hover { background: #e81123; color: #fff; }
+
+.start-wrap { display: inline-flex; }
 
 .logo {
   font-family: var(--mono);
@@ -168,9 +193,9 @@ function toggleTest() {
   transition: all 0.3s;
 }
 .status-badge.idle    { color: var(--text1); border-color: var(--border2); }
-.status-badge.running { color: var(--accent); border-color: rgba(0,184,154,0.35); background: rgba(0,184,154,0.08); }
-.status-badge.done    { color: var(--blue);   border-color: rgba(26,127,212,0.35); background: rgba(26,127,212,0.08); }
-.status-badge.error   { color: var(--danger); border-color: rgba(217,54,54,0.35);  background: rgba(217,54,54,0.08); }
+.status-badge.running { color: var(--accent); border-color: rgba(var(--accent-rgb),0.35); background: rgba(var(--accent-rgb),0.08); }
+.status-badge.done    { color: var(--blue);   border-color: rgba(var(--blue-rgb),0.35);   background: rgba(var(--blue-rgb),0.08); }
+.status-badge.error   { color: var(--danger); border-color: rgba(var(--danger-rgb),0.35); background: rgba(var(--danger-rgb),0.08); }
 
 .dot {
   width: 6px; height: 6px;
@@ -188,6 +213,10 @@ function toggleTest() {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .target-info strong { color: var(--text0); font-weight: 500; }
 .transport-tag {

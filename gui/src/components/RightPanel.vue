@@ -2,35 +2,30 @@
 /**
  * RightPanel.vue
  *
- * 修正 / 新增：
- * 1. 新增「RTP 聲音品質」區塊（MOS / 掉包率 / Jitter / 封包統計）
- *    對應 README §RTP 聲音品質指標 與 HTML 報告 §RTP 聲音品質區塊
- * 2. MOS 顏色依 README 標準：≥4.0 優（accent）/ ≥3.0 普通（warn）/ <2.5 差（danger）
- * 3. 掉包率顏色：<1% 優 / <3% 普通 / ≥3% 差（依電話品質建議）
- * 4. Jitter 顏色：<30ms 優 / <60ms 普通 / ≥60ms 差
+ * 1. 通話統計：發起 / 接通 / 完成 / 失敗 / 逾時（來自即時 snapshot）
+ * 2. RTP 聲音品質（MOS / 掉包率 / Jitter / 封包統計），codec 依設定顯示
+ * 3. MOS 分級使用 store 的 mosGrade()（全 App 一致）
+ * 4. 掉包率顏色：<1% 優 / <3% 普通 / ≥3% 差；Jitter：<30ms / <60ms / ≥60ms
  */
 import { computed } from 'vue'
-import { useTestStore } from '../stores/testStore'
+import { useTestStore, mosGrade } from '../stores/testStore'
 
 const store = useTestStore()
 
-const stateMax = computed(() =>
-  Math.max(...Object.values(store.callStates), 1)
-)
-
 const stateList = computed(() => [
-  { key: 'invite',  label: 'INVITE',   color: 'var(--blue)',   val: store.callStates.invite },
-  { key: 'trying',  label: '100 Try',  color: 'var(--text1)',  val: store.callStates.trying },
-  { key: 'ringing', label: '180 Ring', color: 'var(--warn)',   val: store.callStates.ringing },
-  { key: 'ok',      label: '200 OK',   color: 'var(--accent)', val: store.callStates.ok },
-  { key: 'ack',     label: 'ACK',      color: 'var(--accent)', val: store.callStates.ack },
-  { key: 'bye',     label: 'BYE',      color: 'var(--text2)',  val: store.callStates.bye },
-  { key: 'error',   label: 'Error',    color: 'var(--danger)', val: store.callStates.error },
+  { key: 'initiated', label: '發起',  color: 'var(--blue)',   val: store.callStates.initiated },
+  { key: 'answered',  label: '接通',  color: 'var(--accent)', val: store.callStates.answered },
+  { key: 'completed', label: '完成',  color: 'var(--text1)',  val: store.callStates.completed },
+  { key: 'failed',    label: '失敗',  color: 'var(--danger)', val: store.callStates.failed },
+  { key: 'timeout',   label: '逾時',  color: 'var(--warn)',   val: store.callStates.timeout },
 ])
+
+const stateMax = computed(() => Math.max(store.callStates.initiated, 1))
 
 const respList = computed(() =>
   Object.entries(store.respCodes)
     .filter(([, v]) => v > 0)
+    .sort(([a], [b]) => Number(a) - Number(b))
     .map(([code, cnt]) => ({
       code, cnt,
       color: code.startsWith('1') ? 'var(--text1)'
@@ -39,39 +34,16 @@ const respList = computed(() =>
     }))
 )
 
-const flowSteps = computed(() => [
-  { dir: '→', label: 'INVITE',      color: 'var(--blue)',   time: store.flowTimes.invite,  note: '' },
-  { dir: '←', label: '100 Trying',  color: 'var(--text1)',  time: store.flowTimes.trying,  note: '' },
-  { dir: '←', label: '180 Ringing', color: 'var(--warn)',   time: store.flowTimes.ringing, note: 'PDD start' },
-  { dir: '←', label: '200 OK',      color: 'var(--accent)', time: store.flowTimes.ok,      note: 'PDD end' },
-  { dir: '→', label: 'ACK',         color: 'var(--accent)', time: store.flowTimes.ack,     note: '' },
-  { dir: '→', label: 'BYE',         color: 'var(--text1)',  time: store.flowTimes.bye,     note: 'ACD end' },
-  { dir: '←', label: '200 OK',      color: 'var(--text2)',  time: store.flowTimes.done,    note: '' },
-])
-
 // ── RTP 指標顏色 ─────────────────────────────────────────────────
 
 const rtp = computed(() => store.rtpMetrics)
 
-// RTP 是否「已設定啟用」（不管是否完成，只要 enableAudio=true 且有音檔就顯示啟用中）
+// RTP 是否「已設定啟用」（enableAudio=true 且有音檔）
 const rtpConfigured = computed(() =>
   store.config.caller.enableAudio && !!store.config.caller.audioFile
 )
 
-const mosColor = computed(() => {
-  const m = rtp.value.mos
-  if (m >= 4.0) return 'var(--accent)'
-  if (m >= 3.0) return 'var(--warn)'
-  return 'var(--danger)'
-})
-
-const mosLabel = computed(() => {
-  const m = rtp.value.mos
-  if (m >= 4.0) return '優'
-  if (m >= 3.0) return '普通'
-  if (m > 0)    return '差'
-  return '—'
-})
+const mos = computed(() => mosGrade(rtp.value.mos))
 
 const lossColor = computed(() => {
   const p = rtp.value.packetLoss
@@ -91,17 +63,17 @@ const jitterColor = computed(() => {
 <template>
   <div class="right-panel">
 
-    <!-- ── Call States ─────────────────────────────────── -->
+    <!-- ── 通話統計 ─────────────────────────────────── -->
     <div class="rp-section">
-      <div class="rp-title">call states</div>
+      <div class="rp-title">通話統計</div>
       <div v-for="s in stateList" :key="s.key" class="state-row">
         <div class="state-name">{{ s.label }}</div>
         <div class="state-track">
           <div class="state-fill"
-               :style="{ width: (s.val / stateMax * 100) + '%', background: s.color }">
+               :style="{ width: Math.min(100, s.val / stateMax * 100) + '%', background: s.color }">
           </div>
         </div>
-        <div class="state-count">{{ s.val }}</div>
+        <div class="state-count">{{ s.val.toLocaleString() }}</div>
       </div>
     </div>
 
@@ -109,24 +81,23 @@ const jitterColor = computed(() => {
     <div class="rp-section">
       <div class="rp-title">
         RTP 聲音品質
-        <span v-if="rtp.enabled" class="rtp-on">G.711A</span>
-        <span v-else-if="rtpConfigured && store.status === 'running'" class="rtp-active">啟用中</span>
+        <span v-if="rtp.enabled" class="rtp-on">{{ store.codecLabel.short }}</span>
+        <span v-else-if="rtpConfigured && store.isRunning" class="rtp-active">啟用中</span>
         <span v-else-if="!rtpConfigured" class="rtp-off">未啟用</span>
       </div>
 
-      <!-- 即時 + 測試完成後顯示 MOS 等統計 -->
       <template v-if="rtp.enabled">
         <!-- MOS -->
         <div class="rtp-row">
           <div class="rtp-key">MOS</div>
           <div class="rtp-bar-wrap">
             <div class="rtp-bar"
-                 :style="{ width: ((rtp.mos - 1) / 4 * 100) + '%', background: mosColor }">
+                 :style="{ width: Math.max(0, (rtp.mos - 1) / 4 * 100) + '%', background: mos.color }">
             </div>
           </div>
-          <div class="rtp-val" :style="{ color: mosColor }">
+          <div class="rtp-val" :style="{ color: mos.color }">
             {{ rtp.mos.toFixed(2) }}
-            <span class="rtp-tag">{{ mosLabel }}</span>
+            <span class="rtp-tag">{{ mos.label }}</span>
           </div>
         </div>
 
@@ -159,15 +130,15 @@ const jitterColor = computed(() => {
         <!-- 封包統計 -->
         <div class="rtp-stats">
           <div class="rtp-stat-item">
-            <span class="rtp-stat-key">Sent</span>
+            <span class="rtp-stat-key">送出</span>
             <span class="rtp-stat-val">{{ rtp.packetsSent.toLocaleString() }}</span>
           </div>
           <div class="rtp-stat-item">
-            <span class="rtp-stat-key">Recv</span>
+            <span class="rtp-stat-key">接收</span>
             <span class="rtp-stat-val">{{ rtp.packetsRecv.toLocaleString() }}</span>
           </div>
-          <div class="rtp-stat-item">
-            <span class="rtp-stat-key">OOO</span>
+          <div class="rtp-stat-item" title="亂序封包數（測試完成後統計）">
+            <span class="rtp-stat-key">亂序</span>
             <span class="rtp-stat-val" :style="{ color: rtp.outOfOrder > 0 ? 'var(--warn)' : 'var(--text1)' }">
               {{ rtp.outOfOrder }}
             </span>
@@ -175,49 +146,29 @@ const jitterColor = computed(() => {
         </div>
       </template>
 
-      <!-- 測試執行中：已設定 RTP 但尚未有 session 建立 -->
-      <div v-else-if="rtpConfigured && store.status === 'running'" class="rtp-hint">
-        G.711A (PCMA) ← 等待通話建立…
+      <div v-else-if="rtpConfigured && store.isRunning" class="rtp-hint">
+        {{ store.codecLabel.full }} ← 等待通話建立…
       </div>
 
-      <!-- 測試執行中：已設定 RTP 但還未開始 -->
       <div v-else-if="rtpConfigured" class="rtp-hint">
-        G.711A (PCMA) 就緒
+        {{ store.codecLabel.full }} 就緒
       </div>
 
-      <!-- RTP 未啟用提示 -->
       <div v-else class="rtp-hint">
-        使用 <code>--rtp</code> 啟用<br>
-        可選 <code>--audio &lt;file&gt;</code> 指定音檔
+        在左側「民眾端設定」開啟<br>
+        <code>播放音檔</code> 並選擇檔案即可量測
       </div>
     </div>
 
     <!-- ── Response Codes ──────────────────────────────── -->
     <div class="rp-section">
-      <div class="rp-title">response codes</div>
-      <div v-if="respList.length === 0" class="empty">—</div>
+      <div class="rp-title">SIP 回應碼</div>
+      <div v-if="respList.length === 0" class="empty">尚無資料</div>
       <div v-for="r in respList" :key="r.code" class="rcode-row">
         <span class="rcode-label" :style="{ color: r.color }">{{ r.code }}</span>
         <span class="rcode-count">{{ r.cnt.toLocaleString() }}</span>
       </div>
-    </div>
-
-    <!-- ── SIP Flow ────────────────────────────────────── -->
-    <div class="rp-section flow-section">
-      <div class="rp-title">last call flow</div>
-      <div v-for="(step, i) in flowSteps" :key="i" class="flow-item">
-        <div class="flow-line">
-          <div class="flow-dot" :style="{ background: step.color }"></div>
-          <div class="flow-msg" :style="{ color: step.color }">
-            {{ step.label }} {{ step.dir }}
-          </div>
-          <div class="flow-time">{{ step.time }}</div>
-        </div>
-        <div class="flow-note" v-if="step.note">{{ step.note }}</div>
-        <div class="flow-vline" v-if="i < flowSteps.length - 1"
-             :style="{ borderColor: step.note ? 'var(--border3)' : 'var(--border)' }">
-        </div>
-      </div>
+      <div v-if="store.isRunning && respList.length > 0" class="rp-note">失敗碼明細於測試結束後補齊</div>
     </div>
 
   </div>
@@ -240,7 +191,7 @@ const jitterColor = computed(() => {
 
 .rp-title {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.1em;
   color: var(--text2);
@@ -252,7 +203,7 @@ const jitterColor = computed(() => {
 }
 
 .rtp-off {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text2);
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -261,17 +212,17 @@ const jitterColor = computed(() => {
   text-transform: lowercase;
 }
 .rtp-active {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  background: rgba(var(--warn-rgb),0.15);
   border: 1px solid var(--warn);
   padding: 1px 5px;
   border-radius: 3px;
 }
 .rtp-on {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: rgba(var(--accent-rgb),0.15);
   border: 1px solid var(--accent);
   padding: 1px 5px;
   border-radius: 3px;
@@ -285,10 +236,9 @@ const jitterColor = computed(() => {
   margin-bottom: 5px;
 }
 .state-name {
-  font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text1);
-  min-width: 52px;
+  min-width: 30px;
 }
 .state-track {
   flex: 1;
@@ -306,7 +256,7 @@ const jitterColor = computed(() => {
   font-family: var(--mono);
   font-size: 10px;
   color: var(--text0);
-  min-width: 24px;
+  min-width: 44px;
   text-align: right;
 }
 
@@ -346,7 +296,7 @@ const jitterColor = computed(() => {
   justify-content: flex-end;
 }
 .rtp-tag {
-  font-size: 9px;
+  font-size: 10px;
   opacity: 0.75;
 }
 
@@ -361,10 +311,8 @@ const jitterColor = computed(() => {
   gap: 1px;
 }
 .rtp-stat-key {
-  font-family: var(--mono);
-  font-size: 8px;
+  font-size: 10px;
   color: var(--text2);
-  text-transform: uppercase;
 }
 .rtp-stat-val {
   font-family: var(--mono);
@@ -373,14 +321,13 @@ const jitterColor = computed(() => {
 }
 
 .rtp-hint {
-  font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   line-height: 1.7;
 }
 .rtp-hint code {
   color: var(--accent);
-  background: rgba(0,229,192,0.08);
+  background: rgba(var(--accent-rgb),0.08);
   padding: 0 3px;
   border-radius: 2px;
 }
@@ -403,44 +350,13 @@ const jitterColor = computed(() => {
   color: var(--text1);
 }
 .empty {
-  font-family: var(--mono);
   font-size: 11px;
   color: var(--text2);
 }
 
-/* ── SIP Flow ───────────────────────────── */
-.flow-section { flex: 1; }
-.flow-item { position: relative; }
-.flow-line {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.flow-dot {
-  width: 5px; height: 5px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.flow-msg {
-  font-family: var(--mono);
+.rp-note {
   font-size: 10px;
-  flex: 1;
-}
-.flow-time {
-  font-family: var(--mono);
-  font-size: 9px;
   color: var(--text2);
-}
-.flow-note {
-  font-size: 9px;
-  color: var(--text2);
-  margin-left: 10px;
-  margin-bottom: 1px;
-}
-.flow-vline {
-  width: 0;
-  height: 8px;
-  border-left: 1px dashed var(--border);
-  margin-left: 2px;
+  margin-top: 4px;
 }
 </style>

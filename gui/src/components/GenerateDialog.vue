@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 
 interface GenerateOptions {
   count: number
@@ -33,17 +33,21 @@ const domain         = ref(props.defaultDomain)
 // Sync domain when prop changes
 watch(() => props.defaultDomain, v => { domain.value = v })
 
-// Reset when opened
+const firstInput = ref<HTMLInputElement | null>(null)
+const MAX_COUNT  = 500
+
+// Reset when opened; focus first field; Esc/Enter work regardless of focus
 watch(() => props.visible, v => {
-  if (v) {
-    count.value          = 5
-    startExt.value       = 1001
-    usernamePrefix.value = ''
-    passwordMode.value   = 'same'
-    samePassword.value   = '1234'
-    customPassword.value = ''
-    domain.value         = props.defaultDomain
-  }
+  if (!v) { window.removeEventListener('keydown', handleKeydown); return }
+  window.addEventListener('keydown', handleKeydown)
+  nextTick(() => { firstInput.value?.focus(); firstInput.value?.select() })
+  count.value          = 5
+  startExt.value       = 1001
+  usernamePrefix.value = ''
+  passwordMode.value   = 'same'
+  samePassword.value   = '1234'
+  customPassword.value = ''
+  domain.value         = props.defaultDomain
 })
 
 // ── Preview ────────────────────────────────────────────────────────
@@ -54,7 +58,7 @@ const preview = computed(() => {
     const ext  = startExt.value + i
     const user = usernamePrefix.value ? `${usernamePrefix.value}${ext}` : String(ext)
     const pass = passwordMode.value === 'ext'    ? String(ext)
-               : passwordMode.value === 'custom' ? customPassword.value
+               : passwordMode.value === 'custom' ? customPassword.value.replaceAll('{ext}', String(ext))
                : samePassword.value
     rows.push({ ext, user, pass, domain: domain.value })
   }
@@ -63,7 +67,7 @@ const preview = computed(() => {
 })
 
 const isValid = computed(() =>
-  count.value >= 1 &&
+  count.value >= 1 && count.value <= MAX_COUNT &&
   startExt.value >= 1 &&
   domain.value.trim() !== '' &&
   (passwordMode.value !== 'same'   || samePassword.value !== '') &&
@@ -87,19 +91,20 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('cancel')
   if (e.key === 'Enter' && isValid.value) handleConfirm()
 }
+onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="overlay">
-      <div v-if="visible" class="overlay" @click.self="emit('cancel')" @keydown="handleKeydown" tabindex="-1">
+      <div v-if="visible" class="overlay" @click.self="emit('cancel')">
         <Transition name="dialog">
-          <div v-if="visible" class="dialog" role="dialog" aria-modal="true">
+          <div v-if="visible" class="dialog" role="dialog" aria-modal="true" aria-labelledby="gen-dlg-title">
 
             <!-- Header -->
             <div class="dialog-hdr">
-              <span class="dialog-title">快速生成座席帳號</span>
-              <button class="close-btn" @click="emit('cancel')">×</button>
+              <span class="dialog-title" id="gen-dlg-title">快速生成座席帳號</span>
+              <button class="close-btn" @click="emit('cancel')" aria-label="關閉">×</button>
             </div>
 
             <!-- Body -->
@@ -109,7 +114,8 @@ function handleKeydown(e: KeyboardEvent) {
               <div class="field-row">
                 <div class="field">
                   <label>生成數量</label>
-                  <input v-model.number="count" type="number" min="1" max="500" class="field-input" autofocus>
+                  <input ref="firstInput" v-model.number="count" type="number" min="1" :max="MAX_COUNT" class="field-input" :class="{ invalid: count > MAX_COUNT || count < 1 }">
+                  <div class="field-err" v-if="count > MAX_COUNT">單次最多 {{ MAX_COUNT }} 個</div>
                 </div>
                 <div class="field">
                   <label>起始分機號</label>
@@ -165,7 +171,7 @@ function handleKeydown(e: KeyboardEvent) {
                 <input v-model="customPassword" type="text" class="field-input"
                        placeholder="例：pass{ext} → pass1001">
                 <div class="field-hint" v-if="customPassword">
-                  預覽：<code>{{ customPassword.replace('{ext}', String(startExt)) }}</code>
+                  預覽：<code>{{ customPassword.replaceAll('{ext}', String(startExt)) }}</code>
                 </div>
               </div>
 
@@ -309,7 +315,9 @@ function handleKeydown(e: KeyboardEvent) {
   width: 100%;
 }
 .field-input:hover { border-color: var(--border3); }
-.field-input:focus { border-color: rgba(0,184,154,0.5); }
+.field-input:focus { border-color: rgba(var(--accent-rgb),0.6); }
+.field-input.invalid { border-color: rgba(var(--danger-rgb),0.6); }
+.field-err { font-size: 10px; color: var(--danger); }
 
 .field-hint {
   font-size: 10px;
@@ -352,8 +360,8 @@ function handleKeydown(e: KeyboardEvent) {
 }
 .radio-opt:hover { border-color: var(--border3); background: var(--bg3); }
 .radio-opt.active {
-  border-color: rgba(0,184,154,0.4);
-  background: rgba(0,184,154,0.07);
+  border-color: rgba(var(--accent-rgb),0.4);
+  background: rgba(var(--accent-rgb),0.07);
   color: var(--accent);
 }
 .radio-opt input[type="radio"] { display: none; }
@@ -373,7 +381,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 .preview-label {
   padding: 5px 10px;
-  font-size: 9px;
+  font-size: 10px;
   font-family: var(--mono);
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -389,7 +397,7 @@ function handleKeydown(e: KeyboardEvent) {
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
 }
-.preview-hdr .pc { color: var(--text2); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
+.preview-hdr .pc { color: var(--text2); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 .preview-row {
   display: flex;
   padding: 4px 10px;

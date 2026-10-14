@@ -25,31 +25,31 @@ const errClass = computed(() => {
     <div class="cell">
       <div class="name">CPS</div>
       <div class="val c-accent">{{ isReady ? store.metrics.cps.toFixed(1) : '—' }}</div>
-      <div class="unit">calls / sec</div>
+      <div class="unit">每秒發起</div>
     </div>
 
     <div class="cell">
       <div class="name">CONCUR</div>
       <div class="val c-blue">{{ isReady ? store.metrics.concurrency : '—' }}</div>
-      <div class="unit">active calls</div>
+      <div class="unit">進行中通話</div>
     </div>
 
     <div class="cell">
       <div class="name">SUCCESS</div>
       <div class="val c-accent">{{ isReady ? store.metrics.succeeded.toLocaleString() : '—' }}</div>
-      <div class="unit">answered</div>
+      <div class="unit">已接通</div>
     </div>
 
     <div class="cell">
       <div class="name">FAILED</div>
       <div class="val c-danger">{{ isReady ? store.metrics.failed.toLocaleString() : '—' }}</div>
-      <div class="unit">failed + timeout</div>
+      <div class="unit">失敗 + 逾時</div>
     </div>
 
     <div class="cell">
-      <div class="name">QUEUED</div>
-      <div class="val c-blue">{{ isReady ? store.metrics.queued : '—' }}</div>
-      <div class="unit">in-flight</div>
+      <div class="name">TOTAL</div>
+      <div class="val">{{ isReady ? store.metrics.initiated.toLocaleString() : '—' }}</div>
+      <div class="unit">累計發起</div>
     </div>
 
     <div class="cell">
@@ -57,7 +57,7 @@ const errClass = computed(() => {
       <div class="val" :class="asrClass">
         {{ isReady ? store.metrics.asr.toFixed(1) + '%' : '—' }}
       </div>
-      <div class="unit">answer rate</div>
+      <div class="unit">接通率</div>
     </div>
 
     <div class="cell">
@@ -65,13 +65,13 @@ const errClass = computed(() => {
       <div class="val" :class="errClass">
         {{ isReady ? store.metrics.errorRate.toFixed(1) + '%' : '—' }}
       </div>
-      <div class="unit">error rate</div>
+      <div class="unit">錯誤率</div>
     </div>
 
     <div class="cell">
       <div class="name">PDD</div>
       <div class="val c-warn">{{ isReady && store.metrics.pdd > 0 ? store.metrics.pdd.toFixed(0) + 'ms' : '—' }}</div>
-      <div class="unit">avg delay</div>
+      <div class="unit">{{ store.status === 'done' ? '撥號延遲 p50' : '撥號延遲 平均' }}</div>
     </div>
 
   </div>
@@ -86,6 +86,7 @@ const errClass = computed(() => {
 }
 
 .cell {
+  min-width: 0;
   padding: 10px 12px;
   border-right: 1px solid var(--border);
   cursor: default;
@@ -96,7 +97,7 @@ const errClass = computed(() => {
 
 .name {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.1em;
   color: var(--text2);
@@ -121,5 +122,17 @@ const errClass = computed(() => {
   font-size: 10px;
   color: var(--text2);
   margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 窄視窗：8 欄 → 4×2 */
+@media (max-width: 1080px) {
+  .metric-strip { grid-template-columns: repeat(4, 1fr); }
+  .cell:nth-child(4n) { border-right: none; }
+  .cell:nth-child(-n+4) { border-bottom: 1px solid var(--border); }
+  .cell { padding: 7px 12px; }
+  .val { font-size: 17px; }
 }
 </style>
