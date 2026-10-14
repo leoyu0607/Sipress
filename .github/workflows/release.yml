@@ -2,8 +2,10 @@ name: Release
 
 # 發佈：git tag v0.2.0 && git push origin v0.2.0
 # 試跑：Actions → Release → Run workflow，tag 留空 → 只建置，檔案存為 workflow artifact
+# push 到 main：同樣只建置不發佈，各平台執行檔存為 workflow artifact
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -16,8 +18,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || github.run_id }}
-  cancel-in-progress: false
+  group: release-${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || (github.event_name == 'push' && github.ref) || github.run_id }}
+  # main 連續 push 時取消舊的建置；tag 發佈不可中途取消
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
 
 env:
   CARGO_TERM_COLOR: always
