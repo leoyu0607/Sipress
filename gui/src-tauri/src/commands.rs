@@ -16,20 +16,20 @@ use tokio::sync::mpsc;
 
 // ── 全域狀態 ─────────────────────────────────────────────────────
 
-/// 跨 command 共享的執行狀態
+/// 單一模式（民眾端或座席端）的執行狀態
 #[derive(Default)]
-pub struct AppState {
+pub struct Session {
     pub snapshot:   Mutex<Option<StatsSnapshot>>,
     pub report:     Mutex<Option<FinalReport>>,
     /// 引擎執行失敗的原因（get_report 會回傳此錯誤給前端）
     pub error:      Mutex<Option<String>>,
     pub stop_tx:    Mutex<Option<mpsc::Sender<()>>>,
-    /// 是否有壓測正在執行（含停止後的收尾階段），防止重複啟動
+    /// 此模式是否有壓測正在執行（含停止後的收尾階段），防止重複啟動
     pub running:    AtomicBool,
 }
 
-impl AppState {
-    /// 嘗試佔用執行權；已有壓測在跑時回傳 false
+impl Session {
+    /// 嘗試佔用執行權；此模式已有壓測在跑時回傳 false
     fn try_begin(&self) -> bool {
         self.running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -59,6 +59,22 @@ impl AppState {
     }
 }
 
+/// 跨 command 共享的執行狀態：民眾端與座席端各自獨立，可在同一台電腦同時執行
+#[derive(Default)]
+pub struct AppState {
+    pub caller: Arc<Session>,
+    pub agent:  Arc<Session>,
+}
+
+impl AppState {
+    fn session(&self, mode: &Mode) -> Arc<Session> {
+        match mode {
+            Mode::Caller => Arc::clone(&self.caller),
+            Mode::Agent  => Arc::clone(&self.agent),
+        }
+    }
+}
+
 // ── Tauri Commands ────────────────────────────────────────────────
 
 /// 啟動壓測
@@ -68,11 +84,11 @@ pub async fn start_test(
     state:  State<'_, Arc<AppState>>,
     config: Config,
 ) -> Result<String, String> {
-    let state = Arc::clone(&state);
-
     config.validate().map_err(|e| e.to_string())?;
+    let state = state.session(&config.mode);
     if !state.try_begin() {
-        return Err("已有壓測正在執行，請先停止或等待結束".to_string());
+        let side = if config.mode == Mode::Agent { "座席端" } else { "民眾端" };
+        return Err(format!("{}已有壓測正在執行，請先停止或等待結束", side));
     }
 
     // 清除舊結果
@@ -133,13 +149,14 @@ pub async fn start_test(
     Ok("started".to_string())
 }
 
-/// 手動停止壓測
+/// 手動停止指定模式的壓測
 #[tauri::command]
 pub async fn stop_test(
     state: State<'_, Arc<AppState>>,
+    mode:  Mode,
 ) -> Result<String, String> {
     // Take the sender out BEFORE any await so MutexGuard is not held across threads
-    let tx = state.stop_tx.lock().unwrap().take();
+    let tx = state.session(&mode).stop_tx.lock().unwrap().take();
     if let Some(tx) = tx {
         let _ = tx.send(()).await;
         Ok("stopped".to_string())
@@ -152,19 +169,23 @@ pub async fn stop_test(
 #[tauri::command]
 pub fn get_snapshot(
     state: State<'_, Arc<AppState>>,
+    mode:  Mode,
 ) -> Option<StatsSnapshot> {
-    state.snapshot.lock().unwrap().clone()
+    state.session(&mode).snapshot.lock().unwrap().clone()
 }
 
 /// 取得最終報告（壓測完成後）；引擎執行失敗時回傳錯誤原因
 #[tauri::command]
 pub fn get_report(
     state: State<'_, Arc<AppState>>,
+    mode:  Mode,
 ) -> Result<Option<FinalReport>, String> {
-    if let Some(e) = state.error.lock().unwrap().clone() {
+    let session = state.session(&mode);
+    if let Some(e) = session.error.lock().unwrap().clone() {
         return Err(e);
     }
-    Ok(state.report.lock().unwrap().clone())
+    let report = session.report.lock().unwrap().clone();
+    Ok(report)
 }
 
 /// 對單一帳號發起 SIP REGISTER（含 Digest 認證重送），回傳結果
@@ -196,10 +217,11 @@ pub async fn register_account(
 #[tauri::command]
 pub fn get_html_report(
     state:       State<'_, Arc<AppState>>,
+    mode:        Mode,
     server_addr: String,
     timestamp:   String,
 ) -> Result<String, String> {
-    let report = state.report.lock().unwrap().clone()
+    let report = state.session(&mode).report.lock().unwrap().clone()
         .ok_or_else(|| "尚無測試結果，請先完成或停止一次壓測".to_string())?;
     Ok(HtmlReporter::render(&report, &timestamp, &server_addr))
 }
@@ -231,7 +253,7 @@ mod tests {
 
     #[test]
     fn second_start_is_rejected_while_running() {
-        let state = AppState::default();
+        let state = Session::default();
         assert!(state.try_begin());
         assert!(!state.try_begin(), "執行中不可再次啟動");
         state.finish(Ok(sample_report()));
@@ -240,7 +262,7 @@ mod tests {
 
     #[test]
     fn engine_error_is_kept_and_snapshot_marked_finished() {
-        let state = AppState::default();
+        let state = Session::default();
         assert!(state.try_begin());
         state.finish(Err("無效的 server 位址".into()));
 
@@ -253,7 +275,7 @@ mod tests {
 
     #[test]
     fn finish_marks_existing_snapshot_finished() {
-        let state = AppState::default();
+        let state = Session::default();
         assert!(state.try_begin());
         *state.snapshot.lock().unwrap() = Some(StatsSnapshot { calls_initiated: 7, ..Default::default() });
         state.finish(Ok(sample_report()));
@@ -262,6 +284,20 @@ mod tests {
         assert!(snap.finished);
         assert_eq!(snap.calls_initiated, 7, "既有的即時數據應保留");
         assert!(state.report.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn caller_and_agent_run_independently() {
+        let app = AppState::default();
+        assert!(app.session(&Mode::Caller).try_begin());
+        assert!(app.session(&Mode::Agent).try_begin(), "民眾端執行中，座席端仍應可啟動");
+        assert!(!app.session(&Mode::Agent).try_begin());
+
+        app.session(&Mode::Agent).finish(Ok(sample_report()));
+        assert!(app.caller.running.load(Ordering::SeqCst), "座席端結束不應影響民眾端");
+        assert!(app.caller.report.lock().unwrap().is_none());
+        assert!(app.agent.report.lock().unwrap().is_some());
+        assert!(app.caller.snapshot.lock().unwrap().is_none());
     }
 
     // ── 前端 ↔ Rust 資料契約 ───────────────────────────────────────

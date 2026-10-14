@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useTestStore } from '../stores/testStore'
+import { useTestStore, MODE_LABEL } from '../stores/testStore'
 
 const store = useTestStore()
 const appWindow = getCurrentWindow()
@@ -32,6 +32,22 @@ const btnLabel = computed(() =>
 const startBlocked = computed(() =>
   store.status !== 'running' && store.validationErrors.length > 0
 )
+
+// 雙端：同時跑民眾端 + 座席端（先座席 REGISTER，再民眾撥號）
+const bothRunning = computed(() =>
+  store.sessions.caller.status === 'running' && store.sessions.agent.status === 'running'
+)
+const bothLabel = computed(() => store.anyRunning ? '■ 全部停止' : '⇄ 雙端啟動')
+const bothBlocked = computed(() => !store.anyRunning && store.bothValidationErrors.length > 0)
+const bothTitle = computed(() =>
+  bothBlocked.value ? ['無法雙端啟動：', ...store.bothValidationErrors.map(e => `• ${e}`)].join('\n')
+  : store.anyRunning ? '停止民眾端與座席端'
+  : '先啟動座席端註冊，再啟動民眾端撥號'
+)
+function toggleBoth() {
+  if (store.anyRunning) store.stopAll()
+  else store.startBoth()
+}
 const btnTitle = computed(() =>
   startBlocked.value ? ['無法開始：', ...store.validationErrors.map(e => `• ${e}`)].join('\n') : ''
 )
@@ -56,7 +72,10 @@ function toggleTest() {
     <!-- Status badge -->
     <div class="status-badge" :class="store.status">
       <div class="dot" :class="{ pulse: store.status === 'running' }"></div>
-      <span>{{ STATUS_LABEL[store.status] }}</span>
+      <span>{{ MODE_LABEL[store.config.mode] }} · {{ STATUS_LABEL[store.status] }}</span>
+    </div>
+    <div class="status-badge running" v-if="bothRunning" title="民眾端與座席端同時執行中">
+      <span>雙端執行中</span>
     </div>
 
     <!-- Target -->
@@ -114,6 +133,11 @@ function toggleTest() {
 
       <div class="sep-v"></div>
 
+      <span class="start-wrap" :title="bothTitle">
+        <button class="btn btn-sm" :disabled="bothBlocked" @click="toggleBoth">
+          {{ bothLabel }}
+        </button>
+      </span>
       <span class="start-wrap" :title="btnTitle">
         <button :class="btnClass + ' btn-sm'" :disabled="startBlocked || store.stopping" @click="toggleTest">
           {{ btnLabel }}

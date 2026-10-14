@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, mosGrade, MAX_SERIES, type RustSnapshot, type RustReport } from '../stores/testStore'
+import { useTestStore, mosGrade, MAX_SERIES, AGENT_WARMUP_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -223,6 +223,110 @@ describe('測試執行流程', () => {
     await s.startTest()
     await s.stopTest()
     await vi.waitFor(() => expect(s.status).toBe('done'))
+  })
+})
+
+// ── 民眾端 + 座席端同時執行 ─────────────────────────────────────────
+describe('雙端同時執行', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+  const tick = () => vi.advanceTimersByTimeAsync(1000)
+
+  function withAccount(s: ReturnType<typeof useTestStore>) {
+    s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'p', domain: '', status: 'idle' }]
+  }
+
+  /** 依 mode 回傳不同 snapshot，模擬後端兩個獨立 session */
+  function routeByMode(finished: { caller: boolean; agent: boolean } = { caller: false, agent: false }) {
+    return routeInvoke({
+      start_test:   () => 'started',
+      stop_test:    () => null,
+      get_snapshot: a => snap({ calls_initiated: a?.mode === 'caller' ? 10 : 3, finished: finished[a?.mode as 'caller' | 'agent'] }),
+      get_report:   () => baseReport,
+    })
+  }
+
+  it('兩個模式可各自啟動，狀態與指標互不干擾', async () => {
+    const calls = routeByMode()
+    const s = useTestStore()
+    withAccount(s)
+    await s.startTest('caller')
+    await s.startTest('agent')
+    expect(calls.filter(c => c.cmd === 'start_test').map(c => (c.args?.config as { mode: string }).mode))
+      .toEqual(['caller', 'agent'])
+
+    await tick()
+    expect(s.sessions.caller.metrics.initiated).toBe(10)
+    expect(s.sessions.agent.metrics.initiated).toBe(3)
+
+    // 畫面依檢視中的模式顯示
+    s.config.mode = 'caller'
+    expect(s.metrics.initiated).toBe(10)
+    s.config.mode = 'agent'
+    expect(s.metrics.initiated).toBe(3)
+    expect(s.anyRunning).toBe(true)
+  })
+
+  it('停止其中一端不影響另一端', async () => {
+    const finished = { caller: false, agent: false }
+    const calls = routeByMode(finished)
+    const s = useTestStore()
+    withAccount(s)
+    await s.startTest('caller')
+    await s.startTest('agent')
+
+    await s.stopTest('agent')
+    expect(calls.find(c => c.cmd === 'stop_test')?.args).toEqual({ mode: 'agent' })
+    finished.agent = true
+    await tick()
+    await vi.waitFor(() => expect(s.sessions.agent.status).toBe('done'))
+    expect(s.sessions.caller.status).toBe('running')
+    expect(calls.find(c => c.cmd === 'get_report')?.args).toEqual({ mode: 'agent' })
+  })
+
+  it('log 標記來源模式', async () => {
+    routeByMode()
+    const s = useTestStore()
+    withAccount(s)
+    await s.startTest('agent')
+    expect(s.logs.some(l => l.mode === 'agent' && l.msg.includes('座席端'))).toBe(true)
+  })
+
+  it('雙端啟動：先座席，等待註冊後再啟動民眾端', async () => {
+    const calls = routeByMode()
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.sessions.agent.status).toBe('running')
+    expect(s.sessions.caller.status).toBe('idle')
+
+    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await done
+    expect(s.sessions.caller.status).toBe('running')
+    expect(calls.filter(c => c.cmd === 'start_test').map(c => (c.args?.config as { mode: string }).mode))
+      .toEqual(['agent', 'caller'])
+  })
+
+  it('雙端啟動等待期間停止座席 → 不啟動民眾端', async () => {
+    const calls = routeByMode()
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(0)
+    await s.stopTest('agent')
+    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await done
+    expect(s.sessions.caller.status).toBe('idle')
+    expect(calls.filter(c => c.cmd === 'start_test')).toHaveLength(1)
+  })
+
+  it('雙端啟動需要兩端設定都有效', async () => {
+    const calls = routeByMode()
+    const s = useTestStore()
+    await s.startBoth()                                  // 沒有座席帳號
+    expect(calls).toEqual([])
+    expect(s.bothValidationErrors).toEqual(['座席模式需要至少一個帳號'])
   })
 })
 

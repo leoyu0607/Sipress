@@ -108,11 +108,30 @@ export interface LogEntry {
   ts: string
   level: 'ok' | 'info' | 'warn' | 'err' | 'dbg'
   msg: string
+  /** 來源模式（兩端同時執行時用來區分）；未設定 = 共用訊息 */
+  mode?: CallMode
 }
 
 export type TestStatus = 'idle' | 'running' | 'done' | 'error'
 
 export type SeriesKey = 'cps' | 'conc' | 'asr' | 'ccr' | 'pdd' | 'fail' | 'mos'
+
+/** 單一模式的執行狀態；民眾端與座席端各一份，可同時執行 */
+export interface RunSession {
+  status:       TestStatus
+  /** 已送出停止、等待引擎收尾中（BYE/CANCEL）；防止重複停止 */
+  stopping:     boolean
+  elapsedSec:   number
+  metrics:      Metrics
+  series:       Record<SeriesKey, number[]>
+  /** 每個系列已被捨棄（shift 掉）的筆數，用於 X 軸時間標籤 */
+  seriesOffset: Record<SeriesKey, number>
+  /** 每次系列資料變動 +1；圖表監聽此值重繪（長度到上限後不再變化） */
+  seriesTick:   number
+  callStates:   CallStates
+  respCodes:    Record<string, number>
+  rtpMetrics:   RtpMetrics
+}
 
 // Rust StatsSnapshot shape
 export interface RustSnapshot {
@@ -163,6 +182,10 @@ export interface RustReport {
 export const MAX_SERIES  = 90
 const MAX_LOG     = 300
 const STORAGE_KEY = 'sipress-config'
+/** 雙端啟動：座席端啟動後等待 REGISTER 完成再開始撥號 */
+export const AGENT_WARMUP_MS = 2000
+
+export const MODE_LABEL: Record<CallMode, string> = { caller: '民眾端', agent: '座席端' }
 
 export const CODEC_LABEL: Record<CallerProfile['codec'], { short: string; full: string }> = {
   pcma: { short: 'G.711A', full: 'G.711A (PCMA)' },
@@ -183,6 +206,23 @@ function fileTs() {
   const d   = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
+function emptySeries(): Record<SeriesKey, number[]> {
+  return { cps: [], conc: [], asr: [], ccr: [], pdd: [], fail: [], mos: [] }
+}
+
+function newSession(): RunSession {
+  return {
+    status: 'idle', stopping: false, elapsedSec: 0,
+    metrics: { cps:0, concurrency:0, succeeded:0, failed:0, initiated:0, asr:0, ccr:0, errorRate:0, pdd:0, acd:0 },
+    series: emptySeries(),
+    seriesOffset: { cps:0, conc:0, asr:0, ccr:0, pdd:0, fail:0, mos:0 },
+    seriesTick: 0,
+    callStates: { initiated:0, answered:0, completed:0, failed:0, timeout:0 },
+    respCodes: {},
+    rtpMetrics: { enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 },
+  }
 }
 
 /** MOS 分級（全 App 共用）：≥4.0 優 / ≥3.0 普通 / 其餘 差 */
@@ -271,37 +311,47 @@ export const useTestStore = defineStore('test', () => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(c)) } catch { /* quota / private mode */ }
   }, { deep: true })
 
-  const status      = ref<TestStatus>('idle')
-  const elapsedSec  = ref(0)
-  const metrics     = ref<Metrics>({
-    cps: 0, concurrency: 0, succeeded: 0, failed: 0, initiated: 0,
-    asr: 0, ccr: 0, errorRate: 0, pdd: 0, acd: 0,
-  })
-  const series      = ref<Record<SeriesKey, number[]>>({
-    cps: [], conc: [], asr: [], ccr: [], pdd: [], fail: [], mos: [],
-  })
-  /** 每個系列已被捨棄（shift 掉）的筆數，用於 X 軸時間標籤 */
-  const seriesOffset = ref<Record<SeriesKey, number>>({
-    cps: 0, conc: 0, asr: 0, ccr: 0, pdd: 0, fail: 0, mos: 0,
-  })
-  /** 每次系列資料變動 +1；圖表監聽此值重繪（長度到上限後不再變化） */
-  const seriesTick  = ref(0)
-  const callStates  = ref<CallStates>({ initiated:0, answered:0, completed:0, failed:0, timeout:0 })
-  const respCodes   = ref<Record<string, number>>({})
-  const logs        = ref<LogEntry[]>([])
-  const rtpMetrics  = ref<RtpMetrics>({ enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 })
-  const accountImportError = ref('')
-  /** 已送出停止、等待引擎收尾中（BYE/CANCEL）；防止重複停止 */
-  const stopping    = ref(false)
+  const sessions = ref<Record<CallMode, RunSession>>({ caller: newSession(), agent: newSession() })
+  /** 畫面目前檢視的模式（= 模式分頁） */
+  const view = computed(() => sessions.value[config.value.mode])
 
-  let pollTimer:  ReturnType<typeof setInterval> | null = null
-  let clockTimer: ReturnType<typeof setInterval> | null = null
-  let prevInitiated = 0
-  let rtpLoggedOnce = false   // 防止重複寫 RTP session 啟動 log
+  const status       = computed(() => view.value.status)
+  const stopping     = computed(() => view.value.stopping)
+  const elapsedSec   = computed(() => view.value.elapsedSec)
+  const metrics      = computed(() => view.value.metrics)
+  const series       = computed(() => view.value.series)
+  const seriesOffset = computed(() => view.value.seriesOffset)
+  const seriesTick   = computed(() => view.value.seriesTick)
+  const callStates   = computed(() => view.value.callStates)
+  const respCodes    = computed(() => view.value.respCodes)
+  const rtpMetrics   = computed(() => view.value.rtpMetrics)
+
+  const logs        = ref<LogEntry[]>([])
+  const accountImportError = ref('')
+
+  /** 不需反應式的每模式執行期資料 */
+  const runtime: Record<CallMode, {
+    pollTimer:     ReturnType<typeof setInterval> | null
+    clockTimer:    ReturnType<typeof setInterval> | null
+    prevInitiated: number
+    rtpLoggedOnce: boolean   // 防止重複寫 RTP session 啟動 log
+  }> = {
+    caller: { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
+    agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
+  }
   let logSeq = 0
+  /** 雙端啟動中等待座席註冊的計時器；取消時呼叫 resolve 讓 startBoth 收尾 */
+  let bothWait: { timer: ReturnType<typeof setTimeout>; resolve: () => void } | null = null
+  function cancelBothWait() {
+    if (!bothWait) return
+    clearTimeout(bothWait.timer)
+    bothWait.resolve()
+    bothWait = null
+  }
 
   // ── Computed ──────────────────────────────────────────────────────────────────
   const isRunning = computed(() => status.value === 'running')
+  const anyRunning = computed(() => sessions.value.caller.status === 'running' || sessions.value.agent.status === 'running')
 
   const mosRating = computed(() => mosGrade(rtpMetrics.value.mos).key)
 
@@ -311,13 +361,13 @@ export const useTestStore = defineStore('test', () => {
     config.value.agent.accounts.filter(a => a.status === 'registered').length
   )
 
-  /** 啟動前驗證；非空代表無法開始測試 */
-  const validationErrors = computed(() => {
+  /** 啟動前驗證；非空代表無法開始該模式的測試 */
+  function validate(mode: CallMode): string[] {
     const c = config.value
     const errs: string[] = []
     if (!c.server.trim()) errs.push('SIP server 不可空白')
     else if (!/^[^\s:]+:\d{1,5}$/.test(c.server.trim())) errs.push('SIP server 格式需為 host:port')
-    if (c.mode === 'caller') {
+    if (mode === 'caller') {
       const p = c.caller
       if (!p.accessNumber.trim()) errs.push('主叫號碼不可空白')
       if (!(p.concurrency >= 1)) errs.push('併發數量需 ≥ 1')
@@ -330,7 +380,10 @@ export const useTestStore = defineStore('test', () => {
       errs.push('座席模式需要至少一個帳號')
     }
     return errs
-  })
+  }
+  const validationErrors = computed(() => validate(config.value.mode))
+  /** 雙端啟動的驗證（兩端錯誤合併，去除重複的共用欄位錯誤） */
+  const bothValidationErrors = computed(() => [...new Set([...validate('agent'), ...validate('caller')])])
 
   /** 目前設定中 CLI 不支援、因此不會出現在 CLI 預覽中的項目 */
   const cliUnsupported = computed(() => {
@@ -366,20 +419,20 @@ export const useTestStore = defineStore('test', () => {
   )
 
   // ── Log ───────────────────────────────────────────────────────────────────────
-  function addLog(level: LogEntry['level'], msg: string) {
-    logs.value.push({ id: ++logSeq, ts: nowTs(), level, msg })
+  function addLog(level: LogEntry['level'], msg: string, mode?: CallMode) {
+    logs.value.push({ id: ++logSeq, ts: nowTs(), level, msg, ...(mode ? { mode } : {}) })
     if (logs.value.length > MAX_LOG) logs.value.shift()
   }
   function clearLog() { logs.value = [] }
 
   // ── Series ────────────────────────────────────────────────────────────────────
-  function pushSeries(key: SeriesKey, val: number) {
-    series.value[key].push(val)
-    if (series.value[key].length > MAX_SERIES) {
-      series.value[key].shift()
-      seriesOffset.value[key]++
+  function pushSeries(r: RunSession, key: SeriesKey, val: number) {
+    r.series[key].push(val)
+    if (r.series[key].length > MAX_SERIES) {
+      r.series[key].shift()
+      r.seriesOffset[key]++
     }
-    seriesTick.value++
+    r.seriesTick++
   }
 
   // ── CPS pattern builder ──────────────────────────────────────────────────────
@@ -393,7 +446,7 @@ export const useTestStore = defineStore('test', () => {
   }
 
   // ── Rust config builder ───────────────────────────────────────────────────────
-  function buildRustConfig() {
+  function buildRustConfig(mode: CallMode = config.value.mode) {
     const c = config.value
     return {
       server_addr:          c.server.trim(),
@@ -417,8 +470,8 @@ export const useTestStore = defineStore('test', () => {
       codec:                c.caller.codec,
       enable_rtp:           c.caller.enableAudio && !!c.caller.audioFile,
       dtmf_sequence:        c.caller.dtmfSequence || null,
-      mode:                 c.mode,                                          // 'caller' | 'agent'
-      agent_accounts:       c.mode === 'agent'
+      mode,                                                                  // 'caller' | 'agent'
+      agent_accounts:       mode === 'agent'
         ? c.agent.accounts.map(a => ({
             extension: a.extension,
             username:  a.username,
@@ -432,12 +485,14 @@ export const useTestStore = defineStore('test', () => {
   }
 
   // ── Snapshot → store ─────────────────────────────────────────────────────────
-  function applySnapshot(snap: RustSnapshot) {
-    const cps = Math.max(0, snap.calls_initiated - prevInitiated)
-    prevInitiated = snap.calls_initiated
+  function applySnapshot(mode: CallMode, snap: RustSnapshot) {
+    const r   = sessions.value[mode]
+    const rt  = runtime[mode]
+    const cps = Math.max(0, snap.calls_initiated - rt.prevInitiated)
+    rt.prevInitiated = snap.calls_initiated
     const failed = snap.calls_failed + snap.calls_timeout
 
-    metrics.value = {
+    r.metrics = {
       cps,
       concurrency: snap.calls_concurrent,
       succeeded:   snap.calls_answered,
@@ -452,7 +507,7 @@ export const useTestStore = defineStore('test', () => {
       acd:         0,
     }
 
-    callStates.value = {
+    r.callStates = {
       initiated: snap.calls_initiated,
       answered:  snap.calls_answered,
       completed: snap.calls_completed,
@@ -460,29 +515,29 @@ export const useTestStore = defineStore('test', () => {
       timeout:   snap.calls_timeout,
     }
 
-    pushSeries('cps',  cps)
-    pushSeries('conc', snap.calls_concurrent)
-    pushSeries('asr',  snap.asr)
-    pushSeries('ccr',  metrics.value.ccr)
-    pushSeries('fail', failed)
-    if (snap.pdd_avg_ms != null) pushSeries('pdd', snap.pdd_avg_ms)
+    pushSeries(r, 'cps',  cps)
+    pushSeries(r, 'conc', snap.calls_concurrent)
+    pushSeries(r, 'asr',  snap.asr)
+    pushSeries(r, 'ccr',  r.metrics.ccr)
+    pushSeries(r, 'fail', failed)
+    if (snap.pdd_avg_ms != null) pushSeries(r, 'pdd', snap.pdd_avg_ms)
 
     // Approximate live respCodes from snapshot counters
-    respCodes.value['200'] = snap.calls_answered
-    respCodes.value['408'] = snap.calls_timeout
+    r.respCodes['200'] = snap.calls_answered
+    r.respCodes['408'] = snap.calls_timeout
 
     if (failed > 0)
-      addLog('warn', `失敗 ${snap.calls_failed} 逾時 ${snap.calls_timeout}  發起 ${snap.calls_initiated}  ASR ${snap.asr.toFixed(1)}%`)
+      addLog('warn', `失敗 ${snap.calls_failed} 逾時 ${snap.calls_timeout}  發起 ${snap.calls_initiated}  ASR ${snap.asr.toFixed(1)}%`, mode)
 
     // RTP session 啟動後只寫一次 log
-    if ((snap.rtp_sessions ?? 0) > 0 && !rtpLoggedOnce) {
-      rtpLoggedOnce = true
-      addLog('ok', `RTP ${codecLabel.value.short} 音訊傳送中（${snap.rtp_sessions} session${snap.rtp_sessions > 1 ? 's' : ''} active）`)
+    if ((snap.rtp_sessions ?? 0) > 0 && !rt.rtpLoggedOnce) {
+      rt.rtpLoggedOnce = true
+      addLog('ok', `RTP ${codecLabel.value.short} 音訊傳送中（${snap.rtp_sessions} session${snap.rtp_sessions > 1 ? 's' : ''} active）`, mode)
     }
 
     // 即時 RTP 品質更新
     if (snap.rtp_mos !== null && snap.rtp_mos !== undefined) {
-      rtpMetrics.value = {
+      r.rtpMetrics = {
         enabled:     true,
         mos:         snap.rtp_mos,
         packetLoss:  snap.rtp_loss_pct ?? 0,
@@ -491,17 +546,18 @@ export const useTestStore = defineStore('test', () => {
         packetsRecv: snap.rtp_recv_packets ?? 0,
         outOfOrder:  0,
       }
-      pushSeries('mos', snap.rtp_mos)
+      pushSeries(r, 'mos', snap.rtp_mos)
     }
   }
 
   /** 取得最終報告；引擎執行失敗時回傳 false（get_report 會丟出錯誤原因） */
-  async function _tryFetchReport(): Promise<boolean> {
+  async function _tryFetchReport(mode: CallMode): Promise<boolean> {
+    const r = sessions.value[mode]
     try {
-      const report = await invoke<RustReport | null>('get_report')
+      const report = await invoke<RustReport | null>('get_report', { mode })
       if (!report) return true
-      metrics.value = {
-        ...metrics.value,
+      r.metrics = {
+        ...r.metrics,
         cps:       report.actual_cps,
         succeeded: report.calls_answered,
         failed:    report.calls_failed + report.calls_timeout,
@@ -514,7 +570,7 @@ export const useTestStore = defineStore('test', () => {
         pdd:       report.pdd_p50_ms,
         acd:       report.acd_secs,
       }
-      callStates.value = {
+      r.callStates = {
         initiated: report.calls_initiated,
         answered:  report.calls_answered,
         completed: report.calls_completed,
@@ -522,7 +578,7 @@ export const useTestStore = defineStore('test', () => {
         timeout:   report.calls_timeout,
       }
       if (report.mos !== null) {
-        rtpMetrics.value = {
+        r.rtpMetrics = {
           enabled:     true,
           mos:         report.mos ?? 0,
           packetLoss:  report.loss_rate_pct ?? 0,
@@ -531,108 +587,138 @@ export const useTestStore = defineStore('test', () => {
           packetsRecv: report.rtp_recv ?? 0,
           outOfOrder:  report.rtp_out_of_order ?? 0,
         }
-        pushSeries('mos', report.mos ?? 0)
+        pushSeries(r, 'mos', report.mos ?? 0)
       }
       // Populate respCodes from final per-code breakdown
       if (report.fail_codes) {
         for (const [code, count] of Object.entries(report.fail_codes)) {
-          respCodes.value[code] = count
+          r.respCodes[code] = count
         }
       }
       // 200 and 408 come from summary counters (may not appear in fail_codes)
-      respCodes.value['200'] = report.calls_answered
-      respCodes.value['408'] = report.calls_timeout
-      addLog('ok', `測試完成  發起 ${report.calls_initiated}  接通 ${report.calls_answered}  失敗 ${report.calls_failed + report.calls_timeout}  ASR ${report.asr.toFixed(1)}%  CPS ${report.actual_cps.toFixed(1)}  PDD p50 ${report.pdd_p50_ms.toFixed(0)}ms`)
+      r.respCodes['200'] = report.calls_answered
+      r.respCodes['408'] = report.calls_timeout
+      addLog('ok', `測試完成  發起 ${report.calls_initiated}  接通 ${report.calls_answered}  失敗 ${report.calls_failed + report.calls_timeout}  ASR ${report.asr.toFixed(1)}%  CPS ${report.actual_cps.toFixed(1)}  PDD p50 ${report.pdd_p50_ms.toFixed(0)}ms`, mode)
       return true
     } catch (e) {
-      addLog('err', `壓測執行失敗: ${e}`)
+      addLog('err', `壓測執行失敗: ${e}`, mode)
       return false
     }
   }
 
-  function _finishTest() {
-    if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
-    if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-    stopping.value = false
-    _tryFetchReport().then(ok => { status.value = ok ? 'done' : 'error' })
+  function _finishTest(mode: CallMode) {
+    const r  = sessions.value[mode]
+    const rt = runtime[mode]
+    if (rt.pollTimer)  { clearInterval(rt.pollTimer);  rt.pollTimer  = null }
+    if (rt.clockTimer) { clearInterval(rt.clockTimer); rt.clockTimer = null }
+    r.stopping = false
+    _tryFetchReport(mode).then(ok => { r.status = ok ? 'done' : 'error' })
   }
 
   // ── Start / Stop ──────────────────────────────────────────────────────────────
-  async function startTest() {
-    if (status.value === 'running') return
-    if (validationErrors.value.length > 0) {
-      for (const e of validationErrors.value) addLog('err', e)
-      return
+  /** 啟動指定模式（預設為目前檢視的模式）；另一模式可同時執行 */
+  async function startTest(mode: CallMode = config.value.mode): Promise<boolean> {
+    const r  = sessions.value[mode]
+    const rt = runtime[mode]
+    if (r.status === 'running') return false
+    const errs = validate(mode)
+    if (errs.length > 0) {
+      for (const e of errs) addLog('err', e, mode)
+      return false
     }
-    status.value = 'running'
-    stopping.value = false
-    elapsedSec.value = 0
-    prevInitiated = 0
-    rtpLoggedOnce = false
-    metrics.value  = { cps:0, concurrency:0, succeeded:0, failed:0, initiated:0, asr:0, ccr:0, errorRate:0, pdd:0, acd:0 }
-    series.value   = { cps:[], conc:[], asr:[], ccr:[], pdd:[], fail:[], mos:[] }
-    seriesOffset.value = { cps:0, conc:0, asr:0, ccr:0, pdd:0, fail:0, mos:0 }
-    seriesTick.value++
-    respCodes.value = {}
-    callStates.value = { initiated:0, answered:0, completed:0, failed:0, timeout:0 }
-    rtpMetrics.value = { enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 }
+    sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
+    rt.prevInitiated = 0
+    rt.rtpLoggedOnce = false
+    const cur = sessions.value[mode]
 
+    const c = config.value
     try {
-      await invoke('start_test', { config: buildRustConfig() })
-      addLog('ok',   `測試開始 → ${config.value.server}  [${config.value.mode === 'caller' ? '民眾端' : '座席端'}]`)
-      if (config.value.mode === 'caller') {
-        addLog('info', `持續時間: ${config.value.duration > 0 ? config.value.duration + 's' : '不限'}  cps: ${config.value.caller.cps}  併發: ${config.value.caller.concurrency}${config.value.caller.totalCalls > 0 ? `  總通數: ${config.value.caller.totalCalls}` : ''}`)
-        if (config.value.caller.enableAudio && config.value.caller.audioFile) {
-          const fname = config.value.caller.audioFile.replace(/\\/g, '/').split('/').pop() ?? config.value.caller.audioFile
-          addLog('info', `RTP codec=${codecLabel.value.full}  audio="${fname}"  port=${buildRustConfig().rtp_base_port}`)
+      await invoke('start_test', { config: buildRustConfig(mode) })
+      addLog('ok',   `測試開始 → ${c.server}  [${MODE_LABEL[mode]}]`, mode)
+      if (mode === 'caller') {
+        addLog('info', `持續時間: ${c.duration > 0 ? c.duration + 's' : '不限'}  cps: ${c.caller.cps}  併發: ${c.caller.concurrency}${c.caller.totalCalls > 0 ? `  總通數: ${c.caller.totalCalls}` : ''}`, mode)
+        if (c.caller.enableAudio && c.caller.audioFile) {
+          const fname = c.caller.audioFile.replace(/\\/g, '/').split('/').pop() ?? c.caller.audioFile
+          addLog('info', `RTP codec=${codecLabel.value.full}  audio="${fname}"  port=${buildRustConfig(mode).rtp_base_port}`, mode)
         } else {
-          addLog('info', `RTP 未啟用（僅 SIP signaling）`)
+          addLog('info', `RTP 未啟用（僅 SIP signaling）`, mode)
         }
       } else {
-        const total = config.value.agent.accounts.length
-        addLog('info', `座席端：${total} 個帳號待註冊；持續時間: ${config.value.duration > 0 ? config.value.duration + 's' : '不限'}`)
-        addLog('info', `行為：每個帳號 REGISTER → 等待 INVITE → 自動 200 OK → 等 BYE → 結束 deregister`)
+        const total = c.agent.accounts.length
+        addLog('info', `座席端：${total} 個帳號待註冊；持續時間: ${c.duration > 0 ? c.duration + 's' : '不限'}`, mode)
+        addLog('info', `行為：每個帳號 REGISTER → 等待 INVITE → 自動 200 OK → 等 BYE → 結束 deregister`, mode)
       }
     } catch (e) {
-      addLog('err', `啟動失敗: ${e}`)
-      status.value = 'error'
-      return
+      addLog('err', `啟動失敗: ${e}`, mode)
+      cur.status = 'error'
+      return false
     }
 
-    pollTimer = setInterval(async () => {
+    rt.pollTimer = setInterval(async () => {
       try {
-        const snap = await invoke<RustSnapshot | null>('get_snapshot')
+        const snap = await invoke<RustSnapshot | null>('get_snapshot', { mode })
         if (snap) {
-          applySnapshot(snap)
+          applySnapshot(mode, snap)
           // 引擎已結束（duration 到 / max_total_calls 完成 / graceful stop）
           if (snap.finished) {
-            _finishTest()
+            _finishTest(mode)
           }
         }
       } catch { /* ignore */ }
     }, 1000)
 
-    clockTimer = setInterval(() => {
-      elapsedSec.value++
+    rt.clockTimer = setInterval(() => {
+      cur.elapsedSec++
     }, 1000)
+    return true
   }
 
-  async function stopTest() {
-    if (stopping.value) return
-    stopping.value = true
-    if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-    addLog('warn', `測試已手動停止  經過: ${elapsedSec.value}s`)
+  async function stopTest(mode: CallMode = config.value.mode) {
+    const r  = sessions.value[mode]
+    const rt = runtime[mode]
+    if (r.stopping) return
+    // 雙端啟動仍在等待座席註冊 → 取消後續的民眾端啟動
+    cancelBothWait()
+    r.stopping = true
+    if (rt.clockTimer) { clearInterval(rt.clockTimer); rt.clockTimer = null }
+    addLog('warn', `測試已手動停止  經過: ${r.elapsedSec}s`, mode)
     try {
-      await invoke('stop_test')
+      await invoke('stop_test', { mode })
     } catch {
       // 引擎已結束（沒有可停止的壓測）→ 直接收尾取報告
-      _finishTest()
+      _finishTest(mode)
       return
     }
     // 引擎會先對進行中的通話送 BYE/CANCEL 並等待回應，
     // 由輪詢偵測 snapshot.finished 後再取最終報告
-    addLog('info', '等待進行中通話收尾（BYE/CANCEL）…')
-    if (!pollTimer) _finishTest()
+    addLog('info', '等待進行中通話收尾（BYE/CANCEL）…', mode)
+    if (!rt.pollTimer) _finishTest(mode)
+  }
+
+  /** 雙端啟動：先啟動座席端（REGISTER），等待 AGENT_WARMUP_MS 後再啟動民眾端撥號 */
+  async function startBoth() {
+    if (anyRunning.value || bothWait) return
+    if (bothValidationErrors.value.length > 0) {
+      for (const e of bothValidationErrors.value) addLog('err', e)
+      return
+    }
+    if (!await startTest('agent')) return
+    addLog('info', `雙端啟動：等待座席註冊 ${AGENT_WARMUP_MS / 1000}s 後開始撥號`)
+    await new Promise<void>(resolve => {
+      bothWait = { timer: setTimeout(() => { bothWait = null; resolve() }, AGENT_WARMUP_MS), resolve }
+    })
+    if (sessions.value.agent.status !== 'running' || sessions.value.agent.stopping) {
+      addLog('warn', '座席端已停止，取消民眾端啟動')
+      return
+    }
+    await startTest('caller')
+  }
+
+  /** 停止所有執行中的模式 */
+  async function stopAll() {
+    cancelBothWait()
+    const modes = (['caller', 'agent'] as const).filter(m => sessions.value[m].status === 'running')
+    await Promise.all(modes.map(m => stopTest(m)))
   }
 
   // ── SIP Account Management ────────────────────────────────────────────────────
@@ -815,18 +901,20 @@ export const useTestStore = defineStore('test', () => {
 
   function exportJson() {
     return exportWith('JSON 報告', () => {
-      const body = JSON.stringify({ mode:config.value.mode, target:config.value.server, elapsed:elapsedSec.value, config:config.value, metrics:metrics.value, callStates:callStates.value, respCodes:respCodes.value, rtp:rtpMetrics.value, series:series.value }, null, 2)
-      return saveTextFile(`sipress_${fileTs()}.json`, 'json', 'JSON', body)
+      const mode = config.value.mode
+      const r    = view.value
+      const body = JSON.stringify({ mode, target:config.value.server, elapsed:r.elapsedSec, config:config.value, metrics:r.metrics, callStates:r.callStates, respCodes:r.respCodes, rtp:r.rtpMetrics, series:r.series }, null, 2)
+      return saveTextFile(`sipress_${mode}_${fileTs()}.json`, 'json', 'JSON', body)
     })
   }
 
   function exportCsv() {
     return exportWith('CSV 報告', () => {
-      const s = series.value
+      const s = view.value.series
       const rows = [['sec','cps','conc','asr','ccr','fail']]
       for (let i = 0; i < s.cps.length; i++)
-        rows.push([String(seriesOffset.value.cps + i), s.cps[i]?.toFixed(2) ?? '0', String(s.conc[i] ?? 0), s.asr[i]?.toFixed(2) ?? '0', s.ccr[i]?.toFixed(2) ?? '0', String(s.fail[i] ?? 0)])
-      return saveTextFile(`sipress_${fileTs()}.csv`, 'csv', 'CSV', rows.map(r => r.join(',')).join('\n'))
+        rows.push([String(view.value.seriesOffset.cps + i), s.cps[i]?.toFixed(2) ?? '0', String(s.conc[i] ?? 0), s.asr[i]?.toFixed(2) ?? '0', s.ccr[i]?.toFixed(2) ?? '0', String(s.fail[i] ?? 0)])
+      return saveTextFile(`sipress_${config.value.mode}_${fileTs()}.csv`, 'csv', 'CSV', rows.map(r => r.join(',')).join('\n'))
     })
   }
 
@@ -840,22 +928,23 @@ export const useTestStore = defineStore('test', () => {
   function exportHtml() {
     return exportWith('HTML 報告', async () => {
       const ts   = fileTs()
-      const html = await invoke<string>('get_html_report', { serverAddr: config.value.server, timestamp: ts })
-      return saveTextFile(`sipress_${ts}.html`, 'html', 'HTML', html)
+      const mode = config.value.mode
+      const html = await invoke<string>('get_html_report', { mode, serverAddr: config.value.server, timestamp: ts })
+      return saveTextFile(`sipress_${mode}_${ts}.html`, 'html', 'HTML', html)
     })
   }
 
   return {
-    config, status, isRunning, stopping, elapsedSec, metrics, series, seriesOffset, seriesTick,
+    config, sessions, status, isRunning, anyRunning, stopping, elapsedSec, metrics, series, seriesOffset, seriesTick,
     callStates, respCodes, logs,
     rtpMetrics, mosRating, codecLabel,
     accountImportError, registeredCount,
-    validationErrors, cliUnsupported, cliCommand, progressPct,
+    validationErrors, bothValidationErrors, cliUnsupported, cliCommand, progressPct,
     addLog, clearLog,
     generateAccounts, removeAccount, clearAccounts, updateAccount,
     importAccountText, parseAccountText,
     registerAccount, registerAll,
-    startTest, stopTest,
+    startTest, stopTest, startBoth, stopAll,
     exportJson, exportCsv, exportHtml, exportAccountsCsv,
   }
 })

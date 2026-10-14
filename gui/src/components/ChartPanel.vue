@@ -264,7 +264,7 @@ function onMouseMove(e: MouseEvent) {
 }
 
 // 資料、主題、tab 或滑鼠位置變化時重繪
-watch([() => store.seriesTick, () => store.status, isDark, activeChart, hoverX], () => nextTick(draw))
+watch([() => store.seriesTick, () => store.status, () => store.config.mode, isDark, activeChart, hoverX], () => nextTick(draw))
 
 const ro = new ResizeObserver(() => { resize() })
 
