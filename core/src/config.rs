@@ -275,6 +275,13 @@ impl Config {
         if self.invite_timeout_secs == 0 {
             anyhow::bail!("INVITE 逾時秒數必須大於 0");
         }
+        if let Some(local) = self.local_addr.as_deref() {
+            let valid = local.parse::<std::net::SocketAddr>().is_ok()
+                || local.parse::<std::net::IpAddr>().is_ok();
+            if !valid {
+                anyhow::bail!("本機綁定位址格式錯誤（需為 IP 或 IP:port）：{}", local);
+            }
+        }
         Ok(())
     }
 
@@ -376,5 +383,17 @@ mod tests {
     fn zero_concurrency_and_timeout_are_rejected() {
         assert!(Config { max_concurrent_calls: 0, ..Default::default() }.validate().is_err());
         assert!(Config { invite_timeout_secs: 0, ..Default::default() }.validate().is_err());
+    }
+
+    #[test]
+    fn local_addr_accepts_ip_or_ip_port() {
+        for ok in ["127.0.0.1", "0.0.0.0:5070", "192.168.1.10:15060"] {
+            let cfg = Config { local_addr: Some(ok.into()), ..Default::default() };
+            assert!(cfg.validate().is_ok(), "{} 應為合法的本機位址", ok);
+        }
+        for bad in ["localhost", "0.0.0.0:", "0.0.0.0:99999", "1.2.3"] {
+            let cfg = Config { local_addr: Some(bad.into()), ..Default::default() };
+            assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
+        }
     }
 }

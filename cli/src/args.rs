@@ -61,7 +61,7 @@ pub struct Args {
     #[arg(long = "mode", default_value = "caller", hide = true)]
     pub mode: String,
 
-    /// 本機綁定 IP（預設自動選擇）
+    /// 本機綁定 IP 或 IP:port（預設自動選擇 IP，port 由系統分配）
     #[arg(long = "local")]
     pub local_addr: Option<String>,
 

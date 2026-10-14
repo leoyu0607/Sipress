@@ -434,3 +434,22 @@ describe('設定載入 (D16)', () => {
     expect(s.validationErrors).toEqual([])
   })
 })
+
+describe('本地埠只套用在民眾端', () => {
+  it('民眾端送出 local_addr，座席端為 null；0 = 自動', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    withAccount(s)
+    s.config.localPort = 5070
+    await s.startTest('caller')
+    await s.startTest('agent')
+    const sent = calls.filter(c => c.cmd === 'start_test').map(c => c.args?.config as { mode: string; local_addr: string | null })
+    expect(sent.map(c => [c.mode, c.local_addr])).toEqual([['caller', '0.0.0.0:5070'], ['agent', null]])
+  })
+
+  it('本地埠為 0 時民眾端也送 null，CLI 預覽不帶 --local', () => {
+    const s = useTestStore()
+    s.config.localPort = 0
+    expect(s.cliCommand).not.toContain('--local')
+  })
+})
