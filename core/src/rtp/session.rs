@@ -7,13 +7,14 @@ use crate::rtp::{
 use anyhow::{Context, Result};
 use rand::Rng;
 use std::{
+    net::SocketAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::UdpSocket, sync::Mutex, time};
+use tokio::{net::UdpSocket, sync::{Mutex, Notify}, time};
 use tracing::debug;
 
 /// RTP session 設定
@@ -35,10 +36,30 @@ pub struct RtpSessionConfig {
     pub codec_pt:    u8,
 }
 
+/// RTP 送出目標
+///
+/// socket 不做 `connect()`：connected UDP socket 會被 OS 過濾掉非該位址送來的封包，
+/// 在 NAT / 媒體中繼環境（實際來源 ≠ SDP 位址）會誤判為 100% 掉包；
+/// 且收到 ICMP port unreachable 後 send/recv 會回錯誤。
+/// 改為 symmetric RTP：收到第一個有效 RTP 封包後，送出目標改為其實際來源位址。
+struct RemoteTarget {
+    addr:     SocketAddr,
+    /// 已依實際收到的封包確認（學習）過送出目標
+    latched:  bool,
+    /// RE-INVITE 前的舊目標：切換後仍在途中的舊封包不可用來學習
+    previous: Option<SocketAddr>,
+}
+
 /// 單通通話的 RTP session handle
+///
+/// handle 被丟棄時會一併停止收發 task，避免漏掉 `stop()` 時 RTP 持續傳送。
 pub struct RtpSession {
     pub stats:      Arc<RtpStats>,
     stop_flag:      Arc<AtomicBool>,
+    /// 喚醒阻塞在 recv 的接收 task（notify_one 會保留 permit，不會錯過）
+    stop_notify:    Arc<Notify>,
+    remote:         Arc<std::sync::Mutex<RemoteTarget>>,
+    /// 傳送 DTMF（RFC 2833）用的同一個 RTP socket
     socket:         Arc<UdpSocket>,
     local_rtp_port: u16,
 }
@@ -54,23 +75,20 @@ impl RtpSession {
         port_counter: Arc<Mutex<u16>>,
         pre_bound: Option<UdpSocket>,
     ) -> Result<Self> {
+        let remote_addr = resolve(&config.remote_addr).await?;
         let (socket, local_port) = if let Some(sock) = pre_bound {
             let port = sock.local_addr()?.port();
-            sock.connect(&config.remote_addr)
-                .await
-                .with_context(|| format!("無法連接 RTP 對端: {}", config.remote_addr))?;
             (Arc::new(sock), port)
         } else {
             // 沒有預分配 socket，動態尋找可用 port
             let (port, sock) = Self::allocate_port(&port_counter, &config.local_ip).await?;
-            sock.connect(&config.remote_addr)
-                .await
-                .with_context(|| format!("無法連接 RTP 對端: {}", config.remote_addr))?;
             (Arc::new(sock), port)
         };
+        let remote = Arc::new(std::sync::Mutex::new(RemoteTarget { addr: remote_addr, latched: false, previous: None }));
 
         let stats     = Arc::new(RtpStats::new());
-        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag   = Arc::new(AtomicBool::new(false));
+        let stop_notify = Arc::new(Notify::new());
         let ssrc      = config.ssrc.unwrap_or_else(|| rand::thread_rng().gen());
 
         // ── Task A：傳送（每 20ms 一個 frame）──
@@ -78,13 +96,14 @@ impl RtpSession {
             let socket     = Arc::clone(&socket);
             let stats      = Arc::clone(&stats);
             let stop       = Arc::clone(&stop_flag);
+            let remote     = Arc::clone(&remote);
             let audio_path = config.audio_file.clone();
 
             let codec_pt = config.codec_pt;
             tokio::spawn(async move {
                 let mut source = match &audio_path {
                     Some(p) => {
-                        match AudioSource::from_file(p) {
+                        match AudioSource::from_file_cached(p).await {
                             Ok(src) => {
                                 tracing::info!(
                                     "音檔載入成功: {:?}  frames={} duration={:.1}s PT={}",
@@ -116,13 +135,26 @@ impl RtpSession {
                     if payload_type == 8 { "PCMA/A-law" } else { "PCMU/μ-law" });
 
                 let mut seq: u16 = rand::thread_rng().gen();
-                let mut ts:  u32 = rand::thread_rng().gen();
+                let ts0:     u32 = rand::thread_rng().gen();
                 let ptime = Duration::from_millis(20);
                 let mut interval = time::interval(ptime);
+                // CPU 卡頓錯過的 tick 直接略過，不事後補送（Burst 會讓接收端看到人為 jitter）
+                interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                let start = time::Instant::now();
+                let mut last_tick: Option<u32> = None;
 
                 loop {
-                    interval.tick().await;
+                    let tick_at = interval.tick().await;
                     if stop.load(Ordering::Relaxed) { break; }
+
+                    // timestamp 依實際經過的 20ms 數計算：卡頓呈現為 timestamp 跳躍，
+                    // 音檔進度也同步跳過（與真實話機卡頓時的行為一致）
+                    let tick = (tick_at.saturating_duration_since(start).as_millis() / 20) as u32;
+                    if let Some(prev) = last_tick {
+                        source.skip(tick.saturating_sub(prev + 1) as usize);
+                    }
+                    last_tick = Some(tick);
+                    let ts = ts0.wrapping_add(tick.wrapping_mul(160));
 
                     let frame = match source.next_frame() {
                         Some(f) => f,
@@ -132,13 +164,14 @@ impl RtpSession {
                     let pkt   = RtpPacket::new(payload_type, seq, ts, ssrc, frame.clone());
                     let bytes = pkt.encode();
 
-                    match socket.send(&bytes).await {
+                    let target = remote.lock().unwrap().addr;
+                    match socket.send_to(&bytes, target).await {
                         Ok(_)  => stats.on_send(frame.len()),
-                        Err(e) => { debug!("RTP 傳送失敗: {}", e); break; }
+                        // 暫時性錯誤（例如對端 port 尚未開啟）只略過這個 frame，不中止傳送
+                        Err(e) => debug!("RTP 傳送失敗: {}", e),
                     }
 
                     seq = seq.wrapping_add(1);
-                    ts  = ts.wrapping_add(160);
                 }
             });
         }
@@ -147,15 +180,21 @@ impl RtpSession {
         {
             let socket = Arc::clone(&socket);
             let stats  = Arc::clone(&stats);
-            let stop   = Arc::clone(&stop_flag);
+            let notify = Arc::clone(&stop_notify);
+            let remote = Arc::clone(&remote);
 
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 1500];
                 loop {
-                    if stop.load(Ordering::Relaxed) { break; }
-                    match time::timeout(Duration::from_millis(50), socket.recv(&mut buf)).await {
-                        Ok(Ok(n)) => {
+                    // 阻塞等待封包或停止通知（不再每 50ms 逾時輪詢停止旗標）
+                    let res = tokio::select! {
+                        r = socket.recv_from(&mut buf) => r,
+                        _ = notify.notified() => break,
+                    };
+                    match res {
+                        Ok((n, src)) => {
                             if let Some(pkt) = RtpPacket::decode(&buf[..n]) {
+                                latch_remote(&remote, src);
                                 let now_us = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -164,19 +203,22 @@ impl RtpSession {
                                 debug!("RTP recv seq={} ts={}", pkt.sequence, pkt.timestamp);
                             }
                         }
-                        Ok(Err(e)) => { debug!("RTP 接收錯誤: {}", e); break; }
-                        Err(_) => {} // timeout，繼續
+                        Err(e) => {
+                            // 暫時性錯誤不中止接收；稍候再試避免空轉
+                            debug!("RTP 接收錯誤: {}", e);
+                            time::sleep(Duration::from_millis(20)).await;
+                        }
                     }
                 }
             });
         }
 
-        Ok(Self { stats, stop_flag, socket, local_rtp_port: local_port })
+        Ok(Self { stats, stop_flag, stop_notify, remote, socket, local_rtp_port: local_port })
     }
 
     /// 停止 RTP session，回傳統計快照
     pub fn stop(&self) -> RtpStatsSnapshot {
-        self.stop_flag.store(true, Ordering::Relaxed);
+        self.signal_stop();
         self.stats.snapshot()
     }
 
@@ -184,6 +226,7 @@ impl RtpSession {
     pub fn send_dtmf_sequence(&self, sequence: String, ssrc: u32) {
         let socket = Arc::clone(&self.socket);
         let stop = Arc::clone(&self.stop_flag);
+        let remote = Arc::clone(&self.remote);
         tokio::spawn(async move {
             let actions = crate::rtp::dtmf::parse_dtmf_sequence(&sequence);
             let mut seq: u16 = rand::thread_rng().gen();
@@ -198,7 +241,8 @@ impl RtpSession {
                         {
                             for pkt in &pkts {
                                 if stop.load(Ordering::Relaxed) { break; }
-                                let _ = socket.send(&pkt.encode()).await;
+                                let target = remote.lock().unwrap().addr;
+                                let _ = socket.send_to(&pkt.encode(), target).await;
                                 time::sleep(Duration::from_millis(20)).await;
                             }
                             seq = seq.wrapping_add(pkts.len() as u16);
@@ -213,10 +257,19 @@ impl RtpSession {
         });
     }
 
-    /// RE-INVITE 後更新 RTP 對端地址（connected UDP socket 重新 connect 即可切換目標）
+    /// 通知傳送 task（檢查旗標）與接收 task（Notify）結束
+    fn signal_stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.stop_notify.notify_one();
+    }
+
+    /// RE-INVITE 後更新 RTP 對端地址，並重新學習實際來源位址
     pub async fn update_remote(&self, new_addr: &str) -> anyhow::Result<()> {
-        self.socket.connect(new_addr).await
+        let addr = resolve(new_addr).await
             .with_context(|| format!("RE-INVITE 後無法切換 RTP 對端: {}", new_addr))?;
+        let mut target = self.remote.lock().unwrap();
+        let previous = Some(target.addr);
+        *target = RemoteTarget { addr, latched: false, previous };
         Ok(())
     }
 
@@ -246,5 +299,32 @@ impl RtpSession {
             }
         }
         anyhow::bail!("無法找到可用的 RTP port（從 {} 開始）", start);
+    }
+}
+
+/// 解析 "ip:port"（或 "host:port"）為 SocketAddr
+async fn resolve(addr: &str) -> Result<SocketAddr> {
+    tokio::net::lookup_host(addr).await
+        .with_context(|| format!("無效的 RTP 對端位址: {}", addr))?
+        .next()
+        .with_context(|| format!("無法解析 RTP 對端位址: {}", addr))
+}
+
+/// Symmetric RTP：第一個有效 RTP 封包的來源即為之後的送出目標
+fn latch_remote(remote: &std::sync::Mutex<RemoteTarget>, src: SocketAddr) {
+    let mut target = remote.lock().unwrap();
+    if target.latched || target.previous == Some(src) {
+        return;
+    }
+    if target.addr != src {
+        tracing::info!("RTP 對端位址學習：{} → {}（實際來源與 SDP 不同）", target.addr, src);
+        target.addr = src;
+    }
+    target.latched = true;
+}
+
+impl Drop for RtpSession {
+    fn drop(&mut self) {
+        self.signal_stop();
     }
 }

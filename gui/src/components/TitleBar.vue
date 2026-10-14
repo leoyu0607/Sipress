@@ -26,7 +26,8 @@ const STATUS_LABEL: Record<string, string> = {
 }
 
 const btnLabel = computed(() =>
-  store.status === 'running' ? '■ 停止測試' : '▶ 開始測試'
+  store.stopping ? '停止中…'
+  : store.status === 'running' ? '■ 停止測試' : '▶ 開始測試'
 )
 const startBlocked = computed(() =>
   store.status !== 'running' && store.validationErrors.length > 0
@@ -114,7 +115,7 @@ function toggleTest() {
       <div class="sep-v"></div>
 
       <span class="start-wrap" :title="btnTitle">
-        <button :class="btnClass + ' btn-sm'" :disabled="startBlocked" @click="toggleTest">
+        <button :class="btnClass + ' btn-sm'" :disabled="startBlocked || store.stopping" @click="toggleTest">
           {{ btnLabel }}
         </button>
       </span>

@@ -64,22 +64,15 @@ impl SipParser {
         Some(val.split(';').next().unwrap_or(&val).trim().to_string())
     }
 
-    /// 從 200 OK SDP body 解析對端 RTP port（m=audio PORT ...）
-    pub fn sdp_rtp_port(raw: &str) -> Option<u16> {
-        let body_start = raw.find("\r\n\r\n").map(|i| i + 4)
-            .or_else(|| raw.find("\n\n").map(|i| i + 2))?;
-        let body = &raw[body_start..];
-        for line in body.lines() {
-            if line.starts_with("m=") {
-                let parts: Vec<&str> = line.splitn(4, ' ').collect();
-                if parts.len() >= 2 {
-                    if let Ok(port) = parts[1].parse::<u16>() {
-                        return Some(port);
-                    }
-                }
-            }
+    /// 取得註冊有效秒數：優先 Expires 標頭，其次 Contact 的 ;expires= 參數
+    pub fn expires(raw: &str) -> Option<u32> {
+        if let Some(n) = Self::header_value(raw, &["expires"]).and_then(|v| v.parse().ok()) {
+            return Some(n);
         }
-        None
+        let contact = Self::header_value(raw, &["contact", "m"])?;
+        let idx = contact.to_lowercase().find("expires=")?;
+        let digits: String = contact[idx + 8..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
     }
 
     /// 取得 Content-Length
@@ -169,6 +162,15 @@ Content-Length: 0\r\n\
             SipParser::from_tag(RESPONSE_200),
             Some("aabbccdd".to_string())
         );
+    }
+
+    #[test]
+    fn test_expires_prefers_header_then_contact_param() {
+        let both = "SIP/2.0 200 OK\r\nContact: <sip:a@b>;expires=60\r\nExpires: 120\r\n\r\n";
+        assert_eq!(SipParser::expires(both), Some(120));
+        let contact_only = "SIP/2.0 200 OK\r\nContact: <sip:a@b>;Expires=300;q=1\r\n\r\n";
+        assert_eq!(SipParser::expires(contact_only), Some(300));
+        assert_eq!(SipParser::expires(RESPONSE_200), None);
     }
 
     #[test]

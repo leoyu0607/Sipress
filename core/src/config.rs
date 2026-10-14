@@ -278,6 +278,22 @@ impl Config {
         }
     }
 
+    /// 檢查設定值是否可執行（避免 CPS=0 等導致引擎 panic）
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.mode == Mode::Caller {
+            if !(self.cps.is_finite() && self.cps > 0.0) {
+                anyhow::bail!("CPS 必須大於 0（目前為 {}）", self.cps);
+            }
+            if self.max_concurrent_calls == 0 {
+                anyhow::bail!("最大並發通話數必須大於 0");
+            }
+        }
+        if self.invite_timeout_secs == 0 {
+            anyhow::bail!("INVITE 逾時秒數必須大於 0");
+        }
+        Ok(())
+    }
+
     /// 從 CLI 參數快速建構
     pub fn from_args(
         server_addr:          impl Into<String>,
@@ -351,5 +367,30 @@ mod tests {
         assert!((p.current_cps(Duration::from_secs(40), 0.0, total) - 10.0).abs() < 0.01);
         assert!((p.current_cps(Duration::from_secs(55), 0.0, total) - 100.0).abs() < 0.01);
         assert!((p.current_cps(Duration::from_secs(65), 0.0, total) - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn default_config_is_valid() {
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn zero_or_invalid_cps_is_rejected() {
+        for cps in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let cfg = Config { cps, ..Default::default() };
+            assert!(cfg.validate().is_err(), "cps={} 應被拒絕", cps);
+        }
+    }
+
+    #[test]
+    fn agent_mode_ignores_cps() {
+        let cfg = Config { mode: Mode::Agent, cps: 0.0, ..Default::default() };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_concurrency_and_timeout_are_rejected() {
+        assert!(Config { max_concurrent_calls: 0, ..Default::default() }.validate().is_err());
+        assert!(Config { invite_timeout_secs: 0, ..Default::default() }.validate().is_err());
     }
 }

@@ -291,6 +291,8 @@ export const useTestStore = defineStore('test', () => {
   const logs        = ref<LogEntry[]>([])
   const rtpMetrics  = ref<RtpMetrics>({ enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 })
   const accountImportError = ref('')
+  /** 已送出停止、等待引擎收尾中（BYE/CANCEL）；防止重複停止 */
+  const stopping    = ref(false)
 
   let pollTimer:  ReturnType<typeof setInterval> | null = null
   let clockTimer: ReturnType<typeof setInterval> | null = null
@@ -493,10 +495,11 @@ export const useTestStore = defineStore('test', () => {
     }
   }
 
-  async function _tryFetchReport() {
+  /** 取得最終報告；引擎執行失敗時回傳 false（get_report 會丟出錯誤原因） */
+  async function _tryFetchReport(): Promise<boolean> {
     try {
       const report = await invoke<RustReport | null>('get_report')
-      if (!report) return
+      if (!report) return true
       metrics.value = {
         ...metrics.value,
         cps:       report.actual_cps,
@@ -540,15 +543,18 @@ export const useTestStore = defineStore('test', () => {
       respCodes.value['200'] = report.calls_answered
       respCodes.value['408'] = report.calls_timeout
       addLog('ok', `測試完成  發起 ${report.calls_initiated}  接通 ${report.calls_answered}  失敗 ${report.calls_failed + report.calls_timeout}  ASR ${report.asr.toFixed(1)}%  CPS ${report.actual_cps.toFixed(1)}  PDD p50 ${report.pdd_p50_ms.toFixed(0)}ms`)
+      return true
     } catch (e) {
-      addLog('warn', `無法取得最終報告: ${e}`)
+      addLog('err', `壓測執行失敗: ${e}`)
+      return false
     }
   }
 
   function _finishTest() {
     if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-    _tryFetchReport().then(() => { status.value = 'done' })
+    stopping.value = false
+    _tryFetchReport().then(ok => { status.value = ok ? 'done' : 'error' })
   }
 
   // ── Start / Stop ──────────────────────────────────────────────────────────────
@@ -559,6 +565,7 @@ export const useTestStore = defineStore('test', () => {
       return
     }
     status.value = 'running'
+    stopping.value = false
     elapsedSec.value = 0
     prevInitiated = 0
     rtpLoggedOnce = false
@@ -611,14 +618,21 @@ export const useTestStore = defineStore('test', () => {
   }
 
   async function stopTest() {
-    if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
+    if (stopping.value) return
+    stopping.value = true
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
+    addLog('warn', `測試已手動停止  經過: ${elapsedSec.value}s`)
     try {
       await invoke('stop_test')
-    } catch { /* already stopped */ }
-    await _tryFetchReport()
-    status.value = 'done'
-    addLog('warn', `測試已手動停止  經過: ${elapsedSec.value}s`)
+    } catch {
+      // 引擎已結束（沒有可停止的壓測）→ 直接收尾取報告
+      _finishTest()
+      return
+    }
+    // 引擎會先對進行中的通話送 BYE/CANCEL 並等待回應，
+    // 由輪詢偵測 snapshot.finished 後再取最終報告
+    addLog('info', '等待進行中通話收尾（BYE/CANCEL）…')
+    if (!pollTimer) _finishTest()
   }
 
   // ── SIP Account Management ────────────────────────────────────────────────────
@@ -832,7 +846,7 @@ export const useTestStore = defineStore('test', () => {
   }
 
   return {
-    config, status, isRunning, elapsedSec, metrics, series, seriesOffset, seriesTick,
+    config, status, isRunning, stopping, elapsedSec, metrics, series, seriesOffset, seriesTick,
     callStates, respCodes, logs,
     rtpMetrics, mosRating, codecLabel,
     accountImportError, registeredCount,

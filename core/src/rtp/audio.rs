@@ -8,12 +8,30 @@
 /// 輸出：循環播放的 160-byte（20ms @ 8kHz）G.711A（PCMA，PT=8）封包流
 
 use anyhow::{bail, Context, Result};
-use std::{fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+    time::SystemTime,
+};
+use tokio::sync::OnceCell;
+
+/// 已解碼音檔的快取鍵：路徑 + 修改時間 + 大小（檔案被替換時會重新載入）
+type ClipKey = (PathBuf, Option<SystemTime>, u64);
+/// 已解碼的 frames（所有通話共用，只讀）
+type Frames = Arc<Vec<Vec<u8>>>;
+
+/// 行程內音檔快取：同一音檔只讀取 / 解碼 / 重新取樣一次
+fn clip_cache() -> &'static Mutex<HashMap<ClipKey, Arc<OnceCell<Frames>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<ClipKey, Arc<OnceCell<Frames>>>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
 
 /// 音訊來源（已解碼為 G.711 bytes，可循環）
 pub struct AudioSource {
-    /// 所有 frames（每個 frame = 160 bytes = 20ms）
-    frames:          Vec<Vec<u8>>,
+    /// 所有 frames（每個 frame = 160 bytes = 20ms），多個通話共用同一份
+    frames:          Frames,
     /// 目前播放位置
     cursor:          usize,
     /// 是否循環播放
@@ -55,14 +73,35 @@ impl AudioSource {
         }
 
         // 永遠使用 PT=8（G.711A PCMA），與 SDP offer 一致
-        Ok(Self { frames, cursor: 0, looping: true, payload_type: 8 })
+        Ok(Self { frames: Arc::new(frames), cursor: 0, looping: true, payload_type: 8 })
+    }
+
+    /// 從快取載入音檔：同一檔案（路徑 + 修改時間 + 大小相同）只解碼一次，
+    /// 之後每通電話只複製 `Arc`；首次載入在 blocking 執行緒進行，不阻塞 async runtime。
+    /// 同時啟動的多通電話會等待同一次載入，不會重複解碼。
+    pub async fn from_file_cached(path: &Path) -> Result<Self> {
+        let meta = tokio::fs::metadata(path).await
+            .with_context(|| format!("無法讀取音檔: {}", path.display()))?;
+        let key: ClipKey = (path.to_path_buf(), meta.modified().ok(), meta.len());
+        let cell = {
+            let mut cache = clip_cache().lock().unwrap();
+            // 同一路徑的舊版本（檔案已被替換）不再需要
+            cache.retain(|k, _| k.0 != key.0 || *k == key);
+            Arc::clone(cache.entry(key).or_default())
+        };
+        let frames = cell.get_or_try_init(|| async {
+            let path = path.to_path_buf();
+            let src = tokio::task::spawn_blocking(move || Self::from_file(&path)).await??;
+            Ok::<_, anyhow::Error>(src.frames)
+        }).await?;
+        Ok(Self { frames: Arc::clone(frames), cursor: 0, looping: true, payload_type: 8 })
     }
 
     /// 產生靜音來源（G.711A PCMA 靜音，PT=8）
     pub fn silence() -> Self {
         // G.711A 零電平 = 0xD5（linear 0 → A-law 編碼）
         let frame = vec![0xD5u8; 160];
-        Self { frames: vec![frame; 50], cursor: 0, looping: true, payload_type: 8 }
+        Self { frames: Arc::new(vec![frame; 50]), cursor: 0, looping: true, payload_type: 8 }
     }
 
     /// 取得下一個 20ms frame（160 bytes）
@@ -78,6 +117,15 @@ impl AudioSource {
         let frame = self.frames[self.cursor].clone();
         self.cursor += 1;
         Some(frame)
+    }
+
+    /// 跳過 n 個 frame（RTP 傳送卡頓時讓音檔進度跟上實際時間）
+    pub fn skip(&mut self, n: usize) {
+        let len = self.frames.len();
+        if len == 0 || n == 0 {
+            return;
+        }
+        self.cursor = if self.looping { (self.cursor + n) % len } else { (self.cursor + n).min(len) };
     }
 
     /// 重置到開頭
@@ -374,3 +422,81 @@ static ULAW_EXP_TABLE: [u8; 256] = [
     7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
     7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_alaw(name: &str, frames: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sipress-audio-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, vec![0xD5u8; 160 * frames]).unwrap();
+        path
+    }
+
+    #[test]
+    fn skip_wraps_when_looping_and_stops_at_end_otherwise() {
+        let frames: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 160]).collect();
+        let mut src = AudioSource { frames: Arc::new(frames.clone()), cursor: 0, looping: true, payload_type: 8 };
+        src.next_frame();        // cursor 1
+        src.skip(6);             // (1 + 6) % 5 = 2
+        assert_eq!(src.next_frame().unwrap()[0], 2);
+
+        let mut once = AudioSource { frames: Arc::new(frames), cursor: 0, looping: false, payload_type: 8 };
+        once.skip(10);
+        assert_eq!(once.next_frame(), None, "非循環模式跳過結尾後應結束");
+    }
+
+    #[tokio::test]
+    async fn cached_loads_share_decoded_frames() {
+        let path = temp_alaw("shared.al", 10);
+        let a = AudioSource::from_file_cached(&path).await.unwrap();
+        let b = AudioSource::from_file_cached(&path).await.unwrap();
+        assert!(Arc::ptr_eq(&a.frames, &b.frames), "同一音檔應共用同一份解碼結果");
+        assert_eq!(a.frame_count(), 10);
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_loads_decode_once() {
+        let path = temp_alaw("concurrent.al", 10);
+        let loads = (0..20).map(|_| {
+            let p = path.clone();
+            async move { AudioSource::from_file_cached(&p).await }
+        });
+        let sources = futures_join_all(loads).await;
+        let first = &sources[0].frames;
+        assert!(sources.iter().all(|s| Arc::ptr_eq(&s.frames, first)));
+    }
+
+    #[tokio::test]
+    async fn replaced_file_is_reloaded() {
+        let path = temp_alaw("replaced.al", 10);
+        let a = AudioSource::from_file_cached(&path).await.unwrap();
+        fs::write(&path, vec![0xD5u8; 160 * 25]).unwrap();
+        let b = AudioSource::from_file_cached(&path).await.unwrap();
+        assert_eq!(a.frame_count(), 10);
+        assert_eq!(b.frame_count(), 25, "檔案內容變更後應重新載入");
+    }
+
+    #[tokio::test]
+    async fn load_errors_are_not_cached() {
+        let path = temp_alaw("bad.al", 0); // 空檔 → 解碼失敗
+        assert!(AudioSource::from_file_cached(&path).await.is_err());
+        fs::write(&path, vec![0xD5u8; 160 * 3]).unwrap();
+        // 大小不同 → 不同快取鍵；即使鍵相同，失敗的載入也不會留在 OnceCell 中
+        assert_eq!(AudioSource::from_file_cached(&path).await.unwrap().frame_count(), 3);
+    }
+
+    /// 簡易 join_all（不額外引入 futures crate）
+    async fn futures_join_all<F: std::future::Future<Output = Result<AudioSource>> + Send + 'static>(
+        futs: impl Iterator<Item = F>,
+    ) -> Vec<AudioSource> {
+        let handles: Vec<_> = futs.map(tokio::spawn).collect();
+        let mut out = Vec::new();
+        for h in handles {
+            out.push(h.await.unwrap().unwrap());
+        }
+        out
+    }
+}

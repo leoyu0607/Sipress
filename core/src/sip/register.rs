@@ -6,7 +6,8 @@ pub struct RegisterMessage;
 
 impl RegisterMessage {
     /// 建構 REGISTER 請求
-    /// auth_header: None = 第一次無認證；Some = 收到 401 後重送的 Authorization 標頭
+    /// auth_line: None = 第一次無認證；Some = 收到 401/407 後重送的完整認證標頭行
+    ///            （由 `DigestChallenge::authorization_header` 產生）
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         username:    &str,
@@ -18,10 +19,10 @@ impl RegisterMessage {
         call_id:     &str,
         transport:   &str,           // "UDP" / "TCP"
         expires:     u32,            // 註冊有效秒數
-        auth_header: Option<&str>,   // Authorization header value
+        auth_line:   Option<&str>,   // 完整認證標頭行（Authorization / Proxy-Authorization）
     ) -> String {
-        let auth_line = auth_header
-            .map(|h| format!("Authorization: {}\r\n", h))
+        let auth_line = auth_line
+            .map(|h| format!("{}\r\n", h))
             .unwrap_or_default();
 
         format!(
@@ -64,6 +65,8 @@ pub struct DigestChallenge {
     pub algorithm: String,           // 通常 "MD5"
     pub qop:       Option<String>,   // "auth" / "auth-int" / None
     pub opaque:    Option<String>,
+    /// true = 來自 407 Proxy-Authenticate，回應須用 Proxy-Authorization
+    pub proxy:     bool,
 }
 
 impl DigestChallenge {
@@ -72,12 +75,14 @@ impl DigestChallenge {
         // 找 WWW-Authenticate 或 Proxy-Authenticate
         let mut auth_value = String::new();
         let mut joining = false;
+        let mut proxy = false;
         for line in raw.lines() {
             let lower = line.to_lowercase();
             if lower.starts_with("www-authenticate:") || lower.starts_with("proxy-authenticate:") {
                 let val = line.splitn(2, ':').nth(1)?.trim();
                 auth_value = val.to_string();
                 joining = true;
+                proxy = lower.starts_with("proxy-authenticate:");
             } else if joining && (line.starts_with(' ') || line.starts_with('\t')) {
                 // 多行延續
                 auth_value.push(' ');
@@ -120,7 +125,23 @@ impl DigestChallenge {
         if realm.is_empty() || nonce.is_empty() {
             return None;
         }
-        Some(Self { realm, nonce, algorithm, qop, opaque })
+        Some(Self { realm, nonce, algorithm, qop, opaque, proxy })
+    }
+
+    /// 對應 challenge 來源的認證標頭名稱（RFC 3261 §22.3：407 → Proxy-Authorization）
+    pub fn header_name(&self) -> &'static str {
+        if self.proxy { "Proxy-Authorization" } else { "Authorization" }
+    }
+
+    /// 建構完整認證標頭行（"Authorization: Digest ..." 或 "Proxy-Authorization: Digest ..."）
+    pub fn authorization_header(
+        &self,
+        username: &str,
+        password: &str,
+        method:   &str,
+        uri:      &str,
+    ) -> String {
+        format!("{}: {}", self.header_name(), self.build_authorization(username, password, method, uri))
     }
 
     /// 計算 response 並建構 Authorization header value
@@ -239,6 +260,26 @@ mod tests {
     }
 
     #[test]
+    fn www_authenticate_uses_authorization_header() {
+        let raw = "SIP/2.0 401 Unauthorized\r\n\
+                   WWW-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\n\r\n";
+        let c = DigestChallenge::parse(raw).unwrap();
+        assert!(!c.proxy);
+        assert!(c.authorization_header("u", "p", "REGISTER", "sip:x")
+            .starts_with("Authorization: Digest "));
+    }
+
+    #[test]
+    fn proxy_authenticate_uses_proxy_authorization_header() {
+        let raw = "SIP/2.0 407 Proxy Authentication Required\r\n\
+                   Proxy-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\n\r\n";
+        let c = DigestChallenge::parse(raw).unwrap();
+        assert!(c.proxy);
+        assert!(c.authorization_header("u", "p", "REGISTER", "sip:x")
+            .starts_with("Proxy-Authorization: Digest "));
+    }
+
+    #[test]
     fn build_auth_response() {
         let c = DigestChallenge {
             realm:     "sip.example.com".into(),
@@ -246,6 +287,7 @@ mod tests {
             algorithm: "MD5".into(),
             qop:       None,
             opaque:    None,
+            proxy:     false,
         };
         let h = c.build_authorization("alice", "secret", "REGISTER", "sip:1.2.3.4:5060");
         assert!(h.contains("username=\"alice\""));
@@ -282,7 +324,7 @@ mod tests {
         let msg = RegisterMessage::build(
             "1001", "10.0.0.1:5066", "192.168.1.10:5070",
             2, "z9hG4bK-auth", "tag123", "call-1@test",
-            "UDP", 240, Some("Digest username=\"1001\", response=\"abc\""),
+            "UDP", 240, Some("Authorization: Digest username=\"1001\", response=\"abc\""),
         );
         assert!(msg.contains("Authorization: Digest username=\"1001\", response=\"abc\""));
         assert!(msg.contains("CSeq: 2 REGISTER\r\n"));
