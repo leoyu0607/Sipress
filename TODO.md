@@ -31,19 +31,12 @@
 
 `SharedUdpSocket::new` 只取 IP、port 一律綁 0。已修正：`IP:port` 會綁定指定 port，被佔用時報清楚的錯誤；GUI 本地埠只套用在民眾端，0 = 自動。
 
-### [~] 2. 座席註冊狀態回報到即時快照 — 分支 `feat/agent-registration-status`（實作完成，待 PR 合併）
+### [x] 2. 座席註冊狀態回報到即時快照 — PR #9
 
-**問題**：`StatsSnapshot` 沒有已註冊座席數。雙端啟動只能固定等 2 秒（`AGENT_WARMUP_MS`），畫面看不到座席是否註冊成功或掉線。
+快照新增 `agents_registered` / `agents_total`（每帳號由 `RegisteredGauge` 追蹤，drop 時自動取消）。座席端檢視的指標列以 REG n/總數 取代 PDD；雙端啟動改為等座席全部註冊才撥號（最多 10 秒，部分成功繼續並警告，全部失敗不撥號）。
+「超過 Expires 未刷新 → 取消」只有單元測試（刷新間隔最少 60 秒）。
 
-**做法**
-- `LiveStats` / `StatsSnapshot` 新增 `agents_registered`、`agents_total`。
-- `core/src/agent_engine.rs` 的 `account_runner`：REGISTER 200 OK 計為已註冊；認證失敗、非 2xx 最終回應、註冊過期未刷新、送出 Expires=0 或 runner 結束時取消計數。
-- 前端指標列在座席端顯示「已註冊 n/總數」。
-- 雙端啟動改為等座席全部註冊（或逾時）才撥號；逾時但有部分註冊時繼續並警告，全部失敗時不啟動民眾端。
-
-**驗收**：core 測試涵蓋註冊／認證失敗／取消註冊的計數；前端測試涵蓋雙端啟動的等待、部分成功、全部失敗與取消；契約 fixtures 更新。
-
-### [ ] 3. 端到端對照報告（依賴第 2 項）
+### [ ] 3. 端到端對照報告（前置的第 2 項已完成）
 
 用 Call-ID 或主叫號碼把民眾端每通電話和座席端接到的配對，算出：
 - 漏接率：民眾端接通、但沒有座席接到的通數
