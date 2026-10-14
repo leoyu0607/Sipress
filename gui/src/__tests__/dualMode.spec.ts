@@ -1,7 +1,7 @@
 /// 民眾端 + 座席端同時執行（commit d66aa65）的補充測試：覆蓋 store 的 per-mode 行為與邊界情況
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, AGENT_WARMUP_MS, type RustSnapshot, type RustReport, type CallMode } from '../stores/testStore'
+import { useTestStore, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport, type CallMode } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -217,7 +217,7 @@ describe('雙端啟動 / 全部停止', () => {
     withAccount(s)
     const first = s.startBoth()
     const second = s.startBoth()
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS + 10)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     await Promise.all([first, second])
     expect(startCount(calls)).toBe(2)
     expect(s.sessions.caller.status).toBe('running')
@@ -243,7 +243,7 @@ describe('雙端啟動 / 全部停止', () => {
     const s = useTestStore()
     withAccount(s)
     const done = s.startBoth()
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS + 10)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     await done
     expect(startCount(calls)).toBe(1)
     expect(s.sessions.agent.status).toBe('error')
@@ -263,7 +263,7 @@ describe('雙端啟動 / 全部停止', () => {
     await vi.advanceTimersByTimeAsync(0)   // 不需等滿 warmup
     expect(settled).toBe(true)
     await done
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     expect(startCount(calls)).toBe(1)
     expect(s.sessions.caller.status).toBe('idle')
   })
@@ -278,7 +278,7 @@ describe('雙端啟動 / 全部停止', () => {
 
     await s.stopTest('caller')
     await done
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     expect(startCount(calls)).toBe(1)
     expect(s.sessions.caller.status).not.toBe('running')
     expect(s.sessions.agent.status).toBe('running')     // 座席端不受影響
@@ -397,7 +397,7 @@ describe('log 的 mode 標記 (D15)', () => {
     const s = useTestStore()
     s.generateAccounts({ count: 1, startExt: 1001, usernamePrefix: '', passwordMode: 'ext', samePassword: '', customPassword: '', domain: '' })
     const done = s.startBoth()
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS + 1000)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     await done
     await s.stopAll()
 
@@ -451,5 +451,89 @@ describe('本地埠只套用在民眾端', () => {
     const s = useTestStore()
     s.config.localPort = 0
     expect(s.cliCommand).not.toContain('--local')
+  })
+})
+
+describe('雙端啟動等待座席註冊', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** 座席端快照回報 registered/total；民眾端維持一般快照 */
+  function routeAgents(registered: number, total: number) {
+    return routeInvoke({
+      start_test:   () => 'started',
+      stop_test:    () => null,
+      get_snapshot: a => modeOf(a) === 'agent'
+        ? snap({ agents_registered: registered, agents_total: total })
+        : snap({ agents_registered: 0, agents_total: 0 }),
+      get_report:   () => baseReport,
+    })
+  }
+  const startedModes = (calls: { cmd: string; args?: Args }[]) =>
+    calls.filter(c => c.cmd === 'start_test').map(c => (c.args?.config as { mode: string }).mode)
+
+  it('座席全部註冊成功 → 不等逾時就開始撥號', async () => {
+    const calls = routeAgents(2, 2)
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(1500)              // 第一筆快照（1s）後下一次檢查
+    await done
+    expect(startedModes(calls)).toEqual(['agent', 'caller'])
+    expect(s.sessions.agent.agents).toEqual({ registered: 2, total: 2 })
+    expect(s.logs.some(l => l.level === 'ok' && l.msg.includes('座席全部註冊成功（2/2）'))).toBe(true)
+  })
+
+  it('逾時但部分成功 → 繼續撥號並警告', async () => {
+    const calls = routeAgents(1, 2)
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS - 500)
+    expect(startedModes(calls)).toEqual(['agent'])       // 逾時前還在等
+    await vi.advanceTimersByTimeAsync(1000)
+    await done
+    expect(startedModes(calls)).toEqual(['agent', 'caller'])
+    expect(s.logs.some(l => l.level === 'warn' && l.msg.includes('僅 1/2 個座席註冊成功'))).toBe(true)
+  })
+
+  it('逾時且沒有任何座席註冊成功 → 不撥號，座席端繼續執行', async () => {
+    const calls = routeAgents(0, 2)
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
+    await done
+    expect(startedModes(calls)).toEqual(['agent'])
+    expect(s.sessions.caller.status).toBe('idle')
+    expect(s.sessions.agent.status).toBe('running')
+    expect(s.logs.some(l => l.level === 'err' && l.msg.includes('沒有任何帳號註冊成功'))).toBe(true)
+  })
+
+  it('等待中座席引擎自行結束（例如設定錯誤）→ 不撥號', async () => {
+    const calls = routeInvoke({
+      start_test:   () => 'started',
+      get_snapshot: () => snap({ agents_registered: 0, agents_total: 2, finished: true }),
+      get_report:   () => { throw new Error('無效的 server 位址') },
+    })
+    const s = useTestStore()
+    withAccount(s)
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(2000)
+    await done
+    expect(startedModes(calls)).toEqual(['agent'])
+    expect(s.sessions.caller.status).toBe('idle')
+  })
+
+  it('座席端檢視：metrics 之外另提供 agents 註冊狀態', async () => {
+    routeAgents(48, 50)
+    const s = useTestStore()
+    withAccount(s)
+    s.config.mode = 'agent'
+    await s.startTest()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(s.agents).toEqual({ registered: 48, total: 50 })
+    s.config.mode = 'caller'
+    expect(s.agents).toEqual({ registered: 0, total: 0 })
   })
 })

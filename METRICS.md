@@ -310,12 +310,16 @@ ACK 逾時預設 10 秒，BYE 逾時預設 150 秒；逾時後座席主動送 BY
 | ASR | `asr` | 最終報告 ASR |
 | ERR% | `error_rate` | `(failed + timeout) / initiated × 100` |
 | PDD | `pdd_avg_ms`（**平均**） | 最終報告 PDD **p50** |
+| REG（僅座席端檢視，取代 PDD） | `agents_registered / agents_total` | （保留最後的即時值） |
+
+座席註冊數（`agents_registered`）：每個帳號收到 REGISTER 200 OK 時計為已註冊（`Expires: 0` 除外）；以下情況取消計數：認證重試用盡、3xx–6xx 最終回應、超過 Expires 秒都沒有再收到 200 OK、送出 `Expires=0` 取消註冊、帳號的 runner 結束。同一帳號重複刷新成功不會重複計數。
 
 ### 分級門檻
 
 | 指標 | 良好 | 普通 | 差 | 使用位置 |
 |---|---|---|---|---|
 | ASR | ≥ 85% | ≥ 70% | < 70% | GUI 指標列；HTML 報告（ASR 與 CCR 共用） |
+| REG（已註冊座席） | 全部 | ≥ 1 | 0 | GUI 指標列（座席端） |
 | ERR% | ≤ 5% | ≤ 20% | > 20% | GUI 指標列 |
 | MOS | ≥ 4.0 優 | ≥ 3.0 普通 | < 3.0 差 | GUI `mosGrade()`；HTML 報告的 badge 顏色 |
 | 掉包率 | < 1% | < 3% | ≥ 3% | GUI 右側面板 |

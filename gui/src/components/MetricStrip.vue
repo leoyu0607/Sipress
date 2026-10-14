@@ -12,6 +12,12 @@ const asrClass = computed(() => {
   return v >= 85 ? 'c-accent' : v >= 70 ? 'c-warn' : 'c-danger'
 })
 
+const regClass = computed(() => {
+  const { registered, total } = store.agents
+  if (!isReady.value || total === 0) return ''
+  return registered >= total ? 'c-accent' : registered > 0 ? 'c-warn' : 'c-danger'
+})
+
 const errClass = computed(() => {
   if (!isReady.value) return ''
   const v = store.metrics.errorRate
@@ -68,7 +74,16 @@ const errClass = computed(() => {
       <div class="unit">錯誤率</div>
     </div>
 
-    <div class="cell">
+    <!-- 座席端量不到 PDD，改顯示註冊狀態 -->
+    <div class="cell" v-if="store.config.mode === 'agent'">
+      <div class="name">REG</div>
+      <div class="val" :class="regClass">
+        {{ isReady && store.agents.total > 0 ? `${store.agents.registered}/${store.agents.total}` : '—' }}
+      </div>
+      <div class="unit">已註冊座席</div>
+    </div>
+
+    <div class="cell" v-else>
       <div class="name">PDD</div>
       <div class="val c-warn">{{ isReady && store.metrics.pdd > 0 ? store.metrics.pdd.toFixed(0) + 'ms' : '—' }}</div>
       <div class="unit">{{ store.status === 'done' ? '撥號延遲 p50' : '撥號延遲 平均' }}</div>

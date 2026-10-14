@@ -60,6 +60,7 @@ impl AgentEngine {
         let start   = Instant::now();
 
         cfg.validate()?;
+        live.agents_total.store(cfg.agent_accounts.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
         let sip_log = Arc::new(
             SipLogger::new(&cfg.logs_dir, SipRole::Agent)
@@ -282,6 +283,8 @@ async fn account_runner(
     };
 
     let dialogs: Arc<Mutex<HashMap<String, DialogCtx>>> = Arc::new(Mutex::new(HashMap::new()));
+    // runner 結束或被 abort 時 drop → 自動取消註冊計數
+    let mut registered = RegisteredGauge::new(Arc::clone(&live));
 
     log.log_event(&account.extension, "開始 REGISTER");
 
@@ -322,7 +325,7 @@ async fn account_runner(
                         &raw, &sock, &log, &cfg, &server_addr_str, &local_addr,
                         &account, &reg_from_tag, &reg_call_id, transport_str,
                         &mut current_expires, &mut last_register_at,
-                        Arc::clone(&reg_state),
+                        Arc::clone(&reg_state), &mut registered,
                     ).await;
                 } else {
                     let needs_reregister = handle_request(
@@ -342,6 +345,10 @@ async fn account_runner(
             }
 
             _ = time::sleep_until(tokio::time::Instant::from_std(refresh_at)) => {
+                if registered.expired(current_expires) {
+                    log.log_event(&account.extension, "註冊已過期（刷新未獲 200 OK）");
+                    registered.set(false);
+                }
                 log.log_event(&account.extension, "re-REGISTER（刷新）");
                 last_register_at = Instant::now();
                 let mut st = reg_state.lock().await;
@@ -398,6 +405,7 @@ async fn account_runner(
 
             _ = stop.changed() => {
                 log.log_event(&account.extension, "收到停止訊號，發送 REGISTER Expires=0");
+                registered.set(false);
                 // 停止所有 RTP sessions
                 {
                     let mut dlgs = dialogs.lock().await;
@@ -431,6 +439,41 @@ async fn account_runner(
 }
 
 // ─── REGISTER 狀態 ────────────────────────────────────────────────
+
+/// 單一帳號的註冊狀態；狀態改變時才增減 `LiveStats::agents_registered`，drop 時自動取消
+struct RegisteredGauge {
+    live:    Arc<LiveStats>,
+    on:      bool,
+    /// 最近一次 REGISTER 200 OK 的時間
+    last_ok: Instant,
+}
+
+impl RegisteredGauge {
+    fn new(live: Arc<LiveStats>) -> Self {
+        Self { live, on: false, last_ok: Instant::now() }
+    }
+
+    fn set(&mut self, on: bool) {
+        if on == self.on { return; }
+        self.on = on;
+        if on { self.live.on_agent_registered() } else { self.live.on_agent_unregistered() }
+    }
+
+    /// 收到 REGISTER 200 OK（Expires=0 代表伺服器已移除註冊）
+    fn on_ok(&mut self, expires: Option<u32>) {
+        self.last_ok = Instant::now();
+        self.set(expires != Some(0));
+    }
+
+    /// 已註冊但超過 expires 秒都沒有再收到 200 OK
+    fn expired(&self, expires: u32) -> bool {
+        self.on && self.last_ok.elapsed() > Duration::from_secs(expires as u64)
+    }
+}
+
+impl Drop for RegisteredGauge {
+    fn drop(&mut self) { self.set(false); }
+}
 
 struct RegState {
     cseq:         u32,
@@ -514,6 +557,7 @@ async fn handle_response(
     current_expires:    &mut u32,
     last_register_at:   &mut Instant,
     reg_state:          Arc<Mutex<RegState>>,
+    registered:         &mut RegisteredGauge,
 ) {
     let code = SipParser::status_code(raw).unwrap_or(0);
     let method = SipParser::cseq_method(raw);
@@ -527,9 +571,11 @@ async fn handle_response(
             reg_state.lock().await.auth_retries = 0;
             *last_register_at = Instant::now();
             log.log_event(&account.extension, "註冊成功");
-            if let Some(exp) = SipParser::expires(raw) {
+            let expires = SipParser::expires(raw);
+            if let Some(exp) = expires {
                 *current_expires = exp;
             }
+            registered.on_ok(expires);
         }
         401 | 407 => {
             if let Some(chal) = DigestChallenge::parse(raw) {
@@ -546,6 +592,7 @@ async fn handle_response(
                             "認證失敗（SIP {}，已重試 {} 次），停止重送 REGISTER",
                             code, st.auth_retries,
                         ));
+                        registered.set(false);
                         return;
                     }
                     st.auth_retries += 1;
@@ -563,6 +610,10 @@ async fn handle_response(
         }
         _ => {
             log.log_event(&account.extension, &format!("REGISTER 回應 SIP {}", code));
+            // 1xx 是暫時回應；其他最終回應（3xx–6xx）代表註冊被拒
+            if code >= 300 {
+                registered.set(false);
+            }
         }
     }
 }
@@ -855,4 +906,50 @@ fn pick_dummy_rtp_port(_local_ip: &str) -> u16 {
 
 fn short(call_id: &str) -> String {
     call_id.chars().take(10).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn registered(live: &LiveStats) -> u64 { live.agents_registered.load(Ordering::Relaxed) }
+
+    #[test]
+    fn gauge_counts_only_state_changes() {
+        let live = Arc::new(LiveStats::default());
+        let mut a = RegisteredGauge::new(Arc::clone(&live));
+        let mut b = RegisteredGauge::new(Arc::clone(&live));
+        a.on_ok(Some(240));
+        a.on_ok(Some(240));                   // 刷新成功不重複計數
+        b.on_ok(None);
+        assert_eq!(registered(&live), 2);
+        a.set(false);
+        a.set(false);
+        assert_eq!(registered(&live), 1);
+        b.on_ok(Some(0));                     // Expires=0 → 伺服器已移除註冊
+        assert_eq!(registered(&live), 0);
+    }
+
+    #[test]
+    fn gauge_drop_unregisters() {
+        let live = Arc::new(LiveStats::default());
+        {
+            let mut g = RegisteredGauge::new(Arc::clone(&live));
+            g.on_ok(Some(60));
+            assert_eq!(registered(&live), 1);
+        }
+        assert_eq!(registered(&live), 0, "runner 結束或被 abort 時應取消註冊計數");
+    }
+
+    #[test]
+    fn gauge_expired_only_when_registered_and_stale() {
+        let live = Arc::new(LiveStats::default());
+        let mut g = RegisteredGauge::new(live);
+        assert!(!g.expired(0), "未註冊時不算過期");
+        g.on_ok(Some(60));
+        assert!(!g.expired(60));
+        g.last_ok = Instant::now() - Duration::from_secs(61);
+        assert!(g.expired(60));
+    }
 }

@@ -105,6 +105,7 @@ describe('Rust 輸出 fixtures', () => {
       'calls_initiated', 'calls_answered', 'calls_completed', 'calls_failed', 'calls_timeout',
       'calls_concurrent', 'rtp_sessions', 'asr', 'error_rate', 'rtp_mos', 'rtp_loss_pct',
       'rtp_jitter_ms', 'rtp_sent_packets', 'rtp_recv_packets', 'pdd_avg_ms', 'finished',
+      'agents_registered', 'agents_total',
     ]
     for (const k of snapKeys) expect(snap, `snapshot.${k}`).toHaveProperty(k)
     const reportKeys: (keyof RustReport)[] = [
