@@ -474,6 +474,8 @@ mod tests {
         for _ in 0..4  { live.on_failed(); }
         for _ in 0..2  { live.on_timeout(); }
         for _ in 0..10 { live.on_rtp_start(); }
+        live.agents_total.store(50, Ordering::Relaxed);
+        for _ in 0..48 { live.on_agent_registered(); }
         let mut snap = live.snapshot();
         snap.rtp_mos          = Some(4.1);
         snap.rtp_loss_pct     = Some(0.5);

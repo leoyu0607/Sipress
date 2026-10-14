@@ -131,6 +131,8 @@ export interface RunSession {
   callStates:   CallStates
   respCodes:    Record<string, number>
   rtpMetrics:   RtpMetrics
+  /** 座席端註冊狀態（民眾端皆為 0） */
+  agents:       { registered: number; total: number }
 }
 
 // Rust StatsSnapshot shape
@@ -152,6 +154,9 @@ export interface RustSnapshot {
   rtp_recv_packets:  number | null
   // 目前為止的平均 PDD（null = 尚無樣本）
   pdd_avg_ms:        number | null
+  // 座席端：註冊成功數 / 帳號總數（民眾端皆為 0）
+  agents_registered: number
+  agents_total:      number
   // 引擎是否已結束
   finished:          boolean
 }
@@ -182,8 +187,10 @@ export interface RustReport {
 export const MAX_SERIES  = 90
 const MAX_LOG     = 300
 const STORAGE_KEY = 'sipress-config'
-/** 雙端啟動：座席端啟動後等待 REGISTER 完成再開始撥號 */
-export const AGENT_WARMUP_MS = 2000
+/** 雙端啟動：等待座席全部註冊成功的上限；逾時仍有部分成功則繼續撥號 */
+export const AGENT_REGISTER_TIMEOUT_MS = 10000
+/** 雙端啟動檢查座席註冊狀態的間隔 */
+const BOTH_POLL_MS = 250
 
 export const MODE_LABEL: Record<CallMode, string> = { caller: '民眾端', agent: '座席端' }
 
@@ -222,6 +229,7 @@ function newSession(): RunSession {
     callStates: { initiated:0, answered:0, completed:0, failed:0, timeout:0 },
     respCodes: {},
     rtpMetrics: { enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 },
+    agents: { registered: 0, total: 0 },
   }
 }
 
@@ -325,6 +333,7 @@ export const useTestStore = defineStore('test', () => {
   const callStates   = computed(() => view.value.callStates)
   const respCodes    = computed(() => view.value.respCodes)
   const rtpMetrics   = computed(() => view.value.rtpMetrics)
+  const agents       = computed(() => view.value.agents)
 
   const logs        = ref<LogEntry[]>([])
   const accountImportError = ref('')
@@ -340,14 +349,16 @@ export const useTestStore = defineStore('test', () => {
     agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
   }
   let logSeq = 0
-  /** 雙端啟動中等待座席註冊的計時器；resolve(false) = 已取消，startBoth 不再啟動民眾端 */
-  let bothWait: { timer: ReturnType<typeof setTimeout>; resolve: (proceed: boolean) => void } | null = null
-  function cancelBothWait() {
+  /** 雙端啟動中等待座席註冊的輪詢；取消時 resolve('cancelled')，startBoth 不再啟動民眾端 */
+  type BothWaitResult = 'ready' | 'timeout' | 'cancelled'
+  let bothWait: { timer: ReturnType<typeof setInterval>; resolve: (r: BothWaitResult) => void } | null = null
+  function settleBothWait(r: BothWaitResult) {
     if (!bothWait) return
-    clearTimeout(bothWait.timer)
-    bothWait.resolve(false)
+    clearInterval(bothWait.timer)
+    bothWait.resolve(r)
     bothWait = null
   }
+  function cancelBothWait() { settleBothWait('cancelled') }
 
   // ── Computed ──────────────────────────────────────────────────────────────────
   const isRunning = computed(() => status.value === 'running')
@@ -525,6 +536,8 @@ export const useTestStore = defineStore('test', () => {
     pushSeries(r, 'fail', failed)
     if (snap.pdd_avg_ms != null) pushSeries(r, 'pdd', snap.pdd_avg_ms)
 
+    r.agents = { registered: snap.agents_registered ?? 0, total: snap.agents_total ?? 0 }
+
     // Approximate live respCodes from snapshot counters
     r.respCodes['200'] = snap.calls_answered
     r.respCodes['408'] = snap.calls_timeout
@@ -698,7 +711,10 @@ export const useTestStore = defineStore('test', () => {
     if (!rt.pollTimer) _finishTest(mode)
   }
 
-  /** 雙端啟動：先啟動座席端（REGISTER），等待 AGENT_WARMUP_MS 後再啟動民眾端撥號 */
+  /**
+   * 雙端啟動：先啟動座席端（REGISTER），等座席全部註冊成功再啟動民眾端撥號。
+   * 等待超過 AGENT_REGISTER_TIMEOUT_MS：有部分座席註冊成功就繼續並警告；一個都沒有則不撥號。
+   */
   async function startBoth() {
     if (anyRunning.value || bothWait) return
     if (bothValidationErrors.value.length > 0) {
@@ -706,17 +722,30 @@ export const useTestStore = defineStore('test', () => {
       return
     }
     if (!await startTest('agent')) return
-    addLog('info', `雙端啟動：等待座席註冊 ${AGENT_WARMUP_MS / 1000}s 後開始撥號`)
-    const proceed = await new Promise<boolean>(resolve => {
-      bothWait = { timer: setTimeout(() => { bothWait = null; resolve(true) }, AGENT_WARMUP_MS), resolve }
+    addLog('info', `雙端啟動：等待座席註冊完成（最多 ${AGENT_REGISTER_TIMEOUT_MS / 1000}s）後開始撥號`)
+    const deadline = Date.now() + AGENT_REGISTER_TIMEOUT_MS
+    const result = await new Promise<BothWaitResult>(resolve => {
+      const timer = setInterval(() => {
+        const a = sessions.value.agent
+        if (a.status !== 'running' || a.stopping) settleBothWait('cancelled')
+        else if (a.agents.total > 0 && a.agents.registered >= a.agents.total) settleBothWait('ready')
+        else if (Date.now() >= deadline) settleBothWait('timeout')
+      }, BOTH_POLL_MS)
+      bothWait = { timer, resolve }
     })
-    if (!proceed) {
+    const { registered, total } = sessions.value.agent.agents
+    if (result === 'cancelled') {
       addLog('warn', '雙端啟動已取消，民眾端不啟動')
       return
     }
-    if (sessions.value.agent.status !== 'running' || sessions.value.agent.stopping) {
-      addLog('warn', '座席端已停止，取消民眾端啟動')
-      return
+    if (result === 'timeout') {
+      if (registered === 0) {
+        addLog('err', `座席在 ${AGENT_REGISTER_TIMEOUT_MS / 1000}s 內沒有任何帳號註冊成功，民眾端不啟動`)
+        return
+      }
+      addLog('warn', `僅 ${registered}/${total} 個座席註冊成功，仍開始撥號`)
+    } else {
+      addLog('ok', `座席全部註冊成功（${registered}/${total}），開始撥號`)
     }
     await startTest('caller')
   }
@@ -943,7 +972,7 @@ export const useTestStore = defineStore('test', () => {
 
   return {
     config, sessions, status, isRunning, anyRunning, stopping, elapsedSec, metrics, series, seriesOffset, seriesTick,
-    callStates, respCodes, logs,
+    callStates, respCodes, logs, agents,
     rtpMetrics, mosRating, codecLabel,
     accountImportError, registeredCount,
     validationErrors, bothValidationErrors, cliUnsupported, cliCommand, progressPct,

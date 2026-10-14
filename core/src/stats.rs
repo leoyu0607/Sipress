@@ -22,6 +22,10 @@ pub struct LiveStats {
     pub calls_active:    std::sync::atomic::AtomicI64,
     /// 目前活躍的 RTP session 數（用於前端顯示 RTP 狀態）
     pub rtp_sessions:    AtomicU64,
+    /// 座席端：目前註冊成功的帳號數
+    pub agents_registered: AtomicU64,
+    /// 座席端：設定的帳號總數（民眾端為 0）
+    pub agents_total:      AtomicU64,
 }
 
 impl LiveStats {
@@ -43,6 +47,13 @@ impl LiveStats {
     pub fn on_timeout(&self) {
         self.calls_timeout.fetch_add(1, Ordering::Relaxed);
         self.calls_active.fetch_sub(1, Ordering::Relaxed);
+    }
+    pub fn on_agent_registered(&self) { self.agents_registered.fetch_add(1, Ordering::Relaxed); }
+    pub fn on_agent_unregistered(&self) {
+        // 防止下溢
+        let _ = self.agents_registered.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            if v > 0 { Some(v - 1) } else { Some(0) }
+        });
     }
     pub fn on_rtp_start(&self) { self.rtp_sessions.fetch_add(1, Ordering::Relaxed); }
     pub fn on_rtp_stop(&self)  {
@@ -89,6 +100,8 @@ impl LiveStats {
             rtp_sent_packets: None,
             rtp_recv_packets: None,
             pdd_avg_ms:       None,
+            agents_registered: self.agents_registered.load(Ordering::Relaxed),
+            agents_total:      self.agents_total.load(Ordering::Relaxed),
             finished:         false,
         }
     }
@@ -120,6 +133,12 @@ pub struct StatsSnapshot {
     /// 目前為止的平均 PDD（ms；None = 尚無樣本）
     #[serde(default)]
     pub pdd_avg_ms:        Option<f64>,
+    /// 座席端：目前註冊成功的帳號數（民眾端為 0）
+    #[serde(default)]
+    pub agents_registered: u64,
+    /// 座席端：設定的帳號總數（民眾端為 0）
+    #[serde(default)]
+    pub agents_total:      u64,
     /// 引擎是否已結束（用於前端偵測 max_total_calls 完成）
     pub finished: bool,
 }

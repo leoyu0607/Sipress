@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, mosGrade, MAX_SERIES, AGENT_WARMUP_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
+import { useTestStore, mosGrade, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -310,7 +310,7 @@ describe('雙端同時執行', () => {
     expect(s.sessions.agent.status).toBe('running')
     expect(s.sessions.caller.status).toBe('idle')
 
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     await done
     expect(s.sessions.caller.status).toBe('running')
     expect(calls.filter(c => c.cmd === 'start_test').map(c => (c.args?.config as { mode: string }).mode))
@@ -324,7 +324,7 @@ describe('雙端同時執行', () => {
     const done = s.startBoth()
     await vi.advanceTimersByTimeAsync(0)
     await s.stopTest('agent')
-    await vi.advanceTimersByTimeAsync(AGENT_WARMUP_MS)
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 1000)
     await done
     expect(s.sessions.caller.status).toBe('idle')
     expect(calls.filter(c => c.cmd === 'start_test')).toHaveLength(1)
