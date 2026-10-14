@@ -177,7 +177,7 @@ pub struct StatsSnapshot {
 使用 `hdrhistogram::Histogram<u64>` 儲存 PDD / 通話建立時間 / 通話持續時間的分佈。
 
 HDR Histogram 的特性：
-- `new_with_bounds(1, 60_000_000, 3)` — 最小 1µs、最大 60s（60M µs）、3 位有效數字
+- `new_with_bounds(1, max, 3)` — 最小 1µs、3 位有效數字；PDD / 建立時間最大 60s（60M µs），通話時長最大 24h（86,400M µs）
 - 精確記錄延遲百分位（P50/P95/P99/MAX）而不失精度
 - 因 Histogram 本身不是 Sync，需包在 `Mutex` 中
 

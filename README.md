@@ -130,7 +130,7 @@ sipress/
 
 - **左側 Sidebar**：填寫伺服器位址、CPS、並發數、**總通數上限**、持續時間（**0 = 不限時間**）、音檔路徑
 - **頂部 TitleBar**：顯示狀態、進度條，▶ Start / ■ Stop 按鈕，及 **↓ JSON / ↓ CSV / ↓ HTML** 匯出按鈕（HTML 需測試完成後才啟用）
-- **中間 MetricStrip**：即時顯示 CPS、CONCUR、**SUCCESS（成功通數）**、**FAILED（失敗通數）**、**QUEUED（佇列通數）**、ASR、**ERR%（Error Rate）**、PDD
+- **中間 MetricStrip**：即時顯示 CPS、CONCUR、**SUCCESS（成功通數）**、**FAILED（失敗通數）**、**TOTAL（累計發起）**、ASR、**ERR%（Error Rate）**、PDD
 - **圖表區**：折線圖（CPS / ASR / CCR / ERR 趨勢）
 - **右側面板**：回應碼統計、**即時** RTP 品質（**MOS / 掉包率 / Jitter / 封包統計**，測試中即時更新）、SIP flow 時序
 - **底部 LogPanel**：即時 SIP 事件日誌（color-coded）
@@ -362,28 +362,30 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
 
 ## 關鍵指標
 
+> 每個指標的完整計算邏輯（觸發事件、公式、聚合方式、即時值與最終報告的差異、已知限制）請見 **[METRICS.md](METRICS.md)**。
+
 ### SIP 指標
 
 | 指標 | 說明 | 計算方式 |
 |------|------|---------|
-| **CPS** | Calls Per Second，每秒發起通話數 | 每秒快照差值 |
-| **SUCCESS** | 目前成功接通通數 | `calls_answered`（累計） |
-| **FAILED** | 目前失敗通數 | `calls_failed + calls_timeout`（累計） |
-| **QUEUED** | 目前佇列中（進行中）通話數 | `calls_initiated - calls_completed - calls_failed - calls_timeout` |
+| **CPS** | Calls Per Second，每秒發起通話數 | 即時：每秒 `calls_initiated` 差值；報告：`calls_initiated / 測試時長` |
+| **CONCUR** | 目前進行中通話數 | `calls_active`（INVITE +1，完成 / 失敗 / 逾時 −1） |
+| **SUCCESS** | 已接通通數 | `calls_answered`（累計） |
+| **FAILED** | 失敗通數 | `calls_failed + calls_timeout`（累計） |
+| **TOTAL** | 累計發起通數 | `calls_initiated` |
 | **ASR** | Answer Seizure Ratio，接通率 | `calls_answered / calls_initiated × 100%` |
 | **CCR** | Call Completion Rate，完成率 | `calls_completed / calls_initiated × 100%` |
 | **ERR%** | Error Rate，失敗率 | `(calls_failed + calls_timeout) / calls_initiated × 100%` |
-| **ACD** | Average Call Duration，平均通話時長 | HDR Histogram 均值（200 OK → BYE 200 OK） |
-| **PDD** | Post Dial Delay，撥號後延遲 | INVITE 送出 → 收到 180 Ringing（ms） |
+| **PDD** | Post Dial Delay，撥號後延遲 | INVITE 送出 → 收到 180 / 183（ms）；即時顯示平均、報告顯示 p50/p95/p99/max |
 | **Setup Time** | 通話建立時間 | INVITE 送出 → 收到 200 OK（ms） |
-| **CCR** | Call Completion Rate，通話完成率 | `calls_completed / calls_initiated × 100%` |
+| **ACD** | Average Call Duration，平均通話時長 | 200 OK → 通話結束的平均（秒） |
 
 ### RTP / 聲音品質指標
 
 | 指標 | 說明 | 標準 |
 |------|------|------|
-| **MOS** | Mean Opinion Score，1.0 ~ 5.0 | ≥ 4.0 優、≥ 3.0 普通、< 2.5 差 |
-| **掉包率** | Lost / Expected packets（%） | 建議 < 1%，可接受 < 3% |
+| **MOS** | Mean Opinion Score，1.0 ~ 5.0（本公式最高約 4.41） | ≥ 4.0 優、≥ 3.0 普通、< 3.0 差 |
+| **掉包率** | (Expected − Received) / Expected，依序號空間計算（RFC 3550 §A.3） | 建議 < 1%，可接受 < 3% |
 | **Jitter** | 封包到達時間抖動（ms，RFC 3550 §A.8） | 建議 < 30ms |
 
 ### MOS 估算公式（ITU-T E-Model 簡化）

@@ -64,7 +64,7 @@ chmod +x sipress-gui-linux-x86_64-portable.AppImage
 
 ```
 ┌─ 標題列（可拖曳移動）──────────────────── [─] [□] [✕] ─┐
-│  指標列：CPS | CONCUR | SUCCESS | FAILED | QUEUED | ASR | ERR% | PDD │
+│  指標列：CPS | CONCUR | SUCCESS | FAILED | TOTAL  | ASR | ERR% | PDD │
 │  ┌─ 左側欄 ──────────┐  ┌─ 圖表區 ──────────────────┐  │
 │  │  目標設定          │  │  折線圖（CPS/ASR/MOS…）   │  │
 │  │  ─────────────── │  └──────────────────────────┘  │
@@ -225,10 +225,12 @@ extension,username,password,domain
 | **CONCUR** | 目前進行中的通話數 | ≤ 設定的併發上限 |
 | **SUCCESS** | 累計成功接通通數（200 OK） | 越高越好 |
 | **FAILED** | 累計失敗通數（含逾時） | 越低越好 |
-| **QUEUED** | 目前等待回應的 INVITE 數量 | 接近 CONCUR |
+| **TOTAL** | 累計發起通數 | — |
 | **ASR** | 接通率（%） | ≥ 85% 優、≥ 70% 普通 |
 | **ERR%** | 失敗率（%） | ≤ 5% 正常 |
-| **PDD** | 平均撥後延遲（ms） | < 200ms 正常 |
+| **PDD** | 撥後延遲（ms；測試中為平均，結束後為 p50） | < 200ms 正常 |
+
+> 各指標的完整計算方式請見 [METRICS.md](METRICS.md)。
 
 ### 圖表標籤頁
 

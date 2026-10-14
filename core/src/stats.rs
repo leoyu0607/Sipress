@@ -126,7 +126,7 @@ pub struct StatsSnapshot {
 
 // ─── 詳細統計（直方圖，需要 Mutex） ────────────────────────────
 
-/// 精確時延統計，用 HDR Histogram（解析度 1µs，最大 60s）
+/// 精確時延統計，用 HDR Histogram（解析度 1µs；PDD / 建立時間最大 60s，通話時長最大 24h）
 pub struct DetailedStats {
     /// PDD 分佈（µs）
     pub pdd_hist: Mutex<Histogram<u64>>,
@@ -145,11 +145,12 @@ pub struct DetailedStats {
 
 impl Default for DetailedStats {
     fn default() -> Self {
-        let make = || Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
+        // PDD / 建立時間受 INVITE timeout 限制，60s 足夠；通話時長可能很長（不限時長 / 座席端），上限 24h
+        let make = |max_us: u64| Histogram::<u64>::new_with_bounds(1, max_us, 3).unwrap();
         Self {
-            pdd_hist:   Mutex::new(make()),
-            setup_hist: Mutex::new(make()),
-            dur_hist:   Mutex::new(make()),
+            pdd_hist:   Mutex::new(make(60_000_000)),
+            setup_hist: Mutex::new(make(60_000_000)),
+            dur_hist:   Mutex::new(make(86_400_000_000)),
             fail_4xx:   AtomicU64::new(0),
             fail_5xx:   AtomicU64::new(0),
             fail_6xx:   AtomicU64::new(0),
@@ -365,5 +366,20 @@ impl CdrCollector {
 
     pub fn take(&self) -> Vec<CallDetailRecord> {
         self.records.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acd_includes_calls_longer_than_60s() {
+        let detail = DetailedStats::default();
+        detail.record_duration(30.0);
+        detail.record_duration(150.0); // 座席端 BYE timeout 預設 150s
+        let snap = StatsSnapshot { calls_initiated: 2, calls_completed: 2, ..Default::default() };
+        let r = FinalReport::build(&snap, &detail, 200.0, None);
+        assert!((r.acd_secs - 90.0).abs() < 0.5, "超過 60s 的通話也應計入 ACD（實際 {}）", r.acd_secs);
     }
 }
