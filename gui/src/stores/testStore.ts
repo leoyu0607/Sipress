@@ -340,12 +340,12 @@ export const useTestStore = defineStore('test', () => {
     agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
   }
   let logSeq = 0
-  /** 雙端啟動中等待座席註冊的計時器；取消時呼叫 resolve 讓 startBoth 收尾 */
-  let bothWait: { timer: ReturnType<typeof setTimeout>; resolve: () => void } | null = null
+  /** 雙端啟動中等待座席註冊的計時器；resolve(false) = 已取消，startBoth 不再啟動民眾端 */
+  let bothWait: { timer: ReturnType<typeof setTimeout>; resolve: (proceed: boolean) => void } | null = null
   function cancelBothWait() {
     if (!bothWait) return
     clearTimeout(bothWait.timer)
-    bothWait.resolve()
+    bothWait.resolve(false)
     bothWait = null
   }
 
@@ -704,9 +704,13 @@ export const useTestStore = defineStore('test', () => {
     }
     if (!await startTest('agent')) return
     addLog('info', `雙端啟動：等待座席註冊 ${AGENT_WARMUP_MS / 1000}s 後開始撥號`)
-    await new Promise<void>(resolve => {
-      bothWait = { timer: setTimeout(() => { bothWait = null; resolve() }, AGENT_WARMUP_MS), resolve }
+    const proceed = await new Promise<boolean>(resolve => {
+      bothWait = { timer: setTimeout(() => { bothWait = null; resolve(true) }, AGENT_WARMUP_MS), resolve }
     })
+    if (!proceed) {
+      addLog('warn', '雙端啟動已取消，民眾端不啟動')
+      return
+    }
     if (sessions.value.agent.status !== 'running' || sessions.value.agent.stopping) {
       addLog('warn', '座席端已停止，取消民眾端啟動')
       return

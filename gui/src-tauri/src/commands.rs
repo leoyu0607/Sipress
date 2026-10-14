@@ -300,6 +300,102 @@ mod tests {
         assert!(app.caller.snapshot.lock().unwrap().is_none());
     }
 
+    // ── 雙端並行（民眾端 / 座席端各自獨立的 Session）─────────────────
+
+    #[test]
+    fn mode_deserializes_from_lowercase_json_only() {
+        // Tauri 會把前端 invoke 的 `mode` 參數以 JSON 反序列化
+        assert_eq!(serde_json::from_str::<Mode>("\"caller\"").unwrap(), Mode::Caller);
+        assert_eq!(serde_json::from_str::<Mode>("\"agent\"").unwrap(), Mode::Agent);
+        assert!(serde_json::from_str::<Mode>("\"Caller\"").is_err());
+        assert!(serde_json::from_str::<Mode>("\"x\"").is_err());
+    }
+
+    #[test]
+    fn session_returns_the_same_arc_per_mode() {
+        let app = AppState::default();
+        assert!(Arc::ptr_eq(&app.session(&Mode::Caller), &app.caller));
+        assert!(Arc::ptr_eq(&app.session(&Mode::Agent), &app.agent));
+        assert!(Arc::ptr_eq(&app.session(&Mode::Caller), &app.session(&Mode::Caller)));
+        assert!(!Arc::ptr_eq(&app.caller, &app.agent), "兩端必須是不同的 Session");
+    }
+
+    #[test]
+    fn one_side_error_does_not_affect_the_other() {
+        let app = AppState::default();
+        assert!(app.caller.try_begin());
+        assert!(app.agent.try_begin());
+        *app.caller.snapshot.lock().unwrap() = Some(StatsSnapshot { calls_initiated: 3, ..Default::default() });
+
+        app.agent.finish(Err("座席端失敗".into()));
+
+        assert!(app.caller.running.load(Ordering::SeqCst), "民眾端應仍在執行");
+        assert!(app.caller.error.lock().unwrap().is_none());
+        assert!(app.caller.report.lock().unwrap().is_none());
+        let snap = app.caller.snapshot.lock().unwrap().clone().unwrap();
+        assert!(!snap.finished, "民眾端 snapshot 不應被標成結束");
+        assert_eq!(snap.calls_initiated, 3);
+        assert_eq!(app.agent.error.lock().unwrap().as_deref(), Some("座席端失敗"));
+        assert!(!app.agent.running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn interleaved_start_finish_rounds_keep_state_correct() {
+        let app = AppState::default();
+        for round in 0..5 {
+            assert!(app.caller.try_begin(), "round {round}: 民眾端啟動");
+            assert!(app.agent.try_begin(), "round {round}: 座席端啟動");
+            assert!(!app.caller.try_begin() && !app.agent.try_begin());
+
+            // 民眾端先結束，並在座席端仍執行中時重新啟動
+            app.caller.finish(Ok(sample_report()));
+            assert!(app.agent.running.load(Ordering::SeqCst));
+            assert!(app.caller.try_begin(), "round {round}: 座席端執行中，民眾端應可重啟");
+            assert!(app.caller.report.lock().unwrap().is_some(), "try_begin 不清除舊報告（由 start_test 清除）");
+
+            app.agent.finish(Err(format!("err{round}")));
+            assert!(app.caller.running.load(Ordering::SeqCst));
+            app.caller.finish(Ok(sample_report()));
+
+            assert!(!app.caller.running.load(Ordering::SeqCst) && !app.agent.running.load(Ordering::SeqCst));
+            assert!(app.caller.error.lock().unwrap().is_none());
+            assert_eq!(app.agent.error.lock().unwrap().clone(), Some(format!("err{round}")));
+            assert!(app.agent.report.lock().unwrap().is_none());
+            // 清掉本輪殘留，下一輪重新開始
+            *app.caller.report.lock().unwrap() = None;
+            *app.agent.error.lock().unwrap() = None;
+        }
+    }
+
+    #[test]
+    fn concurrent_try_begin_allows_one_winner_per_mode() {
+        let app = Arc::new(AppState::default());
+
+        let wins = |mode: Mode, app: &Arc<AppState>| {
+            let barrier = Arc::new(std::sync::Barrier::new(16));
+            let handles: Vec<_> = (0..16).map(|_| {
+                let (app, b, mode) = (Arc::clone(app), Arc::clone(&barrier), mode.clone());
+                std::thread::spawn(move || { b.wait(); app.session(&mode).try_begin() })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).filter(|w| *w).count()
+        };
+        assert_eq!(wins(Mode::Caller, &app), 1, "同一模式 16 個執行緒只能有一個成功");
+        // 民眾端已被佔用不影響座席端
+        assert_eq!(wins(Mode::Agent, &app), 1);
+
+        // 兩個模式同時競爭：各一個成功
+        let app2 = Arc::new(AppState::default());
+        let barrier = Arc::new(std::sync::Barrier::new(32));
+        let handles: Vec<_> = (0..32).map(|i| {
+            let (app, b) = (Arc::clone(&app2), Arc::clone(&barrier));
+            let mode = if i % 2 == 0 { Mode::Caller } else { Mode::Agent };
+            std::thread::spawn(move || { b.wait(); (i % 2, app.session(&mode).try_begin()) })
+        }).collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|(m, w)| *m == 0 && *w).count(), 1);
+        assert_eq!(results.iter().filter(|(m, w)| *m == 1 && *w).count(), 1);
+    }
+
     // ── 前端 ↔ Rust 資料契約 ───────────────────────────────────────
     // fixtures 位於 gui/contract/，與前端 vitest 共用：
     //   config-*.json        前端 buildRustConfig() 的輸出（由 vitest 產生）→ 這裡驗證 Rust 能正確解析
