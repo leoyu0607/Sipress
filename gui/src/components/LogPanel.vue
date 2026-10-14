@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
-import { useTestStore, type LogEntry } from '../stores/testStore'
+import { useTestStore, MODE_LABEL, type LogEntry } from '../stores/testStore'
 
 const store = useTestStore()
 const bodyRef = ref<HTMLDivElement | null>(null)
@@ -47,7 +47,7 @@ function onScroll() {
 const copied = ref(false)
 async function copyLog() {
   const text = visibleLogs.value
-    .map(l => `${l.ts} [${l.level.toUpperCase()}] ${l.msg}`)
+    .map(l => `${l.ts} [${l.level.toUpperCase()}]${l.mode ? ` [${MODE_LABEL[l.mode]}]` : ''} ${l.msg}`)
     .join('\n')
   await navigator.clipboard.writeText(text)
   copied.value = true
@@ -146,6 +146,7 @@ onUnmounted(onDragEnd)
         <span class="log-level" :style="{ color: levelColor[entry.level] }">
           {{ entry.level.toUpperCase() }}
         </span>
+        <span v-if="entry.mode" class="log-mode" :class="entry.mode">{{ MODE_LABEL[entry.mode] }}</span>
         <span class="log-msg" :class="{ 'is-err': entry.level === 'err' }">{{ entry.msg }}</span>
       </div>
     </div>
@@ -259,6 +260,12 @@ onUnmounted(onDragEnd)
   font-size: 10px;
 }
 
+.log-mode {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text2);
+}
+.log-mode.agent { color: var(--blue); }
 .log-level {
   min-width: 34px;
   flex-shrink: 0;

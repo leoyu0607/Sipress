@@ -142,7 +142,7 @@ function statusTitle(s: string) {
         @click="store.config.mode = 'caller'"
       >
         <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-        <span class="mode-name">民眾端</span>
+        <span class="mode-name">民眾端<span v-if="store.sessions.caller.status === 'running'" class="run-dot" title="執行中"></span></span>
         <span class="mode-sub">主動撥出</span>
       </button>
       <button
@@ -151,7 +151,7 @@ function statusTitle(s: string) {
         @click="store.config.mode = 'agent'"
       >
         <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
-        <span class="mode-name">座席端</span>
+        <span class="mode-name">座席端<span v-if="store.sessions.agent.status === 'running'" class="run-dot" title="執行中"></span></span>
         <span class="mode-sub">SIP 話機</span>
       </button>
     </div>
@@ -633,6 +633,19 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   font-family: var(--mono);
 }
 .mode-tab.active .mode-name { color: var(--accent); }
+.run-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-left: 5px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-pulse 1.5s ease-in-out infinite;
+}
+@keyframes run-pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
 
 /* Fields */
 .field { margin-bottom: 8px; }
