@@ -369,6 +369,8 @@ export const useTestStore = defineStore('test', () => {
     else if (!/^[^\s:]+:\d{1,5}$/.test(c.server.trim())) errs.push('SIP server 格式需為 host:port')
     if (mode === 'caller') {
       const p = c.caller
+      if (c.localPort !== 0 && !(Number.isInteger(c.localPort) && c.localPort >= 1024 && c.localPort <= 65535))
+        errs.push('本地埠需為 0（自動）或 1024–65535')
       if (!p.accessNumber.trim()) errs.push('主叫號碼不可空白')
       if (!(p.concurrency >= 1)) errs.push('併發數量需 ≥ 1')
       if (p.cpsPattern.type === 'flat' && !(p.cps > 0)) errs.push('CPS 需 > 0')
@@ -450,7 +452,8 @@ export const useTestStore = defineStore('test', () => {
     const c = config.value
     return {
       server_addr:          c.server.trim(),
-      local_addr:           c.localPort ? `0.0.0.0:${c.localPort}` : null,
+      // 座席端每個帳號各自綁定隨機 port，本地埠只套用在民眾端
+      local_addr:           mode === 'caller' && c.localPort ? `0.0.0.0:${c.localPort}` : null,
       local_domain:         null,
       caller_number:        c.caller.accessNumber,
       callee_prefix:        c.caller.calleePrefix || '2',

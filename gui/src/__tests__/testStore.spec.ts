@@ -71,6 +71,15 @@ describe('validationErrors', () => {
     expect(s.validationErrors).toContain('階梯模式至少需要一個階層')
   })
 
+  it.each([
+    [0, true], [1024, true], [5070, true], [65535, true],
+    [80, false], [65536, false], [5070.5, false],
+  ])('本地埠 %s → 合法: %s', (port, ok) => {
+    const s = useTestStore()
+    s.config.localPort = port
+    expect(s.validationErrors.includes('本地埠需為 0（自動）或 1024–65535')).toBe(!ok)
+  })
+
   it('座席模式需要帳號', () => {
     const s = useTestStore()
     s.config.mode = 'agent'

@@ -1,6 +1,6 @@
 {
   "server_addr": "192.168.166.60:5066",
-  "local_addr": "0.0.0.0:5070",
+  "local_addr": null,
   "local_domain": null,
   "caller_number": "0938530031",
   "callee_prefix": "2",

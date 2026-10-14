@@ -120,7 +120,8 @@ function statusTitle(s: string) {
           </div>
           <div class="field">
             <label>本地埠</label>
-            <input v-model.number="store.config.localPort" type="number" min="1024" max="65535">
+            <input v-model.number="store.config.localPort" type="number" min="0" max="65535"
+                   title="民眾端 SIP 綁定的本機 port；0 = 自動。座席端每個帳號各自使用隨機 port">
           </div>
         </div>
         <div class="field">
