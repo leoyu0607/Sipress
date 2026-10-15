@@ -541,7 +541,7 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 
 ## SIP Log
 
-每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_agent.sip.log`，記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
+每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_caller.sip.log`（民眾端）或 `YYYYMMDD_HHMMSS_agent.sip.log`（座席端），記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
 
 ---
 

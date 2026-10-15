@@ -453,7 +453,7 @@ xattr -c sipress-gui-macos-*-portable
 從 GUI 0.1 起，「開始測試」會依 Sidebar 上方的分頁切換真正執行對應引擎。若懷疑沒切換：
 
 - 看 Event Log 第一行是否寫 `[agent mode]` 或 `[caller mode]`
-- 看 SIP log（`logs/YYYYMMDD_HHMMSS_agent.sip.log`）首先送出的是 `REGISTER`（座席）還是 `INVITE`（民眾）
+- 看 `logs/` 裡新產生的 SIP log：座席端是 `*_agent.sip.log`（先送 `REGISTER`），民眾端是 `*_caller.sip.log`（先送 `INVITE`）
 - 重新點選一次「🎧 座席端」分頁確保 active 狀態
 
 ### 大量通話失敗
@@ -478,7 +478,7 @@ xattr -c sipress-gui-macos-*-portable
 - 收到 RE-INVITE 自動 200 OK + SDP 保活
 - 收到伺服器 BYE 也會自動回 200 OK 並結束統計
 
-若仍遇到，請檢查 `logs/*_agent.sip.log` 中是否有 `收到 RE-INVITE...回應 200 OK` 的紀錄。
+若仍遇到，請檢查民眾端的 `logs/*_caller.sip.log`（座席端為 `*_agent.sip.log`）中是否有 `收到 RE-INVITE...回應 200 OK` 的紀錄。
 
 ### GUI 顯示空白視窗
 

@@ -991,7 +991,8 @@ HtmlReporter::render(&report, &timestamp, &server_addr)
 每次壓測產生一個帶時間戳記的 log 檔案：
 
 ```
-logs/YYYYMMDD_HHMMSS_agent.sip.log
+logs/YYYYMMDD_HHMMSS_caller.sip.log   ← 民眾端
+logs/YYYYMMDD_HHMMSS_agent.sip.log    ← 座席端
 ```
 
 格式範例：

@@ -93,11 +93,11 @@ impl Engine {
 
         // ── 建立 SIP log 記錄器 ──
         let sip_log = Arc::new(
-            SipLogger::new(&cfg.logs_dir, SipRole::Agent).unwrap_or_else(|e| {
+            SipLogger::new(&cfg.logs_dir, SipRole::Caller).unwrap_or_else(|e| {
                 warn!("無法建立 SIP log：{}，改寫至系統暫存目錄", e);
                 let tmp = std::env::temp_dir();
                 let tmp_str = tmp.to_string_lossy();
-                SipLogger::new(tmp_str.as_ref(), SipRole::Agent)
+                SipLogger::new(tmp_str.as_ref(), SipRole::Caller)
                     .expect("無法在系統暫存目錄建立 SIP log")
             }),
         );

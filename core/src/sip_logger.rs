@@ -29,20 +29,20 @@ impl LogWriter {
     }
 }
 
-/// 壓測角色
+/// 壓測角色（決定 log 檔名，雙端同時執行時兩端各寫各的檔案）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SipRole {
-    /// 壓測發起方（UAC，代理/Agent）
+    /// 民眾端（主動撥出）
+    Caller,
+    /// 座席端（註冊後接聽）
     Agent,
-    /// 被叫模擬方（UAS，一般用戶/User）
-    User,
 }
 
 impl SipRole {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Caller => "caller",
             Self::Agent => "agent",
-            Self::User => "user",
         }
     }
 }
@@ -235,6 +235,17 @@ impl Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caller_and_agent_started_together_write_separate_files() {
+        let dir = std::env::temp_dir().join(format!("sipress-logger-test-{}", std::process::id()));
+        let dir = dir.to_string_lossy();
+        let caller = SipLogger::new(&dir, SipRole::Caller).unwrap();
+        let agent = SipLogger::new(&dir, SipRole::Agent).unwrap();
+        assert_ne!(caller.path, agent.path, "雙端同一秒啟動不可寫進同一個檔案");
+        assert!(caller.path.to_string_lossy().ends_with("_caller.sip.log"));
+        assert!(agent.path.to_string_lossy().ends_with("_agent.sip.log"));
+    }
 
     #[test]
     fn test_timestamp_format() {
