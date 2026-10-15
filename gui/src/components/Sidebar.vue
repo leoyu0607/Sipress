@@ -51,7 +51,7 @@ async function copyCli() {
 }
 
 async function pickAudioFile() {
-  const path = await open({ multiple: false, filters: [{ name: 'Audio', extensions: ['wav', 'pcm', 'raw', 'mp3'] }] })
+  const path = await open({ multiple: false, filters: [{ name: '音檔（WAV / G.711）', extensions: ['wav', 'al', 'alaw', 'pcma', 'ul', 'ulaw', 'pcmu', 'raw'] }] })
   if (path && typeof path === 'string') store.config.caller.audioFile = path
 }
 
@@ -180,6 +180,18 @@ function statusTitle(s: string) {
           <label>主叫號碼</label>
           <input v-model="store.config.caller.accessNumber" type="text" placeholder="例：4008001234" :class="{ invalid: !store.config.caller.accessNumber.trim() }">
           <div class="field-hint">From 標頭中的號碼，告訴交換機「這通是誰打的」</div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:1">
+            <label>撥號認證帳號</label>
+            <input v-model="store.config.caller.authUser" type="text" placeholder="空白 = 主叫號碼" autocomplete="off"
+                   title="SIPX 對 INVITE 回 401 / 407 時使用的 Digest 帳號">
+          </div>
+          <div class="field" style="flex:1">
+            <label>撥號認證密碼</label>
+            <input v-model="store.config.caller.authPass" type="password" placeholder="空白 = 不認證" autocomplete="new-password"
+                   title="設定後，INVITE 收到 401 / 407 會帶認證重送一次">
+          </div>
         </div>
         <div class="toggle-row field">
           <span title="第 n 通使用「主叫號碼 + n」（保留位數）。端到端對照拿不到 P-CIN-CallId 時，靠不同號碼一對一配對座席端來電">每通不同主叫號碼 <span class="tag">--from-seq</span></span>
@@ -416,6 +428,13 @@ function statusTitle(s: string) {
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
+        <div class="toggle-row field">
+          <span title="每通結束後立即重新 REGISTER。預設只在註冊到期前刷新；只有交換機要求通話後重新註冊才會繼續派話時才需要開啟，高話務下會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag">--reregister-after-call</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.agent.reregisterAfterCall">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+        </div>
 
         <!-- Upload -->
         <div
@@ -562,6 +581,9 @@ function statusTitle(s: string) {
       </div>
       <div class="cli-warn" v-if="store.cliUnsupported.length > 0">
         CLI 不支援：{{ store.cliUnsupported.join('、') }}（僅 GUI 生效）
+      </div>
+      <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
+        撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
       </div>
       <div class="cli-warn" v-if="store.config.mode === 'agent'">
         帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv

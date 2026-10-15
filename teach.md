@@ -1235,7 +1235,7 @@ struct DialogCtx {
 // - ack_received && elapsed > 150s → BYE timeout，主動 BYE
 ```
 
-timeout 後座席建構 BYE（From/To 交換，因座席是 UAS）並送出，停止 RTP，記錄 calls_completed，再自動 re-REGISTER 維持在線。
+timeout 後座席建構 BYE（From/To 交換，因座席是 UAS）並送出，停止 RTP，記錄 calls_completed。開啟 `agent_reregister_after_call` 時會再立即 re-REGISTER（預設關閉）。
 
 ### 通話結束後 re-REGISTER
 

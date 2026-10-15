@@ -128,6 +128,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 | 呼叫頻率 CPS | `10` | 每秒發起的新通話數 |
 | 總測試通數 | `500` | **設為 0 = 不限通數**，依持續時間決定結束 |
 | 每通不同主叫號碼 | 關閉 | 第 n 通用「主叫號碼 + n」（保留位數，例如 0912000000、0912000001…）。端到端對照拿不到 `P-CIN-CallId` 時，靠它一對一配對 |
+| 撥號認證帳號 / 密碼 | 空白 | SIPX 對 INVITE 回 401 / 407 時，帶 Digest 認證重送一次（帶認證仍被拒才算失敗）。密碼空白 = 不認證；帳號空白 = 用該通的主叫號碼。CLI 預覽不顯示密碼 |
 
 ### 座席端設定（Agent mode）
 
@@ -149,9 +150,10 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 
 1. 點選「瀏覽」開啟系統檔案選擇器。
 2. 選擇音檔（支援 `.wav` PCM16/A-law/μ-law、`.al/.alaw`、`.ul/.ulaw/.pcmu`、`.raw`）。
-3. 程式會**自動轉換成 G.711A（PCMA）** 後傳送，無需先用 ffmpeg 處理。
-4. SDP offer 只宣告 `RTP/AVP 8`（PCMA），避免伺服器選到 PCMU。
+3. 程式會自動轉換成 G.711，無需先用 ffmpeg 處理。WAV 只支援 16-bit PCM、8-bit A-law / μ-law；MP3 等其他格式請先轉成 WAV。
+4. Codec 設定是「偏好」：SDP offer 會把它放在第一個，實際送出的 codec 依對方的 answer 決定（PCMA 或 PCMU），音訊會跟著轉碼。
 5. 每通接通的通話都會傳送 RTP 音訊封包並計算 MOS 聲音品質分數。
+6. 音檔格式不支援或檔案損壞時，按下開始就會顯示錯誤，測試不會開始。
 
 停用音訊為純 SIP 信令測試（速度較快、CPU 使用率較低）。
 
@@ -235,6 +237,7 @@ extension,username,password,domain
 | 不接 % | `--no-answer-pct 10` | 一直響鈴，等 SIPX 逾時 CANCEL（回 487）改派別的座席；120 秒仍未取消則回 480 |
 | 休息（秒） | `--wrap-up 5` | 通話結束後的 wrap-up 時間，期間的新來電直接回 486 |
 | 通話中忙線 | `--busy-in-call` | 已有通話（含響鈴中）時，新來電直接回 486，讓 ACD 改派給其他座席；關閉時同一帳號可同時接多通（預設） |
+| 通話後重新註冊 | `--reregister-after-call` | 每通結束後立即重新 REGISTER。預設關閉，只在註冊到期前刷新；只有交換機要求通話後重新註冊才會繼續派話時才需要開啟 |
 
 拒接、不接、休息中或通話中被拒的來電在座席端計為失敗通話（4xx），ASR 會相應降低；響鈴延遲會反映在民眾端的通話建立時間（Setup，到 200 OK），PDD（到第一個 18x）不受影響。
 
@@ -378,6 +381,8 @@ extension,username,password,domain
 --ack-timeout <秒>          座席端等待 ACK 逾時（預設：10）
 --bye-timeout <秒>          座席端等待 BYE 逾時（預設：150）
 --from-seq                 民眾端每通使用不同主叫號碼（從 --from 遞增）
+--auth-user <帳號>          撥號認證帳號（預設：主叫號碼）
+--auth-pass <密碼>          撥號認證密碼；INVITE 收到 401 / 407 時帶認證重送
 --trace-file <檔案>         結束後寫出每通的追蹤紀錄（端到端對照用）
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
@@ -387,6 +392,7 @@ extension,username,password,domain
 --no-answer-pct <%>        座席端不接比例（等 CANCEL）
 --wrap-up <秒>              座席端兩通之間休息秒數（期間來電回 486）
 --busy-in-call             座席端通話中（含響鈴中）的新來電回 486
+--reregister-after-call    座席端每通結束後立即重新 REGISTER（預設只在到期前刷新）
 ```
 
 座席端範例（Ctrl-C 結束時會先解除註冊）：
@@ -468,7 +474,7 @@ xattr -c sipress-gui-macos-*-portable
 
 1. 確認已啟用「播放音檔」並選擇有效的音檔。
 2. 確認伺服器接受 RTP 媒體流（有接通的通話才會計算 MOS）。
-3. 座席模式目前不收/送 RTP，因此 MOS 永遠是 N/A（這是預期行為）。
+3. 座席端使用與民眾端相同的音檔與 Codec 設定收送 RTP；沒有選音檔時送靜音，仍會量測 MOS。
 
 ### 接通後伺服器錄音檔很短只有幾秒
 

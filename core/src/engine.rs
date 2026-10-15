@@ -4,7 +4,10 @@ use crate::rtp::{
     session::{RtpSession, RtpSessionConfig},
     stats::{aggregate_snapshots, RtpStatsSnapshot},
 };
-use crate::sip::{Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser, SipResponse};
+use crate::sip::{
+    register::DigestChallenge, sdp, Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser,
+    SipResponse,
+};
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats, StatsSnapshot};
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
@@ -46,6 +49,12 @@ enum SipEvent {
         contact_uri: Option<String>,
         /// SIPX 全域通話 ID（端到端對照用）
         cin_call_id: Option<String>,
+        /// 200 OK SDP answer 的 payload type（其餘回應為空）
+        answer_payloads: Vec<u8>,
+        /// CSeq 序號（判斷是否為目前這個 INVITE transaction 的回應）
+        cseq_num: Option<u32>,
+        /// INVITE 的 401 / 407 帶的 Digest challenge
+        challenge: Option<Box<DigestChallenge>>,
     },
     /// 收到伺服器主動發來的 SIP 請求（RE-INVITE 刷新 session / 伺服器 BYE 掛斷）
     IncomingRequest {
@@ -83,6 +92,10 @@ impl Engine {
         let start = Instant::now();
 
         cfg.validate()?;
+        // 音檔有問題時在開始前就失敗，而不是每通電話改送靜音
+        if let (true, Some(path)) = (cfg.enable_rtp, cfg.audio_file.as_deref()) {
+            crate::rtp::audio::AudioSource::preload(path).await?;
+        }
 
         // ── TCP transport 目前尚未實作 ──
         if cfg.transport == Transport::Tcp {
@@ -110,7 +123,8 @@ impl Engine {
         let local_ip_owned: String = match cfg.local_addr.as_deref() {
             Some(ip) => ip.to_string(),
             None => {
-                let probe = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+                let probe =
+                    tokio::net::UdpSocket::bind(crate::net::unspecified_for(&server_addr)).await?;
                 probe.connect(&cfg.server_addr).await?;
                 probe.local_addr()?.ip().to_string()
             }
@@ -121,20 +135,18 @@ impl Engine {
         let udp = Arc::new(SharedUdpSocket::new(server_addr, local_ip).await?);
         let local_addr = udp.local_addr.clone();
 
-        let local_domain_owned = cfg.local_domain.clone().unwrap_or_else(|| {
-            local_addr
-                .split(':')
-                .next()
-                .unwrap_or("127.0.0.1")
-                .to_string()
-        });
+        // From URI 的 domain（IPv6 加中括號）
+        let local_domain_owned = cfg
+            .local_domain
+            .clone()
+            .unwrap_or_else(|| crate::net::uri_host(&local_addr));
         let local_domain = local_domain_owned.as_str();
 
         // 對話內請求 / ACK 的組裝（事件處理、② 掃描與收尾共用）
         let build_ack = |d: &Dialog| {
             SipMessage::ack(
                 &d.call_id,
-                &cfg.caller_number,
+                &d.caller_number,
                 local_domain,
                 &d.callee,
                 d.to_tag.as_deref().unwrap_or(""),
@@ -150,7 +162,7 @@ impl Engine {
         let build_cancel = |d: &Dialog| {
             SipMessage::cancel(
                 &d.call_id,
-                &cfg.caller_number,
+                &d.caller_number,
                 local_domain,
                 &d.callee,
                 &cfg.server_addr,
@@ -161,10 +173,39 @@ impl Engine {
                 "UDP",
             )
         };
+        // INVITE（首次與帶認證重送共用；`auth` 為完整的 Authorization / Proxy-Authorization 行）
+        let build_invite = |d: &Dialog, auth: Option<&str>| {
+            let invite = SipMessage::invite(
+                &d.call_id,
+                &d.caller_number,
+                local_domain,
+                &d.callee,
+                &cfg.server_addr,
+                &local_addr,
+                d.cseq,
+                &d.branch,
+                &d.from_tag,
+                "UDP",
+                if d.local_rtp_port > 0 {
+                    d.local_rtp_port
+                } else {
+                    9
+                },
+                cfg.codec.payload_type(),
+            );
+            match auth {
+                Some(line) => invite.replacen(
+                    "Content-Type: application/sdp\r\n",
+                    &format!("{}\r\nContent-Type: application/sdp\r\n", line),
+                    1,
+                ),
+                None => invite,
+            }
+        };
         let build_bye = |d: &Dialog| {
             SipMessage::bye(
                 &d.call_id,
-                &cfg.caller_number,
+                &d.caller_number,
                 local_domain,
                 &d.callee,
                 d.to_tag.as_deref().unwrap_or(""),
@@ -240,6 +281,19 @@ impl Engine {
                         None
                     };
                     let cin_call_id = SipParser::cin_call_id(&raw);
+                    let answer_payloads =
+                        if code == Some(200) && method.as_deref() == Some("INVITE") {
+                            sdp::audio_payloads(&raw)
+                        } else {
+                            Vec::new()
+                        };
+                    let cseq_num = SipParser::cseq_number(&raw);
+                    let challenge =
+                        if matches!(code, Some(401 | 407)) && method.as_deref() == Some("INVITE") {
+                            DigestChallenge::parse(&raw).map(Box::new)
+                        } else {
+                            None
+                        };
 
                     // INVITE 的非 2xx 最終回應（含重傳、CANCEL 後的 487）一律在此回 ACK：
                     // 屬於 transaction 層行為，不依賴 dialog 是否仍存在
@@ -258,6 +312,9 @@ impl Engine {
                             remote_rtp_addr,
                             contact_uri,
                             cin_call_id,
+                            answer_payloads,
+                            cseq_num,
+                            challenge,
                         });
                     }
                 } else {
@@ -374,6 +431,9 @@ impl Engine {
                         remote_rtp_addr,
                         contact_uri,
                         cin_call_id,
+                        answer_payloads,
+                        cseq_num,
+                        challenge,
                     } => {
                         if code >= 200 && method.as_deref() == Some("INVITE") {
                             awaiting_invite_final.remove(&call_id);
@@ -417,6 +477,9 @@ impl Engine {
                                         continue;
                                     }
                                     dialog.on_ok(to_tag.unwrap_or_default());
+                                    // 依 answer 決定送出的 codec（沒有 SDP 時沿用 offer 的偏好）
+                                    dialog.codec_pt =
+                                        sdp::answered(&answer_payloads, dialog.codec_pt);
                                     // 儲存對端 Contact URI（BYE/ACK Request-URI 使用）
                                     dialog.remote_contact = contact_uri.clone();
                                     live.on_answered();
@@ -432,20 +495,12 @@ impl Engine {
 
                                     // 啟動 RTP session
                                     if cfg.enable_rtp {
-                                        let pure_ip = local_ip
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or(local_ip)
-                                            .to_string();
-                                        let server_ip = cfg
-                                            .server_addr
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or("127.0.0.1");
+                                        let pure_ip = crate::net::host(local_ip);
+                                        let server_ip = crate::net::host(&cfg.server_addr);
                                         // SDP c= + m= 解析出完整 "ip:port"；fallback 為 SIP server IP:16384
                                         let remote_addr = remote_rtp_addr
                                             .clone()
-                                            .unwrap_or_else(|| format!("{}:16384", server_ip));
+                                            .unwrap_or_else(|| crate::net::join(&server_ip, 16384));
                                         let local_pre = dialog.local_rtp_port;
                                         let audio_path = cfg.audio_file.clone();
 
@@ -471,7 +526,7 @@ impl Engine {
                                             } else {
                                                 None
                                             },
-                                            codec_pt: cfg.codec.payload_type(),
+                                            codec_pt: dialog.codec_pt,
                                         };
                                         // 同步啟動並登記：確保之後處理的 BYE 一定找得到這個 session
                                         let pc = Arc::clone(&rtp_port_counter);
@@ -534,6 +589,36 @@ impl Engine {
                                                 | DialogState::Ringing
                                         ) =>
                                 {
+                                    // 上一個 transaction 重傳的錯誤回應（例如已帶認證重送後又收到舊的 401）
+                                    if cseq_num.is_some_and(|n| n != dialog.cseq) {
+                                        continue;
+                                    }
+                                    // 401 / 407：有設定密碼且還沒重試過 → 帶 Digest 認證重送一次
+                                    if let (Some(chal), 0) =
+                                        (challenge.as_ref(), dialog.auth_attempts)
+                                    {
+                                        if let Some((user, password)) =
+                                            cfg.caller_auth(&dialog.caller_number)
+                                        {
+                                            let uri = format!(
+                                                "sip:{}@{}",
+                                                dialog.callee, cfg.server_addr
+                                            );
+                                            let auth = chal.authorization_header(
+                                                user, password, "INVITE", &uri,
+                                            );
+                                            dialog.restart_invite(SipMessage::new_branch());
+                                            let invite = build_invite(dialog, Some(&auth));
+                                            dialog.arm_retransmit(invite.clone(), now);
+                                            sip_log.log_event(
+                                                &call_id,
+                                                &format!("收到 {}，帶認證重送 INVITE", code),
+                                            );
+                                            send_sip(&udp, &sip_log, &cfg.server_addr, &invite)
+                                                .await;
+                                            continue;
+                                        }
+                                    }
                                     // 清理預分配但未使用的 RTP socket
                                     if cfg.enable_rtp {
                                         pre_bound_rtp.remove(&call_id);
@@ -573,19 +658,16 @@ impl Engine {
                                         &req_raw,
                                         &local_addr,
                                         local_port,
-                                        &cfg.caller_number,
+                                        &dialog.caller_number,
+                                        dialog.codec_pt,
                                     );
                                     send_sip(&udp, &sip_log, &cfg.server_addr, &ok).await;
 
                                     // 解析 RE-INVITE SDP 中的新 RTP 地址，更新 RTP session 目標
                                     if cfg.enable_rtp {
-                                        let sip_ip = cfg
-                                            .server_addr
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or("127.0.0.1");
+                                        let sip_ip = crate::net::host(&cfg.server_addr);
                                         if let Some(new_rtp_addr) =
-                                            SipResponse::sdp_rtp_addr(&req_raw, sip_ip)
+                                            SipResponse::sdp_rtp_addr(&req_raw, &sip_ip)
                                         {
                                             let sessions = rtp_sessions.lock().await;
                                             if let Some(session) = sessions.get(&call_id) {
@@ -818,7 +900,7 @@ impl Engine {
                     // 預分配 RTP port（保持 socket 綁定以避免 TOCTOU）
                     let (rtp_port, pre_socket) = if cfg.enable_rtp {
                         let pc = Arc::clone(&rtp_port_counter);
-                        let ip = local_ip.split(':').next().unwrap_or(local_ip).to_string();
+                        let ip = crate::net::host(local_ip);
                         match RtpSession::allocate_port(&pc, &ip).await {
                             Ok((p, sock)) => (p, Some(sock)),
                             Err(e) => {
@@ -839,22 +921,11 @@ impl Engine {
                         .calls_initiated
                         .load(std::sync::atomic::Ordering::Relaxed);
                     let caller_number = cfg.caller_number_for(seq);
-                    let invite = SipMessage::invite(
-                        &call_id,
-                        &caller_number,
-                        local_domain,
-                        &callee,
-                        &cfg.server_addr,
-                        &local_addr,
-                        1,
-                        &branch,
-                        &from_tag,
-                        "UDP",
-                        if rtp_port > 0 { rtp_port } else { 9 },
-                    );
-
                     let mut dialog =
                         Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
+                    dialog.codec_pt = cfg.codec.payload_type();
+                    dialog.caller_number = caller_number.clone();
+                    let invite = build_invite(&dialog, None);
                     dialog.arm_retransmit(invite.clone(), now);
                     traces.start(
                         &call_id,

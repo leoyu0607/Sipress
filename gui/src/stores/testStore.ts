@@ -38,6 +38,9 @@ export interface CallerProfile {
   accessNumber:  string
   /** 每通使用不同主叫號碼（從 accessNumber 遞增），端到端對照拿不到 P-CIN-CallId 時靠它配對 */
   numberSeq:     boolean
+  /** 撥號認證（SIPX 對 INVITE 回 401 / 407 時用）；密碼空白 = 不認證，帳號空白 = 用主叫號碼 */
+  authUser:      string
+  authPass:      string
   calleeFixed:   string   // '' = 用 prefix+range 隨機產生
   calleePrefix:  string
   calleeRange:   number
@@ -72,6 +75,7 @@ export interface AgentProfile {
   ackTimeout: number
   byeTimeout: number
   behavior:   AgentBehaviorConfig
+  reregisterAfterCall: boolean   // 每通結束後立即重新 REGISTER（預設只在到期前刷新）
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
@@ -272,6 +276,8 @@ function defaultConfig(): TestConfig {
     caller: {
       accessNumber: '0938530031',
       numberSeq:    false,
+      authUser:     '',
+      authPass:     '',
       calleeFixed:  '',
       calleePrefix: '2',
       calleeRange:  9999,
@@ -302,6 +308,7 @@ function defaultConfig(): TestConfig {
       ackTimeout: 10,
       byeTimeout: 150,
       behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
+      reregisterAfterCall: false,
       duration: 0,
     },
   }
@@ -469,10 +476,13 @@ export const useTestStore = defineStore('test', () => {
       if (b.talkMax > 0)     parts.push(`--talk ${range(b.talkMin, b.talkMax)}`)
       if (b.wrapUp > 0)      parts.push(`--wrap-up ${b.wrapUp}`)
       if (b.busyInCall)      parts.push('--busy-in-call')
+      if (a.reregisterAfterCall) parts.push('--reregister-after-call')
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
       if (p.numberSeq) parts.push('--from-seq')
+      // 密碼不顯示在預覽（畫面截圖、複製貼上時外洩），只放佔位字
+      if (p.authPass) parts.push(...(p.authUser.trim() ? [`--auth-user ${p.authUser.trim()}`] : []), '--auth-pass "<密碼>"')
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
       parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
@@ -529,6 +539,8 @@ export const useTestStore = defineStore('test', () => {
       local_domain:         null,
       caller_number:        c.caller.accessNumber,
       caller_number_seq:    c.caller.numberSeq,
+      caller_auth_username: c.caller.authUser.trim() || null,
+      caller_auth_password: c.caller.authPass || null,
       callee_prefix:        c.caller.calleePrefix || '2',
       callee_range:         c.caller.calleeRange  || 9999,
       callee_fixed:         c.caller.calleeFixed ? c.caller.calleeFixed : null,
@@ -556,6 +568,7 @@ export const useTestStore = defineStore('test', () => {
           }))
         : [],
       agent_ack_timeout_secs: c.agent.ackTimeout,
+      agent_reregister_after_call: c.agent.reregisterAfterCall,
       agent_bye_timeout_secs: c.agent.byeTimeout,
       agent_behavior: {
         ring_min_secs: c.agent.behavior.ringMin,

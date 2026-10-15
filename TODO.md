@@ -93,3 +93,76 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - 版面：座席行為的區間欄位在側欄寬度下數字被截斷；「測試執行中」橫幅半透明導致捲動時文字重疊；帳號清單「n / n 已註冊」被擠成直排。
 - CLI 對照摘要在已使用 `--from-seq` 時仍建議加 `--from-seq`（改為與 HTML 相同，只在配對不確定時提示）。
 
+---
+
+以下依重要程度排序：先修會讓測試結果失真或無法使用的正確性問題，再補功能、指標與效能，最後是整理。
+
+### [x] 11. 座席端 codec 與 SDP 不一致，以及音檔相關問題（正確性）
+
+原本座席回覆的 SDP 固定宣告 PCMA，RTP 卻照 `cfg.codec` 送；兩端也沒有依對方 SDP 協商。另外：選 PCMU 時音檔內容仍是 A-law、只把 PT 標成 0（對方聽到失真）；GUI 選檔視窗列出不支援的 `.mp3` / `.pcm`、卻沒列 `.ul` / `.al` 等；音檔載入失敗時默默改送靜音。
+已修正：
+- 新增 `core/src/sip/sdp.rs` 處理協商。民眾端 offer 把偏好的 codec 放第一個，依 200 OK 的 answer 決定送出的 PT；座席端依 offer 選 codec，answer 只宣告選中的那一個（offer 有 101 時一併接受），沒有 G.711 回 488；RE-INVITE 依是否帶 SDP 回 answer 或 offer。
+- 音檔快取維持 A-law，協商出 PCMU 時送出前逐 frame 轉成 μ-law（`alaw_to_ulaw` 查表）。
+- GUI 選檔視窗改為實際支援的副檔名；兩端引擎與 GUI 的 `start_test` 在開始前先載入音檔，失敗就回報原因。
+- 測試：`core/tests/codec_negotiation.rs`（PCMU offer / answer、保留偏好、488、音檔不支援），`sip::sdp` 與 `alaw_to_ulaw` 的單元測試。
+
+### [x] 12. 座席每通結束都重新註冊（正確性）
+
+原本每通掛斷後立即送一次 REGISTER（`trigger_re_register`），原 commit 沒有說明原因；高話務時會對 SIPX 多送大量 REGISTER，干擾測試結果。
+已修正：預設只在 Expires 到期前刷新；保留原行為為選項 `Config.agent_reregister_after_call`（CLI `--reregister-after-call`、GUI 座席區塊「通話後重新註冊」，預設關閉），供交換機確實要求通話後重新註冊的環境使用。測試：`core/tests/agent_behavior.rs` 的 `call_end_does_not_reregister_by_default` / `reregister_after_call_is_opt_in`（對方 BYE 與座席主動掛斷兩條路徑）。
+
+### [x] 13. 民眾端 INVITE 不支援 401 / 407 認證（正確性，視環境）
+
+原本 REGISTER 有 Digest 認證、INVITE 沒有，SIPX 入口要求撥號認證時所有通話都會失敗。
+已修正：設定撥號認證密碼後（`Config.caller_auth_username` / `caller_auth_password`；CLI `--auth-user` / `--auth-pass`；GUI 民眾端「撥號認證帳號 / 密碼」），INVITE 收到 401 / 407 會以同一個 Call-ID、CSeq + 1、新 branch 帶 `Authorization` / `Proxy-Authorization` 重送一次；帶認證仍被拒才算失敗。帳號未填時用該通的主叫號碼。舊 transaction 重傳的 401 以 CSeq 判斷並忽略。GUI 的 CLI 預覽以 `"<密碼>"` 代替真實密碼。
+同時修正：開啟 `--from-seq` 時 ACK / CANCEL / BYE / RE-INVITE 回應的 From 仍用基本號碼，與該通 INVITE 不一致（主叫號碼改存在 dialog）。
+測試：`core/tests/invite_auth.rs`（401、407、未設密碼、密碼錯誤只重試一次，mock 會驗證 Digest 雜湊並重傳 401）。
+
+### [x] 14. IPv6 位址解析錯誤（正確性）
+
+原本多處用 `split(':')` 取 IP，IPv6 位址會被截斷；另外 Request-URI、SDP、綁定位址也都假設 IPv4。
+已修正：新增 `core/src/net.rs`（`host` / `uri_host` / `join` / `is_ipv6` / `unspecified_for`），兩端引擎、SDP、SIP 訊息、RTP、註冊伺服器與 GUI 改用它：
+- SIP URI 中的 IPv6 加中括號（`sip:2001@[2001:db8::1]:5060`）；`ip:port` 一律由 `join` 組成。
+- SDP 依位址類型寫 `IN IP6` / `IN IP4`；解析對方 SDP 的 IPv6 `c=` 也正確。
+- 連往 IPv6 伺服器時以 `[::]:0` 綁定；`--local ::1` 這類只給 IPv6 IP 的寫法可用。
+測試：`net`、`sdp`、`message`、`transport` 的單元測試；`core/tests/ipv6.rs`（民眾端撥 IPv6 伺服器含 RTP、座席向 IPv6 伺服器註冊）。開發容器沒有 IPv6，此檔在無法綁定 `[::1]` 時會略過並印出原因，實際在 CI 執行。
+
+### [ ] 15. 在真正的 SIPX 驗證端到端對照（驗證）
+
+確認 sipress 民眾端直接撥入時，SIPX 入口是否產生 `P-CIN-CallId` 並回在 18x / 200（報告的「民眾端 CIN %」）。拿不到時改用 `--from-seq` 配對，並把結果補進第 3 項的紀錄。
+
+### [ ] 16. TCP 傳輸（功能）
+
+GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。要嘛實作（連線管理、訊息分框、`Content-Length` 解析），要嘛在介面上先移除這個選項。TLS / SRTP 視需求另列。
+
+### [ ] 17. CLI 補上 GUI 才有的設定（功能）
+
+CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 目前只有 GUI 能設定，CLI 預覽會標示「不支援」（`testStore.ts` 的 `cliUnsupported`）。補齊後 GUI 的 CLI 預覽即可完整重現設定。
+
+### [ ] 18. 即時指標的準確度（指標）
+
+`METRICS.md` 第 11 節列的已知限制：
+- 即時 CPS 由 GUI 輪詢差值計算，與引擎計時器不同步，會出現 0 與兩倍交替 → 改由引擎每秒統計並放進快照。
+- 即時 ASR 的分母包含仍在響鈴的通話，數值偏低。
+- PDD 測試中顯示平均、結束改為 P50，數字會跳動 → 統一口徑。
+
+### [ ] 19. 長時間耐久測試的分時段統計（功能）
+
+報告只有整體結果，看不出第幾小時開始變差。加上每 N 分鐘一段的 ASR、PDD、MOS、失敗碼統計，HTML 報告畫成時序圖，CLI 可輸出 CSV。
+
+### [ ] 20. 大量並發的效能基準（效能）
+
+座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器。上千並發時 CPU 負擔未知。
+要做：先加 1,000 / 5,000 並發的基準測試（本機 mock），量出瓶頸再優化，避免盲目重寫。
+
+### [ ] 21. 拆分 `agent_engine.rs`（維護）
+
+約 1,500 行；`handle_request` 有 15 個參數，建構 REGISTER 的程式碼重複 4 處。整理成每個帳號一個狀態結構（socket、註冊狀態、dialog、響鈴中來電、追蹤紀錄），方法各自處理一種事件。
+
+### [ ] 22. 清理專案（整理）
+
+- 移除 `gui/src.zip`、根目錄只印 Hello world 的 `src/main.rs`。
+- 更新或移除內容過時的 `gui/CHANGES.md`。
+- v0.5.0 發佈說明的下載表漏寫 macOS 免安裝檔（`sipress-gui-macos-*-portable`），GitHub 上的 release 說明一併補上。
+- CI 的 `actions/checkout@v4` 等 action 出現 Node 20 停用警告，升級到新版。
+

@@ -58,7 +58,7 @@ fn bind_addr(local: &str) -> String {
     if local.parse::<SocketAddr>().is_ok() {
         local.to_string()
     } else {
-        format!("{}:0", local.split(':').next().unwrap_or("0.0.0.0"))
+        crate::net::join(&crate::net::host(local), 0)
     }
 }
 
@@ -90,6 +90,15 @@ mod tests {
             format!("127.0.0.1:{}", port),
             "指定的 port 必須真的被綁定"
         );
+    }
+
+    #[test]
+    fn bind_addr_keeps_ipv6_intact() {
+        assert_eq!(bind_addr("127.0.0.1"), "127.0.0.1:0");
+        assert_eq!(bind_addr("127.0.0.1:5070"), "127.0.0.1:5070");
+        assert_eq!(bind_addr("::1"), "[::1]:0", "IPv6 只給 IP 時不可被截斷");
+        assert_eq!(bind_addr("2001:db8::2"), "[2001:db8::2]:0");
+        assert_eq!(bind_addr("[2001:db8::2]:5070"), "[2001:db8::2]:5070");
     }
 
     #[tokio::test]

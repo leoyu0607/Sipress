@@ -4,6 +4,8 @@
   "local_domain": null,
   "caller_number": "0938530031",
   "caller_number_seq": false,
+  "caller_auth_username": null,
+  "caller_auth_password": null,
   "callee_prefix": "2",
   "callee_range": 9999,
   "callee_fixed": null,
@@ -39,6 +41,7 @@
     }
   ],
   "agent_ack_timeout_secs": 5,
+  "agent_reregister_after_call": true,
   "agent_bye_timeout_secs": 60,
   "agent_behavior": {
     "ring_min_secs": 1,

@@ -56,7 +56,7 @@ pub async fn register_once(
         .with_context(|| format!("無效的伺服器位址: {}", server_addr))?;
 
     // ── 取得本機 socket（短期 UDP，用完即關）──
-    let sock = UdpSocket::bind("0.0.0.0:0")
+    let sock = UdpSocket::bind(crate::net::unspecified_for(&server))
         .await
         .context("無法綁定本機 UDP socket")?;
     sock.connect(server).await.context("無法連接 SIP 伺服器")?;

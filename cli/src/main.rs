@@ -62,6 +62,8 @@ async fn main() -> Result<()> {
         local_domain: args.local_domain.clone(),
         caller_number: args.caller.clone(),
         caller_number_seq: args.caller_number_seq,
+        caller_auth_username: args.auth_user.clone(),
+        caller_auth_password: args.auth_pass.clone(),
         callee_prefix: args.callee_prefix.clone(),
         callee_range: args.callee_range,
         callee_fixed: args.callee_fixed.clone(),
@@ -87,6 +89,7 @@ async fn main() -> Result<()> {
         agent_accounts,
         agent_ack_timeout_secs: args.ack_timeout,
         agent_bye_timeout_secs: args.bye_timeout,
+        agent_reregister_after_call: args.reregister_after_call,
         agent_behavior: AgentBehavior {
             ring_min_secs: args.ring.0,
             ring_max_secs: args.ring.1,

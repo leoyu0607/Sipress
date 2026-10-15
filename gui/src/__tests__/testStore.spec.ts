@@ -87,6 +87,10 @@ describe('validationErrors', () => {
     expect(s.cliCommand).toContain('--talk 10-60')
     s.config.agent.behavior.busyInCall = true
     expect(s.cliCommand).toContain('--busy-in-call')
+    expect(s.config.agent.reregisterAfterCall).toBe(false)
+    expect(s.cliCommand).not.toContain('--reregister-after-call')
+    s.config.agent.reregisterAfterCall = true
+    expect(s.cliCommand).toContain('--reregister-after-call')
   })
 
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {

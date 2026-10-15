@@ -41,6 +41,14 @@ pub struct Args {
     #[arg(long = "from-seq")]
     pub caller_number_seq: bool,
 
+    /// 撥號認證帳號：SIPX 對 INVITE 回 401 / 407 時用（未填 = 該通的主叫號碼）
+    #[arg(long = "auth-user")]
+    pub auth_user: Option<String>,
+
+    /// 撥號認證密碼：設定後收到 401 / 407 會帶 Digest 認證重送 INVITE 一次
+    #[arg(long = "auth-pass")]
+    pub auth_pass: Option<String>,
+
     /// 固定被叫號碼（指定後所有通話都打給這個號碼，覆蓋 --to-prefix/--to-range）
     #[arg(long = "to")]
     pub callee_fixed: Option<String>,
@@ -97,6 +105,11 @@ pub struct Args {
     /// 座席端：接聽幾秒後由座席主動掛斷，`N` 或區間 `MIN-MAX`（0 = 等對方 BYE）
     #[arg(long = "talk", value_parser = parse_secs_range, default_value = "0")]
     pub talk: (f64, f64),
+
+    /// 座席端：每通結束後立即重新 REGISTER（預設只在 Expires 到期前刷新）。
+    /// 只有交換機要求通話後重新註冊才會繼續派話時才需要
+    #[arg(long = "reregister-after-call")]
+    pub reregister_after_call: bool,
 
     /// 座席端：通話中忙線——已有通話（含響鈴中）時新來電回 486，讓 ACD 改派
     #[arg(long = "busy-in-call")]

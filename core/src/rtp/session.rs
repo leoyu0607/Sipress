@@ -1,6 +1,6 @@
 /// 單通通話的 RTP Session
 use crate::rtp::{
-    audio::AudioSource,
+    audio::{alaw_to_ulaw, AudioSource},
     packet::RtpPacket,
     stats::{RtpStats, RtpStatsSnapshot},
 };
@@ -129,21 +129,13 @@ impl RtpSession {
                     None => AudioSource::silence(),
                 };
 
-                // 音檔自帶 PT 優先，靜音模式用設定的 codec
-                let payload_type = if source.payload_type == 8 && codec_pt != 8 {
-                    source.payload_type = codec_pt;
-                    codec_pt
-                } else {
-                    source.payload_type
-                };
+                // 音檔快取一律是 A-law：協商出 PCMU 時逐 frame 轉碼，封包的 PT 與內容才會一致
+                let payload_type = codec_pt;
+                let to_ulaw = payload_type == crate::sip::sdp::PT_PCMU;
                 tracing::debug!(
                     "RTP 傳送 payload_type={} ({})",
                     payload_type,
-                    if payload_type == 8 {
-                        "PCMA/A-law"
-                    } else {
-                        "PCMU/μ-law"
-                    }
+                    if to_ulaw { "PCMU/μ-law" } else { "PCMA/A-law" }
                 );
 
                 let mut seq: u16 = rand::thread_rng().gen();
@@ -170,10 +162,13 @@ impl RtpSession {
                     last_tick = Some(tick);
                     let ts = ts0.wrapping_add(tick.wrapping_mul(160));
 
-                    let frame = match source.next_frame() {
+                    let mut frame = match source.next_frame() {
                         Some(f) => f,
                         None => break,
                     };
+                    if to_ulaw {
+                        frame.iter_mut().for_each(|b| *b = alaw_to_ulaw(*b));
+                    }
 
                     let pkt = RtpPacket::new(payload_type, seq, ts, ssrc, frame.clone());
                     let bytes = pkt.encode();
@@ -325,7 +320,7 @@ impl RtpSession {
             if port < 1024 {
                 continue;
             }
-            let addr = format!("{}:{}", local_ip, port);
+            let addr = crate::net::join(local_ip, port);
             if let Ok(socket) = UdpSocket::bind(&addr).await {
                 *guard = port.wrapping_add(2);
                 return Ok((port, socket));

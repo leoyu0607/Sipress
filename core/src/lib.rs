@@ -4,6 +4,7 @@ pub mod correlate;
 pub mod correlation_html;
 pub mod engine;
 pub mod html_reporter;
+pub mod net;
 pub mod registrar;
 pub mod reporter;
 pub mod rtp;
