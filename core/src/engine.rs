@@ -7,6 +7,7 @@ use crate::rtp::{
 use crate::sip::{Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser, SipResponse};
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats, StatsSnapshot};
+use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::Result;
 use rand::Rng;
 use std::collections::HashMap;
@@ -28,6 +29,7 @@ const SCAN_INTERVAL: Duration = Duration::from_millis(10);
 pub struct Engine {
     config: Config,
     stop_tx: watch::Sender<bool>,
+    traces: Arc<TraceLog>,
 }
 
 /// 內部事件：從接收 task 發給對話管理 task
@@ -42,6 +44,8 @@ enum SipEvent {
         remote_rtp_addr: Option<String>,
         /// 從 200 OK Contact 標頭解析的 URI（ACK/BYE Request-URI 使用）
         contact_uri: Option<String>,
+        /// SIPX 全域通話 ID（端到端對照用）
+        cin_call_id: Option<String>,
     },
     /// 收到伺服器主動發來的 SIP 請求（RE-INVITE 刷新 session / 伺服器 BYE 掛斷）
     IncomingRequest {
@@ -55,17 +59,27 @@ enum SipEvent {
 impl Engine {
     pub fn new(config: Config) -> Self {
         let (stop_tx, _) = watch::channel(false);
-        Self { config, stop_tx }
+        Self {
+            config,
+            stop_tx,
+            traces: Arc::default(),
+        }
     }
 
     pub fn stop_handle(&self) -> watch::Sender<bool> {
         self.stop_tx.clone()
     }
 
+    /// 每通通話的追蹤紀錄（端到端對照用），執行中與結束後都可讀取
+    pub fn trace_log(&self) -> Arc<TraceLog> {
+        Arc::clone(&self.traces)
+    }
+
     pub async fn run(&self, on_progress: Option<ProgressCallback>) -> Result<FinalReport> {
         let cfg = &self.config;
         let live = Arc::new(LiveStats::default());
         let detail = Arc::new(DetailedStats::default());
+        let traces = Arc::clone(&self.traces);
         let start = Instant::now();
 
         cfg.validate()?;
@@ -225,6 +239,7 @@ impl Engine {
                     } else {
                         None
                     };
+                    let cin_call_id = SipParser::cin_call_id(&raw);
 
                     // INVITE 的非 2xx 最終回應（含重傳、CANCEL 後的 487）一律在此回 ACK：
                     // 屬於 transaction 層行為，不依賴 dialog 是否仍存在
@@ -242,6 +257,7 @@ impl Engine {
                             method,
                             remote_rtp_addr,
                             contact_uri,
+                            cin_call_id,
                         });
                     }
                 } else {
@@ -357,9 +373,15 @@ impl Engine {
                         method,
                         remote_rtp_addr,
                         contact_uri,
+                        cin_call_id,
                     } => {
                         if code >= 200 && method.as_deref() == Some("INVITE") {
                             awaiting_invite_final.remove(&call_id);
+                        }
+                        if let Some(cin) = cin_call_id {
+                            traces.update(&call_id, |t| {
+                                t.cin_call_id.get_or_insert(cin);
+                            });
                         }
                         // 取出預分配的 RTP socket（若有），200 OK 後移交 RtpSession
                         let pre_socket =
@@ -398,6 +420,11 @@ impl Engine {
                                     // 儲存對端 Contact URI（BYE/ACK Request-URI 使用）
                                     dialog.remote_contact = contact_uri.clone();
                                     live.on_answered();
+                                    traces.update(&call_id, |t| {
+                                        t.answered_at_ms = Some(now_ms());
+                                        t.outcome = CallOutcome::Answered;
+                                        t.response_code = Some(200);
+                                    });
 
                                     if let Some(ms) = dialog.setup_time_ms() {
                                         detail.record_setup(ms);
@@ -488,11 +515,13 @@ impl Engine {
                                             &rtp_sessions,
                                             &mut rtp_snapshots,
                                             &live,
+                                            &traces,
                                         )
                                         .await;
                                     }
                                     dialog.on_bye_ok();
                                     live.on_completed();
+                                    traces.update(&call_id, |t| t.ended_at_ms = Some(now_ms()));
                                 }
                                 // INVITE 被拒（3xx–6xx）：ACK 已由接收 task 送出，這裡只做統計；
                                 // 只在早期狀態處理一次，避免重傳的錯誤回應重複計數
@@ -512,6 +541,11 @@ impl Engine {
                                     detail.record_fail_code(code);
                                     dialog.on_error(code);
                                     live.on_failed();
+                                    traces.update(&call_id, |t| {
+                                        t.outcome = CallOutcome::Failed;
+                                        t.response_code = Some(code);
+                                        t.ended_at_ms = Some(now_ms());
+                                    });
                                 }
                                 _ => {}
                             }
@@ -597,6 +631,7 @@ impl Engine {
                                             &rtp_sessions,
                                             &mut rtp_snapshots,
                                             &live,
+                                            &traces,
                                         )
                                         .await;
                                     }
@@ -607,6 +642,7 @@ impl Engine {
                                     ) {
                                         dialog.on_bye_ok();
                                         live.on_completed();
+                                        traces.update(&call_id, |t| t.ended_at_ms = Some(now_ms()));
                                     }
                                 }
                                 _ => {}
@@ -650,6 +686,10 @@ impl Engine {
                             to_send.push(cancel);
                             dialog.on_timeout();
                             live.on_timeout();
+                            traces.update(&dialog.call_id, |t| {
+                                t.outcome = CallOutcome::Timeout;
+                                t.ended_at_ms = Some(now_ms());
+                            });
                             awaiting_invite_final.insert(dialog.call_id.clone(), now);
                             if cfg.enable_rtp {
                                 pre_bound_rtp.remove(&dialog.call_id);
@@ -678,6 +718,7 @@ impl Engine {
                                             &rtp_sessions,
                                             &mut rtp_snapshots,
                                             &live,
+                                            &traces,
                                         )
                                         .await;
                                     }
@@ -686,6 +727,9 @@ impl Engine {
                                     }
                                     dialog.on_bye_ok(); // 強制標記為 Completed
                                     live.on_completed();
+                                    traces.update(&dialog.call_id, |t| {
+                                        t.ended_at_ms = Some(now_ms())
+                                    });
                                 }
                             }
                         }
@@ -791,9 +835,13 @@ impl Engine {
                         pre_bound_rtp.insert(call_id.clone(), sock);
                     }
 
+                    let seq = live
+                        .calls_initiated
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let caller_number = cfg.caller_number_for(seq);
                     let invite = SipMessage::invite(
                         &call_id,
-                        &cfg.caller_number,
+                        &caller_number,
                         local_domain,
                         &callee,
                         &cfg.server_addr,
@@ -808,6 +856,15 @@ impl Engine {
                     let mut dialog =
                         Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
                     dialog.arm_retransmit(invite.clone(), now);
+                    traces.start(
+                        &call_id,
+                        CallTrace {
+                            sip_call_id: call_id.clone(),
+                            caller_number,
+                            invite_at_ms: now_ms(),
+                            ..Default::default()
+                        },
+                    );
                     dialogs.insert(call_id, dialog);
                     live.on_invite();
 
@@ -838,6 +895,10 @@ impl Engine {
                                 to_send.push(cancel);
                                 dialog.on_timeout();
                                 live.on_timeout();
+                                traces.update(&dialog.call_id, |t| {
+                                    t.outcome = CallOutcome::Timeout;
+                                    t.ended_at_ms = Some(now_ms());
+                                });
                                 awaiting_invite_final.insert(dialog.call_id.clone(), now);
                                 if cfg.enable_rtp {
                                     pre_bound_rtp.remove(&dialog.call_id);
@@ -902,8 +963,10 @@ impl Engine {
         ));
 
         let rtp_agg = if cfg.enable_rtp {
-            for (_, s) in rtp_sessions.lock().await.drain() {
-                rtp_snapshots.push(s.stop());
+            for (call_id, s) in rtp_sessions.lock().await.drain() {
+                let snap = s.stop();
+                traces.update(&call_id, |t| t.set_rtp(&snap));
+                rtp_snapshots.push(snap);
             }
             aggregate_snapshots(&rtp_snapshots)
         } else {
@@ -925,11 +988,13 @@ async fn stop_rtp_session(
     sessions: &Mutex<HashMap<String, RtpSession>>,
     snapshots: &mut Vec<RtpStatsSnapshot>,
     live: &LiveStats,
+    traces: &TraceLog,
 ) {
     let session = sessions.lock().await.remove(call_id);
     if let Some(session) = session {
         let snap = session.stop();
         live.on_rtp_stop();
+        traces.update(call_id, |t| t.set_rtp(&snap));
         snapshots.push(snap);
     }
 }

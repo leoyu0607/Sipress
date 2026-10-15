@@ -294,6 +294,11 @@ pub struct Config {
     /// 主叫號碼
     pub caller_number: String,
 
+    /// 每通使用不同主叫號碼：第 n 通 = `caller_number` + n（保留位數，例如 0912000000 → 0912000001）。
+    /// 端到端對照在拿不到 `P-CIN-CallId` 時，靠主叫號碼才能一對一配對
+    #[serde(default)]
+    pub caller_number_seq: bool,
+
     /// 被叫號碼前綴（若 callee_fixed 為 Some 則忽略）
     pub callee_prefix: String,
 
@@ -384,6 +389,7 @@ impl Default for Config {
             local_addr: None,
             local_domain: None,
             caller_number: "1000".to_string(),
+            caller_number_seq: false,
             callee_prefix: "2".to_string(),
             callee_range: 9999,
             callee_fixed: None,
@@ -422,6 +428,22 @@ impl Config {
     }
 
     /// 傳輸層名稱字串（給 SIP message 用）
+    /// 第 `n` 通（從 0 起算）的主叫號碼
+    pub fn caller_number_for(&self, n: u64) -> String {
+        if !self.caller_number_seq {
+            return self.caller_number.clone();
+        }
+        let base = &self.caller_number;
+        if base.is_empty() || !base.bytes().all(|b| b.is_ascii_digit()) || base.len() > 30 {
+            return format!("{}{}", base, n);
+        }
+        // 純數字：在原位數內遞增（超過位數就從頭繞回），保留開頭的 0
+        let width = base.len() as u32;
+        let modulus = 10u128.pow(width);
+        let value = (base.parse::<u128>().unwrap_or(0) + n as u128) % modulus;
+        format!("{:0width$}", value, width = width as usize)
+    }
+
     pub fn transport_str(&self) -> &str {
         match self.transport {
             Transport::Udp => "UDP",
@@ -600,6 +622,37 @@ mod tests {
             };
             assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
         }
+    }
+
+    #[test]
+    fn caller_number_sequence() {
+        let fixed = Config {
+            caller_number: "0912000000".into(),
+            ..Default::default()
+        };
+        assert_eq!(fixed.caller_number_for(5), "0912000000");
+
+        let seq = Config {
+            caller_number_seq: true,
+            ..fixed
+        };
+        assert_eq!(seq.caller_number_for(0), "0912000000");
+        assert_eq!(seq.caller_number_for(1), "0912000001");
+        assert_eq!(seq.caller_number_for(12345), "0912012345");
+
+        let wrap = Config {
+            caller_number: "98".into(),
+            caller_number_seq: true,
+            ..Default::default()
+        };
+        assert_eq!(wrap.caller_number_for(3), "01", "超過位數繞回，位數不變");
+
+        let text = Config {
+            caller_number: "anon".into(),
+            caller_number_seq: true,
+            ..Default::default()
+        };
+        assert_eq!(text.caller_number_for(7), "anon7");
     }
 
     #[test]

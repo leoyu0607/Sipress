@@ -78,6 +78,25 @@ impl SipParser {
         digits.parse().ok()
     }
 
+    /// 取得 SIPX（CIN）的全域通話 ID：`P-CIN-CallId`。
+    /// SIPX 轉送時每一段的 Call-ID 都會換新，但這個值在同一通電話的所有段（含送到座席的 INVITE、
+    /// 回給主叫的 18x / 200）都相同，可用來配對民眾端與座席端
+    pub fn cin_call_id(raw: &str) -> Option<String> {
+        Self::header_value(raw, &["p-cin-callid"]).filter(|v| !v.is_empty())
+    }
+
+    /// 取得 From URI 的 user 部分（`"159" <sip:15900000002@host;user=phone>` → `15900000002`）
+    pub fn from_user(raw: &str) -> Option<String> {
+        let val = Self::header_value(raw, &["from", "f"])?;
+        let uri = match val.find('<') {
+            Some(start) => &val[start + 1..start + val[start..].find('>')?],
+            None => val.split(';').next()?,
+        };
+        let rest = uri.trim().split_once(':')?.1;
+        let user = rest.split('@').next()?.split(';').next()?;
+        (!user.is_empty() && rest.contains('@')).then(|| user.to_string())
+    }
+
     /// 取得 Content-Length
     pub fn content_length(raw: &str) -> Option<usize> {
         let val = Self::header_value(raw, &["content-length", "l"])?;
@@ -128,6 +147,33 @@ impl SipParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cin_call_id_and_from_user() {
+        // 取自 SIPX 送到座席的 INVITE（mohw_sipx_20260915 acd.log）
+        let invite = "INVITE sip:ejd2lsf9@elet7fvvsggj.invalid;transport=ws SIP/2.0\r\n\
+                      Call-ID: 17d72862fec94d57798a782ad8e79558@203.65.98.166\r\n\
+                      From: \"15900000002\" <sip:15900000002@ai3.cloud;user=phone>;tag=0000-007758\r\n\
+                      To: <sip:0000021681689999@ai3.cloud;user=phone>\r\n\
+                      P-CIN-CallId: C20260915170613CB4162AB020087F9\r\n\
+                      Content-Length: 0\r\n\r\n";
+        assert_eq!(
+            SipParser::cin_call_id(invite).as_deref(),
+            Some("C20260915170613CB4162AB020087F9")
+        );
+        assert_eq!(SipParser::from_user(invite).as_deref(), Some("15900000002"));
+
+        assert_eq!(SipParser::cin_call_id(RESPONSE_200), None);
+        assert_eq!(SipParser::from_user(RESPONSE_200).as_deref(), Some("1000"));
+        assert_eq!(
+            SipParser::from_user("f: sip:2001@h;tag=x\r\n\r\n").as_deref(),
+            Some("2001")
+        );
+        assert_eq!(
+            SipParser::from_user("From: <sip:host.only>;tag=x\r\n\r\n"),
+            None
+        );
+    }
 
     const RESPONSE_200: &str = "\
 SIP/2.0 200 OK\r\n\

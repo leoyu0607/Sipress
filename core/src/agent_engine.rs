@@ -21,6 +21,7 @@ use crate::sip::{
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats};
+use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -36,12 +37,22 @@ const MAX_AUTH_RETRIES: u32 = 2;
 pub struct AgentEngine {
     config: Config,
     stop_tx: watch::Sender<bool>,
+    traces: Arc<TraceLog>,
 }
 
 impl AgentEngine {
     pub fn new(config: Config) -> Self {
         let (stop_tx, _) = watch::channel(false);
-        Self { config, stop_tx }
+        Self {
+            config,
+            stop_tx,
+            traces: Arc::default(),
+        }
+    }
+
+    /// 每通來電的追蹤紀錄（端到端對照用），執行中與結束後都可讀取
+    pub fn trace_log(&self) -> Arc<TraceLog> {
+        Arc::clone(&self.traces)
     }
 
     /// 取得停止訊號 sender，外部呼叫 `.send(true)` 即可觸發 graceful stop
@@ -143,9 +154,10 @@ impl AgentEngine {
             let stop_rx = self.stop_tx.subscribe();
             let port_ctr = Arc::clone(&rtp_port_counter);
             let registry = Arc::clone(&rtp_registry);
+            let traces = Arc::clone(&self.traces);
             let h = tokio::spawn(async move {
                 if let Err(e) = account_runner(
-                    acc, server, cfg, live, detail_r, log, stop_rx, port_ctr, registry,
+                    acc, server, cfg, live, detail_r, log, stop_rx, port_ctr, registry, traces,
                 )
                 .await
                 {
@@ -228,15 +240,23 @@ impl RtpRegistry {
     }
 }
 
+/// 追蹤紀錄的鍵：同一個 SIP Call-ID 可能分別送到不同座席帳號
+fn trace_key(ext: &str, call_id: &str) -> String {
+    format!("{}\u{1f}{}", ext, call_id)
+}
+
 /// 停止通話的 RTP session，將最終統計移入登記表的已結束列表
 async fn stop_call_rtp(
     call_id: &str,
     ctx: &mut DialogCtx,
     registry: &Mutex<RtpRegistry>,
     live: &LiveStats,
+    traces: &TraceLog,
+    ext: &str,
 ) {
     if let Some(rtp) = ctx.rtp_session.take() {
         let snap = rtp.stop();
+        traces.update(&trace_key(ext, call_id), |t| t.set_rtp(&snap));
         let mut reg = registry.lock().await;
         reg.active.remove(call_id);
         reg.finished.push(snap);
@@ -343,6 +363,7 @@ async fn account_runner(
     mut stop: watch::Receiver<bool>,
     port_counter: Arc<Mutex<u16>>,
     rtp_registry: SharedRtpRegistry,
+    traces: Arc<TraceLog>,
 ) -> Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
     sock.connect(server).await?;
@@ -445,7 +466,7 @@ async fn account_runner(
                     let needs_reregister = handle_request(
                         &raw, &sock, &log, &local_addr, &local_ip,
                         &account, &cfg, &live, &detail, Arc::clone(&dialogs),
-                        &port_counter, &rtp_registry, &mut pending, wrap_until,
+                        &port_counter, &rtp_registry, &mut pending, wrap_until, &traces,
                     ).await;
                     if needs_reregister {
                         wrap_until = Some(Instant::now() + wrap_up);
@@ -498,18 +519,18 @@ async fn account_runner(
                             let ctx = answer_call(
                                 &p.invite_raw, &call_id, p.local_to_tag, p.remote_from_tag,
                                 &sock, &log, &local_addr, &local_ip, &account, &cfg, &live,
-                                &port_counter, &rtp_registry,
+                                &port_counter, &rtp_registry, &traces,
                             ).await;
                             dialogs.lock().await.insert(call_id, ctx);
                         }
                         RingOutcome::Reject => {
                             log.log_event(&account.extension, &format!("[{}] 拒接 → 486", short(&call_id)));
-                            fail_invite(&p.invite_raw, &p.local_to_tag, "486 Busy Here", 486, &sock, &log, &live, &detail).await;
+                            fail_invite(&p.invite_raw, &p.local_to_tag, "486 Busy Here", 486, &sock, &log, &live, &detail, &traces, &account.extension).await;
                         }
                         RingOutcome::NoAnswer => {
                             log.log_event(&account.extension, &format!(
                                 "[{}] 響鈴 {}s 未被取消 → 480", short(&call_id), AgentBehavior::NO_ANSWER_CAP_SECS));
-                            fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail).await;
+                            fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail, &traces, &account.extension).await;
                         }
                     }
                 }
@@ -537,9 +558,10 @@ async fn account_runner(
                         );
                         log.log_message(Direction::Send, &bye, &server.to_string());
                         let _ = sock.send(bye.as_bytes()).await;
-                        stop_call_rtp(&call_id, &mut ctx, &rtp_registry, &live).await;
+                        stop_call_rtp(&call_id, &mut ctx, &rtp_registry, &live, &traces, &account.extension).await;
                         detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                         live.on_completed();
+                        traces.update(&trace_key(&account.extension, &call_id), |t| t.ended_at_ms = Some(now_ms()));
                         wrap_until = Some(Instant::now() + wrap_up);
                         // 通話結束後 re-REGISTER 維持在線
                         trigger_re_register(
@@ -557,13 +579,13 @@ async fn account_runner(
                 registered.set(false);
                 // 響鈴中的來電 → 480（座席下線）
                 for (_, p) in pending.drain() {
-                    fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail).await;
+                    fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail, &traces, &account.extension).await;
                 }
                 // 停止所有 RTP sessions
                 {
                     let mut dlgs = dialogs.lock().await;
                     for (call_id, ctx) in dlgs.iter_mut() {
-                        stop_call_rtp(call_id, ctx, &rtp_registry, &live).await;
+                        stop_call_rtp(call_id, ctx, &rtp_registry, &live, &traces, &account.extension).await;
                     }
                 }
                 let mut st = reg_state.lock().await;
@@ -834,6 +856,7 @@ async fn handle_request(
     rtp_registry: &SharedRtpRegistry,
     pending: &mut HashMap<String, PendingInvite>,
     wrap_until: Option<Instant>,
+    traces: &TraceLog,
 ) -> bool {
     let method = raw
         .lines()
@@ -898,6 +921,17 @@ async fn handle_request(
                 // ── 新通話：100 Trying → 180 Ringing →（響鈴延遲）→ 200 OK + SDP / 486 / 不接 ──
                 // PDD / 建立時間只會量到本機處理時間（或刻意的響鈴延遲），故不記錄
                 live.on_invite();
+                traces.start(
+                    &trace_key(&account.extension, &call_id),
+                    CallTrace {
+                        sip_call_id: call_id.clone(),
+                        cin_call_id: SipParser::cin_call_id(raw),
+                        caller_number: SipParser::from_user(raw).unwrap_or_default(),
+                        agent: Some(account.extension.clone()),
+                        invite_at_ms: now_ms(),
+                        ..Default::default()
+                    },
+                );
 
                 let local_to_tag = SipMessage::new_tag();
                 let behavior = &cfg.agent_behavior;
@@ -917,6 +951,8 @@ async fn handle_request(
                         log,
                         live,
                         detail,
+                        traces,
+                        &account.extension,
                     )
                     .await;
                     return false;
@@ -958,6 +994,7 @@ async fn handle_request(
                             live,
                             port_counter,
                             rtp_registry,
+                            traces,
                         )
                         .await;
                         dlgs.insert(call_id.clone(), ctx);
@@ -999,9 +1036,20 @@ async fn handle_request(
 
             let mut dlgs = dialogs.lock().await;
             if let Some(mut ctx) = dlgs.remove(&call_id) {
-                stop_call_rtp(&call_id, &mut ctx, rtp_registry, live).await;
+                stop_call_rtp(
+                    &call_id,
+                    &mut ctx,
+                    rtp_registry,
+                    live,
+                    traces,
+                    &account.extension,
+                )
+                .await;
                 detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                 live.on_completed();
+                traces.update(&trace_key(&account.extension, &call_id), |t| {
+                    t.ended_at_ms = Some(now_ms())
+                });
                 log.log_event(
                     &account.extension,
                     &format!("[{}] 通話結束 → re-REGISTER", short(&call_id)),
@@ -1028,6 +1076,8 @@ async fn handle_request(
                 log,
                 live,
                 detail,
+                traces,
+                &account.extension,
             )
             .await;
         }
@@ -1082,6 +1132,7 @@ async fn answer_call(
     live: &LiveStats,
     port_counter: &Arc<Mutex<u16>>,
     rtp_registry: &SharedRtpRegistry,
+    traces: &TraceLog,
 ) -> DialogCtx {
     let call_id = call_id.to_string();
     // 分配真實 RTP port（若啟用）
@@ -1108,6 +1159,11 @@ async fn answer_call(
 
     let answered_at = Instant::now();
     live.on_answered();
+    traces.update(&trace_key(&account.extension, &call_id), |t| {
+        t.answered_at_ms = Some(now_ms());
+        t.outcome = CallOutcome::Answered;
+        t.response_code = Some(200);
+    });
 
     // 啟動 RTP session（若啟用且有遠端地址）
     let rtp_session = if cfg.enable_rtp {
@@ -1194,8 +1250,17 @@ async fn fail_invite(
     log: &SipLogger,
     live: &LiveStats,
     detail: &DetailedStats,
+    traces: &TraceLog,
+    ext: &str,
 ) {
     let resp = SipMessage::response_with_to_tag(invite_raw, status_line, local_to_tag);
+    if let Some(call_id) = SipParser::call_id(invite_raw) {
+        traces.update(&trace_key(ext, &call_id), |t| {
+            t.outcome = CallOutcome::Failed;
+            t.response_code = Some(code);
+            t.ended_at_ms = Some(now_ms());
+        });
+    }
     log.log_message(Direction::Send, &resp, "server");
     let _ = sock.send(resp.as_bytes()).await;
     live.on_failed();

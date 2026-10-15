@@ -1,5 +1,7 @@
 pub mod agent_engine;
 pub mod config;
+pub mod correlate;
+pub mod correlation_html;
 pub mod engine;
 pub mod html_reporter;
 pub mod registrar;
@@ -8,3 +10,4 @@ pub mod rtp;
 pub mod sip;
 pub mod sip_logger;
 pub mod stats;
+pub mod trace;

@@ -37,6 +37,10 @@ pub struct Args {
     #[arg(long = "from", alias = "number", default_value = "1000")]
     pub caller: String,
 
+    /// 每通使用不同主叫號碼（從 --from 起遞增、保留位數），端到端對照拿不到 P-CIN-CallId 時靠它配對
+    #[arg(long = "from-seq")]
+    pub caller_number_seq: bool,
+
     /// 固定被叫號碼（指定後所有通話都打給這個號碼，覆蓋 --to-prefix/--to-range）
     #[arg(long = "to")]
     pub callee_fixed: Option<String>,
@@ -138,6 +142,20 @@ pub struct Args {
     /// 支援：.wav（PCM16/A-law/μ-law）、.ul/.ulaw（raw μ-law）、.al/.alaw（raw A-law）
     #[arg(long = "audio")]
     pub audio_file: Option<std::path::PathBuf>,
+
+    /// 結束後把每通通話的追蹤紀錄（P-CIN-CallId、主叫號碼、時間、MOS）寫成 JSON，
+    /// 民眾端與座席端各存一份，再用 --correlate 合併
+    #[arg(long = "trace-file")]
+    pub trace_file: Option<std::path::PathBuf>,
+
+    /// 端到端對照：讀取兩端的 --trace-file 產生合併報告（不執行壓測，檔案順序不拘）。
+    /// 搭配 --format 與 --html 輸出
+    #[arg(long = "correlate", num_args = 2, value_names = ["TRACE_A", "TRACE_B"])]
+    pub correlate: Option<Vec<std::path::PathBuf>>,
+
+    /// 端到端對照：以主叫號碼配對時，座席收到來電最晚可在民眾端撥出後幾秒（含排隊時間）
+    #[arg(long = "correlate-window", default_value_t = 120)]
+    pub correlate_window: u64,
 
     /// 顯示詳細 debug log
     #[arg(long)]

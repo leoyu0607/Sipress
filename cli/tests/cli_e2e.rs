@@ -500,3 +500,151 @@ fn agent_mode_requires_valid_accounts_file() {
     let out = run_sipress(&["--mode", "pbx"], Duration::from_secs(10));
     assert!(!out.status.success(), "未知模式應被拒絕");
 }
+
+// ── 端到端對照（--trace-file / --correlate）────────────────────────
+
+#[test]
+fn trace_file_records_each_call_with_sequential_caller_numbers() {
+    let server = spawn_uas(Uas::Answer).to_string();
+    let dir = temp_dir("trace");
+    let logs = dir.join("logs").to_string_lossy().into_owned();
+    let trace = dir.join("out").join("caller.json");
+    let trace_s = trace.to_string_lossy().into_owned();
+
+    let mut args = load_args(&server, &logs, "3", "2");
+    args.extend([
+        "--format",
+        "json",
+        "--from",
+        "0912000098",
+        "--from-seq",
+        "--trace-file",
+        &trace_s,
+    ]);
+    let out = run_sipress(&args, Duration::from_secs(30));
+    assert_success(&out);
+
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trace).unwrap()).unwrap();
+    assert_eq!(file["side"], "caller");
+    let traces = file["traces"].as_array().unwrap();
+    let numbers: Vec<&str> = traces
+        .iter()
+        .map(|t| t["caller_number"].as_str().unwrap())
+        .collect();
+    assert_eq!(numbers, ["0912000098", "0912000099", "0912000100"]);
+    for t in traces {
+        assert_eq!(t["outcome"], "answered");
+        assert_eq!(t["response_code"], 200);
+        assert!(t["answered_at_ms"].as_u64().unwrap() >= t["invite_at_ms"].as_u64().unwrap());
+        assert!(t["ended_at_ms"].is_u64(), "BYE 完成後應記錄結束時間");
+    }
+}
+
+/// 手寫一份追蹤紀錄
+fn write_trace(path: &std::path::Path, side: &str, traces: serde_json::Value) {
+    let file = serde_json::json!({ "side": side, "server": "10.0.0.1:5060", "traces": traces });
+    std::fs::write(path, file.to_string()).unwrap();
+}
+
+fn trace(
+    id: &str,
+    cin: Option<&str>,
+    number: &str,
+    agent: Option<&str>,
+    at: u64,
+    answered: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sip_call_id": id, "cin_call_id": cin, "caller_number": number, "agent": agent,
+        "invite_at_ms": at, "answered_at_ms": if answered { Some(at + 300) } else { None },
+        "ended_at_ms": null, "outcome": if answered { "answered" } else { "failed" },
+        "response_code": if answered { 200 } else { 486 }, "mos": null, "loss_pct": null, "jitter_ms": null,
+    })
+}
+
+#[test]
+fn correlate_merges_trace_files_into_json_and_html() {
+    let dir = temp_dir("correlate");
+    let caller = dir.join("caller.json");
+    let agent = dir.join("agent.json");
+    write_trace(
+        &caller,
+        "caller",
+        serde_json::json!([
+            trace("c1", Some("C1"), "0912000000", None, 10_000, true),
+            trace("c2", None, "0912000001", None, 10_100, true),
+            trace("c3", Some("C3"), "0912000002", None, 10_200, true),
+        ]),
+    );
+    write_trace(
+        &agent,
+        "agent",
+        serde_json::json!([
+            trace("a1", Some("C1"), "0912000000", Some("1001"), 10_400, true),
+            trace("a2", None, "0912000001", Some("1002"), 10_900, true),
+        ]),
+    );
+    let reports = dir.join("reports").to_string_lossy().into_owned();
+    let (c, a) = (
+        caller.to_string_lossy().into_owned(),
+        agent.to_string_lossy().into_owned(),
+    );
+
+    // 檔案順序不拘
+    let out = run_sipress(
+        &[
+            "--correlate",
+            &a,
+            &c,
+            "--format",
+            "json",
+            "--html",
+            "--report-dir",
+            &reports,
+        ],
+        Duration::from_secs(10),
+    );
+    assert_success(&out);
+    let r: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "應輸出 JSON（{}）：\n{}",
+            e,
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(r["caller_calls"], 3);
+    assert_eq!(r["matched_by_cin"], 1);
+    assert_eq!(r["matched_by_number"], 1);
+    assert_eq!(r["missed"], 1);
+    assert_eq!(r["distribution"]["max_ms"], 800.0);
+
+    let html: Vec<PathBuf> = std::fs::read_dir(&reports)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with("_e2e_report.html"))
+        .collect();
+    assert_eq!(html.len(), 1);
+    assert!(std::fs::read_to_string(&html[0])
+        .unwrap()
+        .contains("漏接通話（1）"));
+
+    let table = run_sipress(&["--correlate", &c, &a], Duration::from_secs(10));
+    assert_success(&table);
+    assert!(String::from_utf8_lossy(&table.stdout).contains("漏接"));
+
+    let csv = run_sipress(
+        &["--correlate", &c, &a, "--format", "csv"],
+        Duration::from_secs(10),
+    );
+    assert_success(&csv);
+    assert_eq!(
+        String::from_utf8_lossy(&csv.stdout).lines().count(),
+        4,
+        "header + 3 通"
+    );
+
+    let same = run_sipress(&["--correlate", &c, &c], Duration::from_secs(10));
+    assert!(!same.status.success(), "兩份都是民眾端應失敗");
+    assert!(String::from_utf8_lossy(&same.stderr).contains("一份民眾端與一份座席端"));
+}
