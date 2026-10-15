@@ -375,10 +375,11 @@ export const useTestStore = defineStore('test', () => {
     pollTimer:     ReturnType<typeof setInterval> | null
     clockTimer:    ReturnType<typeof setInterval> | null
     prevInitiated: number
+    prevFailed:    number    // 上一筆 snapshot 的失敗 + 逾時累計（只在增加時寫 WARN）
     rtpLoggedOnce: boolean   // 防止重複寫 RTP session 啟動 log
   }> = {
-    caller: { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
-    agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, rtpLoggedOnce: false },
+    caller: { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
+    agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
   }
   let logSeq = 0
   /** 雙端啟動中等待座席註冊的輪詢；取消時 resolve('cancelled')，startBoth 不再啟動民眾端 */
@@ -613,8 +614,10 @@ export const useTestStore = defineStore('test', () => {
     r.respCodes['200'] = snap.calls_answered
     r.respCodes['408'] = snap.calls_timeout
 
-    if (failed > 0)
-      addLog('warn', `失敗 ${snap.calls_failed} 逾時 ${snap.calls_timeout}  發起 ${snap.calls_initiated}  ASR ${snap.asr.toFixed(1)}%`, mode)
+    // 只在有新增失敗時記錄（累計值每秒重寫會洗掉其他事件）
+    if (failed > rt.prevFailed)
+      addLog('warn', `新增失敗 ${failed - rt.prevFailed}（失敗 ${snap.calls_failed} 逾時 ${snap.calls_timeout}）  發起 ${snap.calls_initiated}  ASR ${snap.asr.toFixed(1)}%`, mode)
+    rt.prevFailed = Math.max(rt.prevFailed, failed)
 
     // RTP session 啟動後只寫一次 log
     if ((snap.rtp_sessions ?? 0) > 0 && !rt.rtpLoggedOnce) {
@@ -715,6 +718,7 @@ export const useTestStore = defineStore('test', () => {
     }
     sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
     rt.prevInitiated = 0
+    rt.prevFailed = 0
     rt.rtpLoggedOnce = false
     const cur = sessions.value[mode]
 

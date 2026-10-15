@@ -411,11 +411,11 @@ describe('log 的 mode 標記 (D15)', () => {
 
     for (const m of ['agent', 'caller'] as const) {
       expect(s.logs.some(l => l.mode === m && l.msg.startsWith('測試開始')), `${m} 測試開始`).toBe(true)
-      expect(s.logs.some(l => l.mode === m && l.msg.startsWith('失敗')), `${m} 失敗`).toBe(true)
+      expect(s.logs.some(l => l.mode === m && l.msg.startsWith('新增失敗')), `${m} 失敗`).toBe(true)
       expect(s.logs.some(l => l.mode === m && l.msg.startsWith('測試已手動停止')), `${m} 停止`).toBe(true)
     }
     // 所有「測試開始 / 手動停止 / 失敗 / 測試完成」都必須帶 mode
-    expect(s.logs.filter(l => /^(測試開始|測試已手動停止|失敗|測試完成)/.test(l.msg)).every(l => !!l.mode)).toBe(true)
+    expect(s.logs.filter(l => /^(測試開始|測試已手動停止|新增失敗|測試完成)/.test(l.msg)).every(l => !!l.mode)).toBe(true)
   })
 })
 

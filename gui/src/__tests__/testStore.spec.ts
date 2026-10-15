@@ -146,6 +146,21 @@ describe('測試執行流程', () => {
   }
   const tick = () => vi.advanceTimersByTimeAsync(1000)
 
+  it('失敗數有增加時才寫 WARN，不會每秒重複', async () => {
+    const { s } = await startWith([
+      snap({ calls_initiated: 5, calls_failed: 0, calls_timeout: 0 }),
+      snap({ calls_initiated: 10, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 12, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 12, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 15, calls_failed: 1, calls_timeout: 4 }),
+    ])
+    for (let i = 0; i < 5; i++) await tick()
+    const warns = s.logs.filter(l => l.level === 'warn').map(l => l.msg)
+    expect(warns).toHaveLength(2)
+    expect(warns[0]).toMatch(/^新增失敗 2（失敗 1 逾時 1）\s+發起 10/)
+    expect(warns[1]).toMatch(/^新增失敗 3（失敗 1 逾時 4）\s+發起 15/)
+  })
+
   it('每秒的 snapshot 轉成指標與圖表序列', async () => {
     const { s } = await startWith([
       snap({ calls_initiated: 10, calls_answered: 6, calls_completed: 2, calls_failed: 1, calls_timeout: 1, pdd_avg_ms: null, rtp_mos: null }),
