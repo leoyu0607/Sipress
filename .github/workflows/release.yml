@@ -74,12 +74,21 @@ jobs:
           exit $fail
 
       # 先建立草稿：所有檔案上傳成功後才由 publish job 正式發佈；重跑時沿用既有草稿
+      # 發佈說明：有 docs/release-notes/<tag>.md 就用它，否則由 GitHub 依 PR 自動產生
       - name: Create draft release
         if: steps.mode.outputs.publish == 'true'
         run: |
+          notes="docs/release-notes/${TAG}.md"
+          if [[ -f "$notes" ]]; then
+            echo "發佈說明：${notes}"
+            notes_args=(--notes-file "$notes")
+          else
+            echo "沒有 ${notes}，改用自動產生的發佈說明"
+            notes_args=(--generate-notes)
+          fi
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
-              --title "sipress $TAG" --generate-notes
+              --title "sipress $TAG" "${notes_args[@]}"
           fi
           if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]]; then
             echo "::error::${TAG} 的 release 已發佈；要重新發佈請先刪除該 release"

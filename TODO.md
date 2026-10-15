@@ -21,7 +21,7 @@
 | Lint | `cargo clippy … -- -D warnings`（core/cli 與 gui 各跑一次），警告即失敗 |
 | `cargo fmt` | CI 會檢查（`cargo fmt --all -- --check`），commit 前先跑 `cargo fmt --all` |
 | 契約 fixtures | 改了前端送出的設定或 Rust 的 snapshot/report 欄位時，依 TESTING.md 重新產生並一起 commit |
-| 發佈 | 改 7 個檔案的版本號（`Cargo.toml` ×3、`package.json`、`package-lock.json`、`tauri.conf.json`、`Cargo.lock`），commit `Release vX.Y.Z`，推 tag `vX.Y.Z` |
+| 發佈 | 改 7 個檔案的版本號（`Cargo.toml` ×3、`package.json`、`package-lock.json`、`tauri.conf.json`、`Cargo.lock`），並寫繁體中文發佈說明 `docs/release-notes/vX.Y.Z.md`（沒有時改用自動產生的英文說明）；commit `Release vX.Y.Z`，合併後推 tag `vX.Y.Z` |
 
 ---
 
