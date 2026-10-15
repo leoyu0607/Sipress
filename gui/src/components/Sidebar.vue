@@ -141,7 +141,10 @@ function statusTitle(s: string) {
       </div>
     </div>
 
+    </fieldset>
+
     <!-- ── MODE TABS ──────────────────────────────────────── -->
+    <!-- 只切換檢視中的一端，不受執行鎖定影響：雙端執行時仍可切換查看另一端 -->
     <div class="mode-tabs">
       <button
         class="mode-tab"
@@ -162,6 +165,8 @@ function statusTitle(s: string) {
         <span class="mode-sub">SIP 話機</span>
       </button>
     </div>
+
+    <fieldset class="lock-wrap" :disabled="locked">
 
     <!-- ── CALLER PROFILE ─────────────────────────────────── -->
     <div class="section" v-if="store.config.mode === 'caller'">
@@ -370,23 +375,21 @@ function statusTitle(s: string) {
           </div>
         </div>
 
-        <!-- Behavior simulation -->
-        <div class="field-row">
-          <div class="field" style="flex:1">
-            <label>響鈴後接聽 (秒) <span class="tag">--ring</span></label>
-            <div class="range-pair">
-              <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
-              <span>–</span>
-              <input v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
-            </div>
+        <!-- Behavior simulation（區間欄位各佔一列，避免在側欄寬度下數字被截斷） -->
+        <div class="field">
+          <label>響鈴後接聽 (秒) <span class="tag">--ring</span></label>
+          <div class="range-pair">
+            <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
+            <span>–</span>
+            <input v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
           </div>
-          <div class="field" style="flex:1">
-            <label>主動掛斷 (秒) <span class="tag">--talk</span></label>
-            <div class="range-pair">
-              <input v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
-              <span>–</span>
-              <input v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
-            </div>
+        </div>
+        <div class="field">
+          <label>主動掛斷 (秒) <span class="tag">--talk</span></label>
+          <div class="range-pair">
+            <input v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
+            <span>–</span>
+            <input v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
           </div>
         </div>
         <div class="field-row">
@@ -593,7 +596,8 @@ function statusTitle(s: string) {
 .lock-banner {
   font-size: 11px;
   color: var(--accent);
-  background: rgba(var(--accent-rgb),0.08);
+  /* sticky：底色必須不透明，否則捲動時下方欄位會透出來 */
+  background: linear-gradient(rgba(var(--accent-rgb),0.08), rgba(var(--accent-rgb),0.08)), var(--bg1);
   border-bottom: 1px solid rgba(var(--accent-rgb),0.25);
   padding: 6px 14px;
   position: sticky;
@@ -682,7 +686,6 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .mode-icon { color: var(--text1); margin-bottom: 2px; }
 .mode-tab.active .mode-icon { color: var(--accent); }
-.mode-tab:disabled { cursor: not-allowed; opacity: 0.6; }
 .mode-name {
   font-size: 12px;
   font-weight: 500;
@@ -949,8 +952,10 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 /* Account actions */
 .acc-actions {
   display: flex;
+  flex-wrap: wrap;            /* 側欄寬度放不下三個按鈕時換行，不擠壓統計文字 */
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   margin-bottom: 4px;
 }
 
@@ -958,6 +963,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 3px;
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text1);
