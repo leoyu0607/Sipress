@@ -45,6 +45,13 @@
 
 產出一份合併的 HTML 報告。需要先確認 SIPX 轉送時是否保留可配對的欄位（Call-ID 通常會被 B2BUA 改掉，可能要用主叫號碼加時間窗或自訂 header）。
 
+**SIPX log 分析（acd_twlife_1029.log，2025-10-29 19:38–20:17，16 通，皆為座席 101001 外撥 0966551552 經 Avaya trunk）：**
+- `Call-ID`：每一段都換新（B2BUA），不能用來配對。
+- `P-CIN-CallId`（例：`C202510291938500A01F29500004082`）：同一通電話在 SIPX 內部所有 INVITE 段都保留，送往外部 trunk 的 INVITE 也帶著；SIPX 送出的 180 / 183 / 200 多數也帶。是最有希望的配對鍵。
+- 打給座席的那段（`INVITE sip:000001168168101001@…`）`From` 是對方號碼（0966551552），所以「主叫號碼 + 時間窗」可以當備案。
+- 尚未確認：這份 log 沒有民眾撥入、也沒有 REGISTER / 座席話機那一段（座席段走內部 127.0.0.1:5080）。需要一份「外部撥入接入號 → 分配給已註冊座席」的 log，確認 (1) 送到座席話機的 INVITE 是否帶 `P-CIN-CallId`；(2) 回給主叫的 18x / 200 是否帶 `P-CIN-CallId`。
+- 建議實作順序：先以 `P-CIN-CallId` 配對（兩端各自記錄收到的值）；若主叫端拿不到，改用每通不同的主叫號碼（例如主叫號碼尾數遞增）在座席端以 `From` 配對。
+
 ### [x] 4. 座席行為模擬
 
 `Config.agent_behavior`（`AgentBehavior`）：響鈴延遲區間、拒接 %（486）、不接 %（響到 CANCEL → 487，120 秒上限回 480）、接聽後主動掛斷區間、wrap-up 休息秒數（期間來電 486）。座席 runner 新增「響鈴中」狀態，響鈴中的 CANCEL 回 487。CLI 參數 `--ring` / `--talk`（`N` 或 `MIN-MAX`）、`--reject-pct`、`--no-answer-pct`、`--wrap-up`；GUI 座席區塊有對應欄位與驗證，CLI 預覽只帶非預設值。流程測試在 `core/tests/agent_behavior.rs`。
