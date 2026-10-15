@@ -259,7 +259,9 @@ mod tests {
 
     #[test]
     fn records_are_complete_after_summary_flush() {
-        let dir = std::env::temp_dir().join(format!("sipress-logger-test-{}", std::process::id()));
+        // 每個測試用自己的目錄：檔名只到秒，同一秒建立的同角色 logger 會寫到同一個檔案
+        let dir =
+            std::env::temp_dir().join(format!("sipress-logger-flush-test-{}", std::process::id()));
         let log = SipLogger::new(&dir.to_string_lossy(), SipRole::Agent).unwrap();
         log.log_message(
             Direction::Send,
