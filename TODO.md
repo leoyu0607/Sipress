@@ -93,3 +93,66 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - 版面：座席行為的區間欄位在側欄寬度下數字被截斷；「測試執行中」橫幅半透明導致捲動時文字重疊；帳號清單「n / n 已註冊」被擠成直排。
 - CLI 對照摘要在已使用 `--from-seq` 時仍建議加 `--from-seq`（改為與 HTML 相同，只在配對不確定時提示）。
 
+---
+
+以下依重要程度排序：先修會讓測試結果失真或無法使用的正確性問題，再補功能、指標與效能，最後是整理。
+
+### [ ] 11. 座席端 codec 與 SDP 不一致（正確性）
+
+座席回覆的 SDP 固定宣告 PCMA（`core/src/agent_engine.rs` 的 `build_response_with_sdp`），RTP 卻照 `cfg.codec` 送出（GUI 會把民眾端選的 codec 一起帶給座席端）。選 PCMU 時，座席宣告 PCMA、實際送 PCMU，對端可能無聲或 MOS 失真。兩端也都沒有依照對方的 SDP 協商：民眾端 offer `8 0 101`，但不論對方 answer 什麼都用 `cfg.codec` 送。
+要做：座席依 INVITE 的 offer 選 codec 並在 answer 宣告同一個；民眾端依 200 OK 的 answer 決定送哪個 payload type。
+
+### [ ] 12. 座席每通結束都重新註冊（正確性）
+
+每通掛斷後立即送一次 REGISTER（`trigger_re_register`）。高話務時會對 SIPX 多送大量 REGISTER，壓測工具本身干擾了測試結果。
+要做：只在接近 Expires 時刷新；若實際環境確實需要通話後重新註冊，改成選項（預設關閉）。
+
+### [ ] 13. 民眾端 INVITE 不支援 401 / 407 認證（正確性，視環境）
+
+REGISTER 有 Digest 認證，INVITE 沒有；SIPX 入口若要求撥號認證，所有通話都會被當成失敗。需先確認實際環境是否要求。
+要做：收到 401 / 407 時帶 `Authorization` / `Proxy-Authorization` 重送 INVITE（CSeq 遞增、同一個 Call-ID），帳密由設定提供；GUI 與 CLI 加上對應欄位。
+
+### [ ] 14. IPv6 位址解析錯誤（正確性）
+
+有 4 處用 `split(':').next()` 取 IP，IPv6 位址會被截斷：`core/src/agent_engine.rs`（3 處）、`core/src/engine.rs`（1 處）。
+要做：改用 `SocketAddr` / `IpAddr` 解析，補 IPv6 的單元測試。
+
+### [ ] 15. 在真正的 SIPX 驗證端到端對照（驗證）
+
+確認 sipress 民眾端直接撥入時，SIPX 入口是否產生 `P-CIN-CallId` 並回在 18x / 200（報告的「民眾端 CIN %」）。拿不到時改用 `--from-seq` 配對，並把結果補進第 3 項的紀錄。
+
+### [ ] 16. TCP 傳輸（功能）
+
+GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。要嘛實作（連線管理、訊息分框、`Content-Length` 解析），要嘛在介面上先移除這個選項。TLS / SRTP 視需求另列。
+
+### [ ] 17. CLI 補上 GUI 才有的設定（功能）
+
+CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 目前只有 GUI 能設定，CLI 預覽會標示「不支援」（`testStore.ts` 的 `cliUnsupported`）。補齊後 GUI 的 CLI 預覽即可完整重現設定。
+
+### [ ] 18. 即時指標的準確度（指標）
+
+`METRICS.md` 第 11 節列的已知限制：
+- 即時 CPS 由 GUI 輪詢差值計算，與引擎計時器不同步，會出現 0 與兩倍交替 → 改由引擎每秒統計並放進快照。
+- 即時 ASR 的分母包含仍在響鈴的通話，數值偏低。
+- PDD 測試中顯示平均、結束改為 P50，數字會跳動 → 統一口徑。
+
+### [ ] 19. 長時間耐久測試的分時段統計（功能）
+
+報告只有整體結果，看不出第幾小時開始變差。加上每 N 分鐘一段的 ASR、PDD、MOS、失敗碼統計，HTML 報告畫成時序圖，CLI 可輸出 CSV。
+
+### [ ] 20. 大量並發的效能基準（效能）
+
+座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器。上千並發時 CPU 負擔未知。
+要做：先加 1,000 / 5,000 並發的基準測試（本機 mock），量出瓶頸再優化，避免盲目重寫。
+
+### [ ] 21. 拆分 `agent_engine.rs`（維護）
+
+約 1,500 行；`handle_request` 有 15 個參數，建構 REGISTER 的程式碼重複 4 處。整理成每個帳號一個狀態結構（socket、註冊狀態、dialog、響鈴中來電、追蹤紀錄），方法各自處理一種事件。
+
+### [ ] 22. 清理專案（整理）
+
+- 移除 `gui/src.zip`、根目錄只印 Hello world 的 `src/main.rs`。
+- 更新或移除內容過時的 `gui/CHANGES.md`。
+- v0.5.0 發佈說明的下載表漏寫 macOS 免安裝檔（`sipress-gui-macos-*-portable`），GitHub 上的 release 說明一併補上。
+- CI 的 `actions/checkout@v4` 等 action 出現 Node 20 停用警告，升級到新版。
+
