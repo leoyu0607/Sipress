@@ -1,5 +1,6 @@
 /// CLI 參數（clap derive）
 use clap::Parser;
+use sipress_core::config::{CpsPattern, CpsStep};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -20,6 +21,18 @@ pub struct Args {
     /// 每秒通話數（CPS）
     #[arg(long, default_value_t = 10.0)]
     pub cps: f64,
+
+    /// CPS 漸增：`START-END`，在 --duration 內從 START 線性升到 END（取代 --cps）
+    #[arg(long = "cps-ramp", value_parser = parse_cps_ramp, conflicts_with_all = ["cps_steps", "cps_spike"])]
+    pub cps_ramp: Option<CpsPattern>,
+
+    /// CPS 階梯：`CPS:秒,CPS:秒,...`，依序維持各階，最後一階維持到結束（取代 --cps）
+    #[arg(long = "cps-steps", value_parser = parse_cps_steps, conflicts_with = "cps_spike")]
+    pub cps_steps: Option<CpsPattern>,
+
+    /// CPS 尖峰：`基準,尖峰,開始%,尖峰秒數`，例如 `10,100,50,10` = 平時 10，跑到 50% 時 100 CPS 持續 10 秒（取代 --cps）
+    #[arg(long = "cps-spike", value_parser = parse_cps_spike)]
+    pub cps_spike: Option<CpsPattern>,
 
     /// 壓測持續秒數（0 = 不限，直到 Ctrl-C 或 TUI 按 q）
     #[arg(short = 'd', long = "duration", default_value_t = 60)]
@@ -151,6 +164,14 @@ pub struct Args {
     #[arg(long = "rtp")]
     pub enable_rtp: bool,
 
+    /// 偏好的 codec：pcma（預設）/ pcmu；實際使用的以 SDP 協商結果為準
+    #[arg(long = "codec", default_value = "pcma", value_parser = ["pcma", "pcmu"], ignore_case = true)]
+    pub codec: String,
+
+    /// 民眾端：接通後以 RTP（RFC 4733）送出的 DTMF，例如 `1,w2000,2,#`（wN = 等待 N 毫秒）；需搭配 --rtp
+    #[arg(long = "dtmf", value_parser = parse_dtmf, requires = "enable_rtp")]
+    pub dtmf: Option<String>,
+
     /// RTP 起始 port（偶數，預設 10000）
     #[arg(long = "rtp-port", default_value_t = 10000)]
     pub rtp_base_port: u16,
@@ -202,9 +223,154 @@ fn parse_secs_range(s: &str) -> Result<(f64, f64), String> {
     Ok((min, max))
 }
 
+fn num(v: &str) -> Result<f64, String> {
+    let n: f64 = v.trim().parse().map_err(|_| format!("不是數字：{}", v))?;
+    if n.is_finite() && n >= 0.0 {
+        Ok(n)
+    } else {
+        Err(format!("需為 ≥ 0 的數字：{}", v))
+    }
+}
+
+/// `5-50` → 漸增 5 → 50 CPS
+fn parse_cps_ramp(s: &str) -> Result<CpsPattern, String> {
+    let (a, b) = s
+        .split_once('-')
+        .ok_or_else(|| format!("格式需為 START-END：{}", s))?;
+    let p = CpsPattern::Ramp {
+        start: num(a)?,
+        end: num(b)?,
+    };
+    p.validate(1).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// `10:30,50:60` → 10 CPS 30 秒、50 CPS 60 秒
+fn parse_cps_steps(s: &str) -> Result<CpsPattern, String> {
+    let levels = s
+        .split(',')
+        .map(|part| {
+            let (cps, secs) = part
+                .split_once(':')
+                .ok_or_else(|| format!("每一階格式需為 CPS:秒：{}", part))?;
+            let duration_secs = secs
+                .trim()
+                .parse()
+                .map_err(|_| format!("秒數需為整數：{}", secs))?;
+            Ok(CpsStep {
+                cps: num(cps)?,
+                duration_secs,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let p = CpsPattern::Step { levels };
+    p.validate(0).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// `10,100,50,10` → 平時 10、在 50% 時 100 CPS 持續 10 秒
+fn parse_cps_spike(s: &str) -> Result<CpsPattern, String> {
+    let v: Vec<&str> = s.split(',').collect();
+    let [base, peak, at, secs] = v[..] else {
+        return Err(format!("格式需為 基準,尖峰,開始%,尖峰秒數：{}", s));
+    };
+    let p = CpsPattern::Spike {
+        base: num(base)?,
+        peak: num(peak)?,
+        spike_at_pct: num(at.trim_end_matches('%'))?,
+        spike_duration_secs: secs
+            .trim()
+            .parse()
+            .map_err(|_| format!("尖峰秒數需為整數：{}", secs))?,
+    };
+    p.validate(1).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+fn parse_dtmf(s: &str) -> Result<String, String> {
+    sipress_core::rtp::dtmf::validate_dtmf_sequence(s)?;
+    Ok(s.trim().to_string())
+}
+
+impl Args {
+    pub fn mode(&self) -> sipress_core::config::Mode {
+        if self.mode == "agent" {
+            sipress_core::config::Mode::Agent
+        } else {
+            sipress_core::config::Mode::Caller
+        }
+    }
+
+    /// 指定的 CPS 模式（沒有指定 = 固定 --cps）
+    pub fn cps_pattern(&self) -> CpsPattern {
+        self.cps_ramp
+            .clone()
+            .or_else(|| self.cps_steps.clone())
+            .or_else(|| self.cps_spike.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from([&["sipress"], args].concat())
+    }
+
+    #[test]
+    fn cps_pattern_flags() {
+        assert!(matches!(
+            parse(&["--cps-ramp", "5-50"]).unwrap().cps_pattern(),
+            CpsPattern::Ramp { start, end } if start == 5.0 && end == 50.0
+        ));
+        match parse(&["--cps-steps", "10:30, 50:60"])
+            .unwrap()
+            .cps_pattern()
+        {
+            CpsPattern::Step { levels } => {
+                assert_eq!(levels.len(), 2);
+                assert_eq!((levels[1].cps, levels[1].duration_secs), (50.0, 60));
+            }
+            p => panic!("{:?}", p),
+        }
+        assert!(matches!(
+            parse(&["--cps-spike", "10,100,50%,10"]).unwrap().cps_pattern(),
+            CpsPattern::Spike { base, peak, spike_at_pct, spike_duration_secs: 10 }
+                if base == 10.0 && peak == 100.0 && spike_at_pct == 50.0
+        ));
+        assert!(matches!(
+            parse(&[]).unwrap().cps_pattern(),
+            CpsPattern::Flat
+        ));
+
+        for bad in [
+            &["--cps-ramp", "5"][..],
+            &["--cps-ramp", "0-0"],
+            &["--cps-steps", "10"],
+            &["--cps-steps", "0:30"],
+            &["--cps-spike", "10,100,50"],
+            &["--cps-spike", "10,100,150,5"],
+            &["--cps-ramp", "1-5", "--cps-spike", "10,100,50,10"],
+        ] {
+            assert!(parse(bad).is_err(), "{:?} 應被拒絕", bad);
+        }
+    }
+
+    #[test]
+    fn codec_and_dtmf_flags() {
+        assert_eq!(parse(&[]).unwrap().codec, "pcma");
+        assert_eq!(
+            parse(&["--codec", "PCMU"]).unwrap().codec.to_lowercase(),
+            "pcmu"
+        );
+        assert!(parse(&["--codec", "g729"]).is_err());
+        let a = parse(&["--rtp", "--dtmf", "1,w500,#"]).unwrap();
+        assert_eq!(a.dtmf.as_deref(), Some("1,w500,#"));
+        assert!(parse(&["--rtp", "--dtmf", "12"]).is_err(), "格式錯誤");
+        assert!(parse(&["--dtmf", "1"]).is_err(), "DTMF 需要 --rtp");
+    }
 
     #[test]
     fn secs_range_parses_single_value_and_range() {

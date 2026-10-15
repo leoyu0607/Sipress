@@ -371,7 +371,7 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
 | 座席端（answer） | offer 有偏好的 codec 就用它，否則用 offer 中第一個 G.711；answer 只宣告選中的 codec（offer 有 101 時一併接受）；offer 完全沒有 G.711 → `488 Not Acceptable Here` |
 | RE-INVITE | 帶 SDP 時只回目前的 codec；不帶 SDP 時 200 OK 以 offer 格式列出所有 codec |
 
-偏好的 codec 即 GUI 的 Codec 設定（CLI 預設 PCMA）。
+偏好的 codec 即 GUI 的 Codec 設定（CLI `--codec pcma|pcmu`，預設 PCMA）。
 
 ---
 
@@ -458,6 +458,9 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 |------|------|------|------|
 | `--concurrent` | `-c` | `100` | 最大並發通話數 |
 | `--cps` | — | `10.0` | 每秒發起通話數 |
+| `--cps-ramp` | — | — | CPS 漸增 `START-END`：在 `--duration` 內從 START 線性升到 END（取代 `--cps`，需 `-d` > 0） |
+| `--cps-steps` | — | — | CPS 階梯 `CPS:秒,CPS:秒,...`：依序維持各階，最後一階維持到結束 |
+| `--cps-spike` | — | — | CPS 尖峰 `基準,尖峰,開始%,尖峰秒數`，例如 `10,100,50,10`（需 `-d` > 0）；三種模式擇一 |
 | `--duration` | `-d` | `60` | 壓測持續時間（秒）；**設為 `0` = 不限時間**，需搭配 `--max-calls` 或手動停止 |
 | `--max-calls` | — | 不限 | 總通話上限，達到且所有進行中通話結束後自動停止 |
 | `--call-duration` | — | `30` | 單通通話持續時間（秒，`0` = 不主動 BYE） |
@@ -510,6 +513,8 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--rtp` | 關閉 | 啟用 RTP 音訊傳送與接收 |
 | `--rtp-port` | `10000` | RTP 起始 port（偶數，每通 call +2） |
 | `--audio` | 無（靜音） | 音檔路徑（`.wav` / `.raw` G.711 μ-law） |
+| `--codec` | `pcma` | 偏好的 codec（`pcma` / `pcmu`）；實際使用的以 SDP 協商結果為準 |
+| `--dtmf` | — | 民眾端接通後經 RTP（RFC 4733）送出的 DTMF，例如 `1,w2000,2,#`（`wN` = 等待 N 毫秒）；需搭配 `--rtp` |
 
 ### 輸出與記錄
 

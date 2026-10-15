@@ -350,6 +350,22 @@ function loadConfig(): TestConfig {
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
+/** DTMF 序列：逗號分隔，每段為單一按鍵（0-9 * # A-D）或 wN（等待 N 毫秒）；與 core 的檢查一致 */
+export function isValidDtmf(seq: string): boolean {
+  const parts = seq.split(',').map(x => x.trim()).filter(Boolean)
+  return parts.length > 0 && parts.every(x => /^[0-9*#A-Da-d]$/.test(x) || /^[wW]\d+$/.test(x))
+}
+
+/** CLI 預覽的 CPS 參數（依 CPS 模式） */
+export function cpsFlag(pat: CpsPatternConfig, cps: number): string {
+  switch (pat.type) {
+    case 'ramp':  return `--cps-ramp ${pat.rampStart}-${pat.rampEnd}`
+    case 'step':  return `--cps-steps ${pat.steps.map(st => `${st.cps}:${st.duration_secs}`).join(',')}`
+    case 'spike': return `--cps-spike ${pat.spikeBase},${pat.spikePeak},${pat.spikeAtPct},${pat.spikeDurationSecs}`
+    default:      return `--cps ${cps}`
+  }
+}
+
 export const useTestStore = defineStore('test', () => {
 
   const config = ref<TestConfig>(loadConfig())
@@ -429,6 +445,8 @@ export const useTestStore = defineStore('test', () => {
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
       if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
+      if (p.dtmfSequence.trim() && !isValidDtmf(p.dtmfSequence))
+        errs.push('DTMF 序列格式錯誤：每段為單一按鍵（0-9 * # A-D）或 wN（等待毫秒），以逗號分隔')
     } else {
       if (c.agent.accounts.length === 0) errs.push('座席模式需要至少一個帳號')
       const b = c.agent.behavior
@@ -447,16 +465,6 @@ export const useTestStore = defineStore('test', () => {
   const validationErrors = computed(() => validate(config.value.mode))
   /** 雙端啟動的驗證（兩端錯誤合併，去除重複的共用欄位錯誤） */
   const bothValidationErrors = computed(() => [...new Set([...validate('agent'), ...validate('caller')])])
-
-  /** 目前設定中 CLI 不支援、因此不會出現在 CLI 預覽中的項目 */
-  const cliUnsupported = computed(() => {
-    const c = config.value
-    const out: string[] = []
-    if (c.mode === 'caller' && c.caller.cpsPattern.type !== 'flat') out.push('CPS 模式')
-    if (c.caller.enableAudio && c.caller.codec !== 'pcma') out.push('Codec')
-    if (c.mode === 'caller' && c.caller.dtmfSequence) out.push('DTMF')
-    return out
-  })
 
   const cliCommand = computed(() => {
     const c = config.value
@@ -484,12 +492,17 @@ export const useTestStore = defineStore('test', () => {
       // 密碼不顯示在預覽（畫面截圖、複製貼上時外洩），只放佔位字
       if (p.authPass) parts.push(...(p.authUser.trim() ? [`--auth-user ${p.authUser.trim()}`] : []), '--auth-pass "<密碼>"')
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
-      parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
+      parts.push(`-c ${p.concurrency}`, cpsFlag(p.cpsPattern, p.cps), `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
     }
-    if (p.enableAudio && p.audioFile) parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
+    if (p.codec !== 'pcma') parts.push(`--codec ${p.codec}`)
+    if (p.enableAudio && p.audioFile) {
+      parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
+      // DTMF 經 RTP 送出，沒有 RTP 時 GUI 也不會送
+      if (c.mode === 'caller' && p.dtmfSequence.trim()) parts.push(`--dtmf "${p.dtmfSequence.trim()}"`)
+    }
     parts.push(c.cliFormat === 'tui' ? '--tui' : `--format ${c.cliFormat}`)
     if (c.cliVerbose) parts.push('--verbose')
     return parts.join(' ')
@@ -1079,7 +1092,7 @@ export const useTestStore = defineStore('test', () => {
     callStates, respCodes, logs, agents,
     rtpMetrics, mosRating, codecLabel,
     accountImportError, registeredCount,
-    validationErrors, bothValidationErrors, cliUnsupported, cliCommand, progressPct,
+    validationErrors, bothValidationErrors, cliCommand, progressPct,
     addLog, clearLog,
     generateAccounts, removeAccount, clearAccounts, updateAccount,
     importAccountText, parseAccountText,

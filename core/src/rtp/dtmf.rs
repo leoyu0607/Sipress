@@ -113,9 +113,45 @@ pub fn parse_dtmf_sequence(seq: &str) -> Vec<DtmfAction> {
     actions
 }
 
+/// 檢查 DTMF 序列格式：逗號分隔，每段是單一按鍵（`0`–`9`、`*`、`#`、`A`–`D`）或 `wN`（等待 N 毫秒）
+pub fn validate_dtmf_sequence(seq: &str) -> Result<(), String> {
+    let mut any = false;
+    for part in seq.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        any = true;
+        if let Some(ms) = part.strip_prefix(['w', 'W']) {
+            if ms.parse::<u32>().is_ok() {
+                continue;
+            }
+        }
+        let mut chars = part.chars();
+        let ok =
+            matches!((chars.next(), chars.next()), (Some(c), None) if digit_to_event(c).is_some());
+        if !ok {
+            return Err(format!(
+                "DTMF 格式錯誤：「{}」（每段需為單一按鍵 0-9 * # A-D 或 wN 等待毫秒，以逗號分隔）",
+                part
+            ));
+        }
+    }
+    if any {
+        Ok(())
+    } else {
+        Err("DTMF 序列是空的".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_dtmf_sequence() {
+        assert!(validate_dtmf_sequence("1,w2000,2,w500,#").is_ok());
+        assert!(validate_dtmf_sequence("*, D ,W100").is_ok());
+        for bad in ["", ",", "12", "x", "w", "wabc", "1;2"] {
+            assert!(validate_dtmf_sequence(bad).is_err(), "{:?} 應被拒絕", bad);
+        }
+    }
 
     #[test]
     fn digit_mapping() {

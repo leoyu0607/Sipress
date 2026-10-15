@@ -366,12 +366,18 @@ extension,username,password,domain
 --number <號碼>             主叫號碼（From 標頭）
 --concurrent / -c <N>      最大同時通話數（預設：100）
 --cps <N>                  每秒通話數（預設：10）
+--cps-ramp <起-迄>          CPS 漸增，例如 5-50（需 -d > 0）
+--cps-steps <CPS:秒,...>    CPS 階梯，例如 10:30,50:60
+--cps-spike <基準,尖峰,%,秒> CPS 尖峰，例如 10,100,50,10（需 -d > 0）
 --duration / -d <秒>        測試時長，0 = 不限（預設：60）
 --max-calls <N>            總通話上限，0 = 不限
 --call-duration <秒>        單通通話持續時間（預設：30）
 --invite-timeout <秒>       INVITE 逾時（預設：8）
---audio <檔案>              WAV/PCM 音檔（啟用 RTP）
---rtp-base-port <Port>     RTP 起始 Port（預設：10000）
+--rtp                      啟用 RTP 音訊
+--audio <檔案>              音檔（.wav / .ul / .al 等，需搭配 --rtp）
+--rtp-port <Port>          RTP 起始 Port（預設：10000）
+--codec <codec>            pcma（預設）| pcmu
+--dtmf <序列>               接通後送出的 DTMF，例如 1,w2000,#（需搭配 --rtp）
 --format <格式>             table | json | csv（預設：table）
 --logs-dir <目錄>           Log 輸出目錄（預設：logs）
 --tui                      啟用即時儀表板介面

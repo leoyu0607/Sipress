@@ -1,1 +1,1 @@
-./sipress -s 192.168.166.60:5066 --from 0938530031 --to-prefix 2 --to-range 9999 -c 100 --cps 10 -d 60 --call-duration 30 --transport udp --local 0.0.0.0:5070 --format table
+./sipress -s 192.168.166.60:5066 --from 0938530031 --to-prefix 2 --to-range 9999 -c 100 --cps-spike 5,200,25,15 -d 60 --call-duration 30 --transport udp --local 0.0.0.0:5070 --format table

@@ -579,9 +579,6 @@ function statusTitle(s: string) {
         <span class="cli-text">{{ store.cliCommand }}</span>
         <span class="cli-copy">{{ copied ? '✓' : '⎘' }}</span>
       </div>
-      <div class="cli-warn" v-if="store.cliUnsupported.length > 0">
-        CLI 不支援：{{ store.cliUnsupported.join('、') }}（僅 GUI 生效）
-      </div>
       <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
       </div>

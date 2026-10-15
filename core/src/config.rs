@@ -30,6 +30,47 @@ pub struct CpsStep {
 }
 
 impl CpsPattern {
+    /// 檢查參數：數值需為 ≥ 0 的有限數；漸增 / 尖峰依總時長計算，需設定持續時間
+    pub fn validate(&self, duration_secs: u64) -> anyhow::Result<()> {
+        let ok = |v: f64| v.is_finite() && v >= 0.0;
+        match self {
+            Self::Flat => {}
+            Self::Ramp { start, end } => {
+                if !(ok(*start) && ok(*end)) || start.max(*end) <= 0.0 {
+                    anyhow::bail!("CPS 漸增的起訖值需 ≥ 0，且至少一個 > 0");
+                }
+                if duration_secs == 0 {
+                    anyhow::bail!("CPS 漸增模式需設定持續時間（> 0）");
+                }
+            }
+            Self::Step { levels } => {
+                if levels.is_empty() {
+                    anyhow::bail!("CPS 階梯模式至少需要一個階層");
+                }
+                if levels.iter().any(|l| !(l.cps.is_finite() && l.cps > 0.0)) {
+                    anyhow::bail!("CPS 階梯的每一階 CPS 需 > 0");
+                }
+            }
+            Self::Spike {
+                base,
+                peak,
+                spike_at_pct,
+                ..
+            } => {
+                if !(ok(*base) && ok(*peak)) || base.max(*peak) <= 0.0 {
+                    anyhow::bail!("CPS 尖峰的基準 / 尖峰值需 ≥ 0，且至少一個 > 0");
+                }
+                if !(spike_at_pct.is_finite() && (0.0..=100.0).contains(spike_at_pct)) {
+                    anyhow::bail!("CPS 尖峰開始位置需介於 0–100%");
+                }
+                if duration_secs == 0 {
+                    anyhow::bail!("CPS 尖峰模式需設定持續時間（> 0）");
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn current_cps(&self, elapsed: Duration, base_cps: f64, total_duration: Duration) -> f64 {
         match self {
             Self::Flat => base_cps,
@@ -489,6 +530,10 @@ impl Config {
             if self.max_concurrent_calls == 0 {
                 anyhow::bail!("最大並發通話數必須大於 0");
             }
+            self.cps_pattern.validate(self.duration_secs)?;
+            if let Some(seq) = self.dtmf_sequence.as_deref() {
+                crate::rtp::dtmf::validate_dtmf_sequence(seq).map_err(anyhow::Error::msg)?;
+            }
         }
         if self.mode == Mode::Agent {
             self.agent_behavior.validate()?;
@@ -534,6 +579,77 @@ mod tests {
         let p = CpsPattern::Flat;
         let cps = p.current_cps(Duration::from_secs(30), 10.0, Duration::from_secs(60));
         assert!((cps - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cps_pattern_validation() {
+        assert!(CpsPattern::Flat.validate(0).is_ok());
+        let ramp = CpsPattern::Ramp {
+            start: 1.0,
+            end: 50.0,
+        };
+        assert!(ramp.validate(60).is_ok());
+        assert!(ramp.validate(0).is_err(), "漸增需要持續時間");
+        assert!(CpsPattern::Ramp {
+            start: 0.0,
+            end: 0.0
+        }
+        .validate(60)
+        .is_err());
+        assert!(CpsPattern::Ramp {
+            start: -1.0,
+            end: 5.0
+        }
+        .validate(60)
+        .is_err());
+        assert!(CpsPattern::Step { levels: vec![] }.validate(0).is_err());
+        let step = |cps| CpsPattern::Step {
+            levels: vec![CpsStep {
+                cps,
+                duration_secs: 10,
+            }],
+        };
+        assert!(step(5.0).validate(0).is_ok(), "階梯不需要總時長");
+        assert!(step(0.0).validate(0).is_err());
+        let spike = |at| CpsPattern::Spike {
+            base: 10.0,
+            peak: 100.0,
+            spike_at_pct: at,
+            spike_duration_secs: 5,
+        };
+        assert!(spike(50.0).validate(60).is_ok());
+        assert!(spike(150.0).validate(60).is_err());
+        assert!(spike(50.0).validate(0).is_err());
+    }
+
+    #[test]
+    fn caller_config_rejects_bad_dtmf_and_pattern() {
+        let base = Config {
+            duration_secs: 60,
+            ..Default::default()
+        };
+        assert!(Config {
+            dtmf_sequence: Some("1,w500,#".into()),
+            ..base.clone()
+        }
+        .validate()
+        .is_ok());
+        assert!(Config {
+            dtmf_sequence: Some("12".into()),
+            ..base.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(Config {
+            cps_pattern: CpsPattern::Ramp {
+                start: 1.0,
+                end: 5.0
+            },
+            duration_secs: 0,
+            ..base
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

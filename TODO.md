@@ -142,9 +142,12 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - 限制：伺服器送給座席的請求必須走座席註冊的那條連線（SIPX 等 proxy 的一般做法）；sipress 不另外監聽 TCP port。RTP 仍為 UDP。TLS / SRTP 視需求另列。
 測試：`take_frame` 分框與 `via_transport` 單元測試、`SipSocket` TCP 收送；`core/tests/tcp_transport.rs`（民眾端單一連線完成兩通、回應延遲超過 T1 也不重傳、兩則回應黏在同一次寫入；座席端 TCP 註冊與接聽；連線被拒立即失敗）。
 
-### [ ] 17. CLI 補上 GUI 才有的設定（功能）
+### [x] 17. CLI 補上 GUI 才有的設定（功能）
 
-CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 目前只有 GUI 能設定，CLI 預覽會標示「不支援」（`testStore.ts` 的 `cliUnsupported`）。補齊後 GUI 的 CLI 預覽即可完整重現設定。
+原本 CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 只有 GUI 能設定，CLI 預覽標示「不支援」。
+已完成：CLI 新增 `--cps-ramp START-END`、`--cps-steps CPS:秒,...`、`--cps-spike 基準,尖峰,開始%,秒數`（三者擇一）、`--codec pcma|pcmu`、`--dtmf 序列`（需 `--rtp`）。GUI 的 CLI 預覽改為輸出這些參數，移除「CLI 不支援」提示。
+- core 的 `Config::validate` 新增 CPS 模式與 DTMF 格式檢查（CLI、GUI 共用）；GUI 啟動前也檢查 DTMF 格式。原本 `123#` 這種不加逗號的寫法只會送出第一個按鍵，現在會直接提示格式錯誤。
+- 測試：CLI 參數解析與錯誤值、`CpsPattern::validate`、DTMF 格式；`gui_cli_preview_reproduces_gui_config` 把 `gui/contract/cli-*.txt` 交給 CLI 解析後，逐欄比對 GUI 實際送出的 `config-*.json`（帳號檔、密碼佔位字、未使用的欄位除外）。以 mock SIPX 實跑：階梯 2:3,8:3 → 每秒 INVITE `2,2,2,8,8,8`；漸增 1-9 → `1,3,4,6,7,8`；尖峰 2,10,50,2 → `2,2,2,10,10,2`；`--codec pcmu` offer `0 8 101`；`--dtmf` 送出 PT 101。
 
 ### [ ] 18. 即時指標的準確度（指標）
 
