@@ -71,7 +71,10 @@ impl SipParser {
         }
         let contact = Self::header_value(raw, &["contact", "m"])?;
         let idx = contact.to_lowercase().find("expires=")?;
-        let digits: String = contact[idx + 8..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: String = contact[idx + 8..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
         digits.parse().ok()
     }
 
@@ -95,7 +98,9 @@ impl SipParser {
     /// 查找 header（支援多個別名），回傳 colon 後的值（已 trim）
     fn header_value(raw: &str, names: &[&str]) -> Option<String> {
         for line in raw.lines() {
-            if line.is_empty() { break; } // header 區塊結束
+            if line.is_empty() {
+                break;
+            } // header 區塊結束
             let lower = line.to_lowercase();
             for name in names {
                 let prefix = format!("{}:", name);
@@ -111,11 +116,11 @@ impl SipParser {
     /// 從 header 值中取得 ;param=value
     fn extract_param(value: &str, param: &str) -> Option<String> {
         let needle = format!(";{}=", param.to_lowercase());
-        let lower  = value.to_lowercase();
-        let pos    = lower.find(&needle)?;
-        let start  = pos + needle.len();
-        let rest   = &value[start..];
-        let end    = rest.find(';').unwrap_or(rest.len());
+        let lower = value.to_lowercase();
+        let pos = lower.find(&needle)?;
+        let start = pos + needle.len();
+        let rest = &value[start..];
+        let end = rest.find(';').unwrap_or(rest.len());
         Some(rest[..end].trim().to_string())
     }
 }

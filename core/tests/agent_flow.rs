@@ -13,7 +13,11 @@ const CALL_ID: &str = "agent-call-1@mock";
 
 /// mock 撥入的對話內請求（INVITE / ACK / CANCEL / BYE）
 fn request(method: &str, cseq: u32, mock: SocketAddr, agent: SocketAddr, body: &str) -> String {
-    let content_type = if body.is_empty() { "" } else { "Content-Type: application/sdp\r\n" };
+    let content_type = if body.is_empty() {
+        ""
+    } else {
+        "Content-Type: application/sdp\r\n"
+    };
     format!(
         "{method} sip:1001@{agent} SIP/2.0\r\n\
          Via: SIP/2.0/UDP {mock};branch=z9hG4bK-{branch}\r\n\
@@ -64,11 +68,11 @@ async fn spawn_server() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
                     rtp_port
                 );
                 let steps = [
-                    (0,    request("INVITE", 1, addr, agent, &sdp)),
-                    (200,  request("ACK",    1, addr, agent, "")),
+                    (0, request("INVITE", 1, addr, agent, &sdp)),
+                    (200, request("ACK", 1, addr, agent, "")),
                     // 座席已回 200 OK 之後才到的 CANCEL：不可影響通話（RFC 3261 §9.2）
-                    (100,  request("CANCEL", 1, addr, agent, "")),
-                    (1500, request("BYE",    2, addr, agent, "")),
+                    (100, request("CANCEL", 1, addr, agent, "")),
+                    (1500, request("BYE", 2, addr, agent, "")),
                 ];
                 for (delay_ms, msg) in steps {
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
@@ -85,17 +89,17 @@ async fn agent_call_flow_counts_rtp_and_ignores_late_cancel() {
     let (server, received) = spawn_server().await;
     let logs = std::env::temp_dir().join(format!("sipress-agent-test-{}", std::process::id()));
     let cfg = Config {
-        server_addr:    server.to_string(),
-        logs_dir:       logs.to_string_lossy().into_owned(),
-        mode:           Mode::Agent,
-        duration_secs:  4,
-        enable_rtp:     true,
-        rtp_base_port:  40000,
+        server_addr: server.to_string(),
+        logs_dir: logs.to_string_lossy().into_owned(),
+        mode: Mode::Agent,
+        duration_secs: 4,
+        enable_rtp: true,
+        rtp_base_port: 40000,
         agent_accounts: vec![AgentAccount {
             extension: "1001".into(),
-            username:  "1001".into(),
-            password:  "pw".into(),
-            domain:    String::new(),
+            username: "1001".into(),
+            password: "pw".into(),
+            domain: String::new(),
         }],
         ..Default::default()
     };
@@ -113,16 +117,26 @@ async fn agent_call_flow_counts_rtp_and_ignores_late_cancel() {
     // ── 第 13 點：接聽後的 CANCEL 不可掛斷通話 ──
     {
         let received = received.lock().unwrap();
-        let cancel_resp = received.iter()
-            .find(|m| m.starts_with("SIP/2.0") && SipParser::cseq_method(m).as_deref() == Some("CANCEL"))
+        let cancel_resp = received
+            .iter()
+            .find(|m| {
+                m.starts_with("SIP/2.0") && SipParser::cseq_method(m).as_deref() == Some("CANCEL")
+            })
             .expect("CANCEL 必須有回應");
-        assert!(cancel_resp.starts_with("SIP/2.0 200"), "{}", cancel_resp.lines().next().unwrap());
+        assert!(
+            cancel_resp.starts_with("SIP/2.0 200"),
+            "{}",
+            cancel_resp.lines().next().unwrap()
+        );
         assert!(
             !received.iter().any(|m| m.starts_with("SIP/2.0 487")),
             "INVITE 已回 200 OK，不可再送 487"
         );
-        let bye_resp = received.iter()
-            .find(|m| m.starts_with("SIP/2.0") && SipParser::cseq_method(m).as_deref() == Some("BYE"))
+        let bye_resp = received
+            .iter()
+            .find(|m| {
+                m.starts_with("SIP/2.0") && SipParser::cseq_method(m).as_deref() == Some("BYE")
+            })
             .expect("BYE 必須有回應");
         assert!(bye_resp.starts_with("SIP/2.0 200"));
     }
@@ -135,16 +149,30 @@ async fn agent_call_flow_counts_rtp_and_ignores_late_cancel() {
 
     // ── 第 14 / 15 點：RTP session 計數與即時品質只反映進行中的通話 ──
     let snaps = snaps.lock().unwrap();
-    let during: Vec<_> = snaps.iter()
+    let during: Vec<_> = snaps
+        .iter()
         .filter(|s| s.calls_answered == 1 && s.calls_completed == 0)
         .collect();
     let after: Vec<_> = snaps.iter().filter(|s| s.calls_completed == 1).collect();
-    assert!(!during.is_empty() && !after.is_empty(), "測試時序不足：{:?}", *snaps);
-    assert!(during.iter().all(|s| s.rtp_sessions == 1), "通話中應有 1 個 RTP session");
-    assert!(after.iter().all(|s| s.rtp_sessions == 0), "通話結束後 RTP session 應歸零");
+    assert!(
+        !during.is_empty() && !after.is_empty(),
+        "測試時序不足：{:?}",
+        *snaps
+    );
+    assert!(
+        during.iter().all(|s| s.rtp_sessions == 1),
+        "通話中應有 1 個 RTP session"
+    );
+    assert!(
+        after.iter().all(|s| s.rtp_sessions == 0),
+        "通話結束後 RTP session 應歸零"
+    );
     assert!(
         after.iter().all(|s| s.rtp_sent_packets.is_none()),
         "已結束的通話不應再計入即時 RTP 品質"
     );
-    assert!(report.rtp_sent.unwrap_or(0) > 0, "最終報告仍須包含已結束通話的 RTP 統計");
+    assert!(
+        report.rtp_sent.unwrap_or(0) > 0,
+        "最終報告仍須包含已結束通話的 RTP 統計"
+    );
 }

@@ -8,9 +8,19 @@ use std::time::Duration;
 pub enum CpsPattern {
     #[default]
     Flat,
-    Ramp { start: f64, end: f64 },
-    Step { levels: Vec<CpsStep> },
-    Spike { base: f64, peak: f64, spike_at_pct: f64, spike_duration_secs: u64 },
+    Ramp {
+        start: f64,
+        end: f64,
+    },
+    Step {
+        levels: Vec<CpsStep>,
+    },
+    Spike {
+        base: f64,
+        peak: f64,
+        spike_at_pct: f64,
+        spike_duration_secs: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +35,9 @@ impl CpsPattern {
             Self::Flat => base_cps,
             Self::Ramp { start, end } => {
                 let total = total_duration.as_secs_f64();
-                if total <= 0.0 { return *end; }
+                if total <= 0.0 {
+                    return *end;
+                }
                 let t = (elapsed.as_secs_f64() / total).clamp(0.0, 1.0);
                 start + (end - start) * t
             }
@@ -39,13 +51,24 @@ impl CpsPattern {
                 }
                 levels.last().map_or(base_cps, |s| s.cps)
             }
-            Self::Spike { base, peak, spike_at_pct, spike_duration_secs } => {
+            Self::Spike {
+                base,
+                peak,
+                spike_at_pct,
+                spike_duration_secs,
+            } => {
                 let total = total_duration.as_secs_f64();
-                if total <= 0.0 { return *base; }
+                if total <= 0.0 {
+                    return *base;
+                }
                 let spike_start = total * spike_at_pct / 100.0;
                 let spike_end = spike_start + *spike_duration_secs as f64;
                 let t = elapsed.as_secs_f64();
-                if t >= spike_start && t < spike_end { *peak } else { *base }
+                if t >= spike_start && t < spike_end {
+                    *peak
+                } else {
+                    *base
+                }
             }
         }
     }
@@ -98,9 +121,9 @@ pub enum Mode {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentAccount {
     pub extension: String,
-    pub username:  String,
-    pub password:  String,
-    pub domain:    String,
+    pub username: String,
+    pub password: String,
+    pub domain: String,
 }
 
 impl AgentAccount {
@@ -117,30 +140,55 @@ impl AgentAccount {
         let mut first_content = true;
         let make = |ext: &str, user: &str, pw: &str, domain: Option<&str>| AgentAccount {
             extension: ext.to_string(),
-            username:  user.to_string(),
-            password:  pw.to_string(),
-            domain:    domain.filter(|d| !d.is_empty()).unwrap_or(default_domain).to_string(),
+            username: user.to_string(),
+            password: pw.to_string(),
+            domain: domain
+                .filter(|d| !d.is_empty())
+                .unwrap_or(default_domain)
+                .to_string(),
         };
 
         for (idx, raw) in text.lines().enumerate() {
             let line = raw.trim();
             let line_no = idx + 1;
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             if std::mem::take(&mut first_content) {
-                let head = line.split([',', ':', ' ', '\t']).next().unwrap_or("").to_lowercase();
-                if matches!(head.as_str(), "extension" | "ext" | "username" | "user") { continue; }
+                let head = line
+                    .split([',', ':', ' ', '\t'])
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                if matches!(head.as_str(), "extension" | "ext" | "username" | "user") {
+                    continue;
+                }
             }
 
             let acc = if line.contains(',') {
                 let p: Vec<&str> = line.split(',').map(str::trim).collect();
-                if p.len() < 3 { errors.push(format!("第 {} 行：需為 extension,username,password", line_no)); continue; }
+                if p.len() < 3 {
+                    errors.push(format!(
+                        "第 {} 行：需為 extension,username,password",
+                        line_no
+                    ));
+                    continue;
+                }
                 make(p[0], p[1], p[2], p.get(3).copied())
             } else if line.contains(':') {
                 let p: Vec<&str> = line.split(':').map(str::trim).collect();
-                make(p[0], p[0], p.get(1).copied().unwrap_or(""), p.get(2).copied())
+                make(
+                    p[0],
+                    p[0],
+                    p.get(1).copied().unwrap_or(""),
+                    p.get(2).copied(),
+                )
             } else {
                 let p: Vec<&str> = line.split_whitespace().collect();
-                if p.len() < 3 { errors.push(format!("第 {} 行：無法辨識格式", line_no)); continue; }
+                if p.len() < 3 {
+                    errors.push(format!("第 {} 行：無法辨識格式", line_no));
+                    continue;
+                }
                 make(p[0], p[1], p[2], p.get(3).copied())
             };
             if acc.extension.is_empty() {
@@ -198,7 +246,10 @@ impl AgentBehavior {
                 anyhow::bail!("座席{}的最小值（{}）不可大於最大值（{}）", name, min, max);
             }
         }
-        for (name, pct) in [("拒接比例", self.reject_pct), ("不接比例", self.no_answer_pct)] {
+        for (name, pct) in [
+            ("拒接比例", self.reject_pct),
+            ("不接比例", self.no_answer_pct),
+        ] {
             if !(pct.is_finite() && (0.0..=100.0).contains(&pct)) {
                 anyhow::bail!("座席{}需介於 0–100%（目前為 {}）", name, pct);
             }
@@ -319,38 +370,42 @@ pub struct Config {
     pub agent_behavior: AgentBehavior,
 }
 
-fn default_ack_timeout() -> u64 { 10 }
-fn default_bye_timeout() -> u64 { 150 }
+fn default_ack_timeout() -> u64 {
+    10
+}
+fn default_bye_timeout() -> u64 {
+    150
+}
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            server_addr:              "127.0.0.1:5060".to_string(),
-            local_addr:               None,
-            local_domain:             None,
-            caller_number:            "1000".to_string(),
-            callee_prefix:            "2".to_string(),
-            callee_range:             9999,
-            callee_fixed:             None,
-            cps:                      10.0,
-            cps_pattern:              CpsPattern::default(),
-            max_concurrent_calls:     100,
-            duration_secs:            60,
-            call_duration_secs:       30,
-            invite_timeout_secs:      8,
-            transport:                Transport::Udp,
-            logs_dir:                 "logs".to_string(),
-            rtp_base_port:            16000,
-            audio_file:               None,
-            codec:                    Codec::default(),
-            enable_rtp:               false,
-            dtmf_sequence:            None,
-            max_total_calls:          None,
-            mode:                     Mode::Caller,
-            agent_accounts:           Vec::new(),
-            agent_ack_timeout_secs:   default_ack_timeout(),
-            agent_bye_timeout_secs:   default_bye_timeout(),
-            agent_behavior:           AgentBehavior::default(),
+            server_addr: "127.0.0.1:5060".to_string(),
+            local_addr: None,
+            local_domain: None,
+            caller_number: "1000".to_string(),
+            callee_prefix: "2".to_string(),
+            callee_range: 9999,
+            callee_fixed: None,
+            cps: 10.0,
+            cps_pattern: CpsPattern::default(),
+            max_concurrent_calls: 100,
+            duration_secs: 60,
+            call_duration_secs: 30,
+            invite_timeout_secs: 8,
+            transport: Transport::Udp,
+            logs_dir: "logs".to_string(),
+            rtp_base_port: 16000,
+            audio_file: None,
+            codec: Codec::default(),
+            enable_rtp: false,
+            dtmf_sequence: None,
+            max_total_calls: None,
+            mode: Mode::Caller,
+            agent_accounts: Vec::new(),
+            agent_ack_timeout_secs: default_ack_timeout(),
+            agent_bye_timeout_secs: default_bye_timeout(),
+            agent_behavior: AgentBehavior::default(),
         }
     }
 }
@@ -402,11 +457,11 @@ impl Config {
 
     /// 從 CLI 參數快速建構
     pub fn from_args(
-        server_addr:          impl Into<String>,
-        cps:                  f64,
+        server_addr: impl Into<String>,
+        cps: f64,
         max_concurrent_calls: usize,
-        duration_secs:        u64,
-        call_duration_secs:   u64,
+        duration_secs: u64,
+        call_duration_secs: u64,
     ) -> Self {
         Self {
             server_addr: server_addr.into(),
@@ -432,7 +487,10 @@ mod tests {
 
     #[test]
     fn ramp_interpolates_linearly() {
-        let p = CpsPattern::Ramp { start: 10.0, end: 50.0 };
+        let p = CpsPattern::Ramp {
+            start: 10.0,
+            end: 50.0,
+        };
         let total = Duration::from_secs(100);
 
         let at_0 = p.current_cps(Duration::from_secs(0), 0.0, total);
@@ -449,9 +507,18 @@ mod tests {
     fn step_selects_correct_level() {
         let p = CpsPattern::Step {
             levels: vec![
-                CpsStep { cps: 5.0, duration_secs: 10 },
-                CpsStep { cps: 20.0, duration_secs: 10 },
-                CpsStep { cps: 50.0, duration_secs: 10 },
+                CpsStep {
+                    cps: 5.0,
+                    duration_secs: 10,
+                },
+                CpsStep {
+                    cps: 20.0,
+                    duration_secs: 10,
+                },
+                CpsStep {
+                    cps: 50.0,
+                    duration_secs: 10,
+                },
             ],
         };
         let total = Duration::from_secs(30);
@@ -483,31 +550,54 @@ mod tests {
     #[test]
     fn zero_or_invalid_cps_is_rejected() {
         for cps in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let cfg = Config { cps, ..Default::default() };
+            let cfg = Config {
+                cps,
+                ..Default::default()
+            };
             assert!(cfg.validate().is_err(), "cps={} 應被拒絕", cps);
         }
     }
 
     #[test]
     fn agent_mode_ignores_cps() {
-        let cfg = Config { mode: Mode::Agent, cps: 0.0, ..Default::default() };
+        let cfg = Config {
+            mode: Mode::Agent,
+            cps: 0.0,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn zero_concurrency_and_timeout_are_rejected() {
-        assert!(Config { max_concurrent_calls: 0, ..Default::default() }.validate().is_err());
-        assert!(Config { invite_timeout_secs: 0, ..Default::default() }.validate().is_err());
+        assert!(Config {
+            max_concurrent_calls: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(Config {
+            invite_timeout_secs: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
     fn local_addr_accepts_ip_or_ip_port() {
         for ok in ["127.0.0.1", "0.0.0.0:5070", "192.168.1.10:15060"] {
-            let cfg = Config { local_addr: Some(ok.into()), ..Default::default() };
+            let cfg = Config {
+                local_addr: Some(ok.into()),
+                ..Default::default()
+            };
             assert!(cfg.validate().is_ok(), "{} 應為合法的本機位址", ok);
         }
         for bad in ["localhost", "0.0.0.0:", "0.0.0.0:99999", "1.2.3"] {
-            let cfg = Config { local_addr: Some(bad.into()), ..Default::default() };
+            let cfg = Config {
+                local_addr: Some(bad.into()),
+                ..Default::default()
+            };
             assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
         }
     }
@@ -515,23 +605,56 @@ mod tests {
     #[test]
     fn agent_behavior_validation() {
         let ok = AgentBehavior {
-            ring_min_secs: 1.0, ring_max_secs: 3.0, reject_pct: 20.0, no_answer_pct: 80.0,
-            talk_min_secs: 5.0, talk_max_secs: 5.0, wrap_up_secs: 2.0,
+            ring_min_secs: 1.0,
+            ring_max_secs: 3.0,
+            reject_pct: 20.0,
+            no_answer_pct: 80.0,
+            talk_min_secs: 5.0,
+            talk_max_secs: 5.0,
+            wrap_up_secs: 2.0,
         };
         assert!(ok.validate().is_ok());
         assert!(AgentBehavior::default().validate().is_ok());
         let bad = [
-            AgentBehavior { ring_min_secs: 3.0, ring_max_secs: 1.0, ..Default::default() },
-            AgentBehavior { talk_max_secs: -1.0, ..Default::default() },
-            AgentBehavior { wrap_up_secs: f64::NAN, ..Default::default() },
-            AgentBehavior { reject_pct: 101.0, ..Default::default() },
-            AgentBehavior { reject_pct: 60.0, no_answer_pct: 50.0, ..Default::default() },
+            AgentBehavior {
+                ring_min_secs: 3.0,
+                ring_max_secs: 1.0,
+                ..Default::default()
+            },
+            AgentBehavior {
+                talk_max_secs: -1.0,
+                ..Default::default()
+            },
+            AgentBehavior {
+                wrap_up_secs: f64::NAN,
+                ..Default::default()
+            },
+            AgentBehavior {
+                reject_pct: 101.0,
+                ..Default::default()
+            },
+            AgentBehavior {
+                reject_pct: 60.0,
+                no_answer_pct: 50.0,
+                ..Default::default()
+            },
         ];
         for b in bad {
             assert!(b.validate().is_err(), "{:?} 應被拒絕", b);
             // 只在座席模式檢查
-            assert!(Config { agent_behavior: b.clone(), ..Default::default() }.validate().is_ok());
-            assert!(Config { mode: Mode::Agent, agent_behavior: b, ..Default::default() }.validate().is_err());
+            assert!(Config {
+                agent_behavior: b.clone(),
+                ..Default::default()
+            }
+            .validate()
+            .is_ok());
+            assert!(Config {
+                mode: Mode::Agent,
+                agent_behavior: b,
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
         }
     }
 
@@ -546,16 +669,27 @@ mod tests {
                     1004:pw4:other.example\n\
                     1005 u1005 pw5\r\n";
         let list = AgentAccount::parse_list(text, "10.0.0.1").unwrap();
-        let got: Vec<_> = list.iter()
-            .map(|a| (a.extension.as_str(), a.username.as_str(), a.password.as_str(), a.domain.as_str()))
+        let got: Vec<_> = list
+            .iter()
+            .map(|a| {
+                (
+                    a.extension.as_str(),
+                    a.username.as_str(),
+                    a.password.as_str(),
+                    a.domain.as_str(),
+                )
+            })
             .collect();
-        assert_eq!(got, vec![
-            ("1001", "u1001", "pw1", "sip.example"),
-            ("1002", "u1002", "pw2", "10.0.0.1"),
-            ("1003", "1003",  "pw3", "10.0.0.1"),
-            ("1004", "1004",  "pw4", "other.example"),
-            ("1005", "u1005", "pw5", "10.0.0.1"),
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                ("1001", "u1001", "pw1", "sip.example"),
+                ("1002", "u1002", "pw2", "10.0.0.1"),
+                ("1003", "1003", "pw3", "10.0.0.1"),
+                ("1004", "1004", "pw4", "other.example"),
+                ("1005", "u1005", "pw5", "10.0.0.1"),
+            ]
+        );
     }
 
     #[test]
@@ -569,7 +703,9 @@ mod tests {
 
     #[test]
     fn account_list_rejects_bad_lines_and_duplicates() {
-        let err = AgentAccount::parse_list("1001,u\n1002\n1003,u,p\n1003:p", "").unwrap_err().to_string();
+        let err = AgentAccount::parse_list("1001,u\n1002\n1003,u,p\n1003:p", "")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("第 1 行"), "{}", err);
         assert!(err.contains("第 2 行"), "{}", err);
         assert!(err.contains("第 4 行") && err.contains("重複"), "{}", err);

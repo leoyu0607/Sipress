@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 /// SIP 對話狀態機
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 
 /// RFC 3261 §17.1.1.1：RTT 估計值，UDP 重傳的起始間隔
 pub const T1: Duration = Duration::from_millis(500);
@@ -10,19 +10,19 @@ pub const T2: Duration = Duration::from_secs(4);
 /// 單一通話的完整狀態
 #[derive(Debug, Clone)]
 pub struct Dialog {
-    pub call_id:    String,
-    pub from_tag:   String,
-    pub to_tag:     Option<String>,   // 收到 200 OK 後才有
-    pub branch:     String,
-    pub cseq:       u32,
-    pub state:      DialogState,
+    pub call_id: String,
+    pub from_tag: String,
+    pub to_tag: Option<String>, // 收到 200 OK 後才有
+    pub branch: String,
+    pub cseq: u32,
+    pub state: DialogState,
 
     // 計時
-    pub invite_sent_at:  Instant,
-    pub ringing_at:      Option<Instant>,  // 收到 180
-    pub answered_at:     Option<Instant>,  // 收到 200 OK
-    pub bye_sent_at:     Option<Instant>,
-    pub ended_at:        Option<Instant>,
+    pub invite_sent_at: Instant,
+    pub ringing_at: Option<Instant>,  // 收到 180
+    pub answered_at: Option<Instant>, // 收到 200 OK
+    pub bye_sent_at: Option<Instant>,
+    pub ended_at: Option<Instant>,
 
     // 目標號碼（記錄用）
     pub callee: String,
@@ -35,9 +35,9 @@ pub struct Dialog {
 
     // UDP 重傳（INVITE：Timer A；BYE：Timer E）
     /// 等待回應中的請求原文（重傳時原樣送出）
-    retx_msg:      Option<String>,
+    retx_msg: Option<String>,
     retx_interval: Duration,
-    next_retx_at:  Option<Instant>,
+    next_retx_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,29 +73,29 @@ impl Dialog {
         Self {
             call_id,
             from_tag,
-            to_tag:         None,
+            to_tag: None,
             branch,
-            cseq:           1,
-            state:          DialogState::Calling,
+            cseq: 1,
+            state: DialogState::Calling,
             invite_sent_at: Instant::now(),
-            ringing_at:     None,
-            answered_at:    None,
-            bye_sent_at:    None,
-            ended_at:       None,
+            ringing_at: None,
+            answered_at: None,
+            bye_sent_at: None,
+            ended_at: None,
             callee,
             local_rtp_port,
             remote_contact: None,
-            retx_msg:       None,
-            retx_interval:  T1,
-            next_retx_at:   None,
+            retx_msg: None,
+            retx_interval: T1,
+            next_retx_at: None,
         }
     }
 
     /// 送出 INVITE / BYE 後呼叫：記住請求原文並在 T1 後開始重傳
     pub fn arm_retransmit(&mut self, msg: String, now: Instant) {
-        self.retx_msg      = Some(msg);
+        self.retx_msg = Some(msg);
         self.retx_interval = T1;
-        self.next_retx_at  = Some(now + T1);
+        self.next_retx_at = Some(now + T1);
     }
 
     /// 若重傳時間已到，回傳要重送的請求並排定下一次重傳
@@ -105,10 +105,10 @@ impl Dialog {
     /// - 其他狀態（已收到 1xx / 最終回應）：停止重傳
     pub fn due_retransmit(&mut self, now: Instant) -> Option<String> {
         let max_interval = match self.state {
-            DialogState::Calling     => None,
+            DialogState::Calling => None,
             DialogState::Terminating => Some(T2),
             _ => {
-                self.retx_msg     = None;
+                self.retx_msg = None;
                 self.next_retx_at = None;
                 return None;
             }
@@ -118,7 +118,7 @@ impl Dialog {
         }
         let doubled = self.retx_interval * 2;
         self.retx_interval = max_interval.map_or(doubled, |m| doubled.min(m));
-        self.next_retx_at  = Some(now + self.retx_interval);
+        self.next_retx_at = Some(now + self.retx_interval);
         self.retx_msg.clone()
     }
 
@@ -132,42 +132,45 @@ impl Dialog {
     /// 收到 180 Ringing → 記錄 PDD
     pub fn on_ringing(&mut self) {
         if matches!(self.state, DialogState::Calling | DialogState::Trying) {
-            self.state     = DialogState::Ringing;
+            self.state = DialogState::Ringing;
             self.ringing_at = Some(Instant::now());
         }
     }
 
     /// 收到 200 OK → 記錄通話建立時間，準備送 ACK
     pub fn on_ok(&mut self, to_tag: String) {
-        if matches!(self.state, DialogState::Calling | DialogState::Trying | DialogState::Ringing) {
-            self.state       = DialogState::Connected;
-            self.to_tag      = Some(to_tag);
+        if matches!(
+            self.state,
+            DialogState::Calling | DialogState::Trying | DialogState::Ringing
+        ) {
+            self.state = DialogState::Connected;
+            self.to_tag = Some(to_tag);
             self.answered_at = Some(Instant::now());
         }
     }
 
     /// 準備送 BYE
     pub fn on_bye_sent(&mut self) {
-        self.state       = DialogState::Terminating;
+        self.state = DialogState::Terminating;
         self.bye_sent_at = Some(Instant::now());
-        self.cseq       += 1;
+        self.cseq += 1;
     }
 
     /// 收到 BYE 的 200 OK
     pub fn on_bye_ok(&mut self) {
-        self.state    = DialogState::Completed;
+        self.state = DialogState::Completed;
         self.ended_at = Some(Instant::now());
     }
 
     /// 收到錯誤回應
     pub fn on_error(&mut self, code: u16) {
-        self.state    = DialogState::Failed(code);
+        self.state = DialogState::Failed(code);
         self.ended_at = Some(Instant::now());
     }
 
     /// 逾時
     pub fn on_timeout(&mut self) {
-        self.state    = DialogState::TimedOut;
+        self.state = DialogState::TimedOut;
         self.ended_at = Some(Instant::now());
     }
 
@@ -175,16 +178,14 @@ impl Dialog {
 
     /// PDD（Post Dial Delay）：INVITE → 180 Ringing（毫秒）
     pub fn pdd_ms(&self) -> Option<f64> {
-        self.ringing_at.map(|r| {
-            r.duration_since(self.invite_sent_at).as_secs_f64() * 1000.0
-        })
+        self.ringing_at
+            .map(|r| r.duration_since(self.invite_sent_at).as_secs_f64() * 1000.0)
     }
 
     /// 通話建立時間：INVITE → 200 OK（毫秒）
     pub fn setup_time_ms(&self) -> Option<f64> {
-        self.answered_at.map(|a| {
-            a.duration_since(self.invite_sent_at).as_secs_f64() * 1000.0
-        })
+        self.answered_at
+            .map(|a| a.duration_since(self.invite_sent_at).as_secs_f64() * 1000.0)
     }
 
     /// 通話持續時間：200 OK → BYE 200 OK（秒）
@@ -208,7 +209,13 @@ mod tests {
     use super::*;
 
     fn new_dialog() -> Dialog {
-        Dialog::new("call-1".into(), "tag-1".into(), "branch-1".into(), "2001".into(), 16000)
+        Dialog::new(
+            "call-1".into(),
+            "tag-1".into(),
+            "branch-1".into(),
+            "2001".into(),
+            16000,
+        )
     }
 
     #[test]
@@ -305,12 +312,21 @@ mod tests {
         let mut t = t0;
         for gap_ms in [500, 1000, 2000, 4000, 8000] {
             t += Duration::from_millis(gap_ms);
-            assert_eq!(d.due_retransmit(t).as_deref(), Some("INVITE"), "t+{}ms", gap_ms);
+            assert_eq!(
+                d.due_retransmit(t).as_deref(),
+                Some("INVITE"),
+                "t+{}ms",
+                gap_ms
+            );
             assert_eq!(d.due_retransmit(t), None, "同一時間點不可重複重傳");
         }
 
         d.on_trying();
-        assert_eq!(d.due_retransmit(t + Duration::from_secs(60)), None, "收到 1xx 後停止重傳");
+        assert_eq!(
+            d.due_retransmit(t + Duration::from_secs(60)),
+            None,
+            "收到 1xx 後停止重傳"
+        );
     }
 
     #[test]
@@ -324,23 +340,38 @@ mod tests {
         let mut t = t0;
         for gap_ms in [500, 1000, 2000, 4000, 4000, 4000] {
             t += Duration::from_millis(gap_ms);
-            assert_eq!(d.due_retransmit(t).as_deref(), Some("BYE"), "t+{}ms", gap_ms);
+            assert_eq!(
+                d.due_retransmit(t).as_deref(),
+                Some("BYE"),
+                "t+{}ms",
+                gap_ms
+            );
         }
 
         d.on_bye_ok();
-        assert_eq!(d.due_retransmit(t + Duration::from_secs(60)), None, "收到最終回應後停止重傳");
+        assert_eq!(
+            d.due_retransmit(t + Duration::from_secs(60)),
+            None,
+            "收到最終回應後停止重傳"
+        );
     }
 
     #[test]
     fn no_retransmit_without_arming() {
         let mut d = new_dialog();
-        assert_eq!(d.due_retransmit(Instant::now() + Duration::from_secs(10)), None);
+        assert_eq!(
+            d.due_retransmit(Instant::now() + Duration::from_secs(10)),
+            None
+        );
     }
 
     #[test]
     fn duration_requires_completed_state() {
         let mut d = new_dialog();
         d.on_ok("tag".into());
-        assert!(d.call_duration_secs().is_none(), "duration requires Completed state");
+        assert!(
+            d.call_duration_secs().is_none(),
+            "duration requires Completed state"
+        );
     }
 }

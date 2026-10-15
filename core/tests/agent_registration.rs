@@ -33,7 +33,12 @@ async fn spawn_registrar() -> SocketAddr {
 }
 
 fn account(name: &str) -> AgentAccount {
-    AgentAccount { extension: name.into(), username: name.into(), password: "pw".into(), domain: String::new() }
+    AgentAccount {
+        extension: name.into(),
+        username: name.into(),
+        password: "pw".into(),
+        domain: String::new(),
+    }
 }
 
 /// 跑座席引擎並收集每秒的快照
@@ -41,10 +46,10 @@ async fn run_agents(accounts: Vec<AgentAccount>) -> Vec<StatsSnapshot> {
     let server = spawn_registrar().await;
     let logs = std::env::temp_dir().join(format!("sipress-agentreg-test-{}", std::process::id()));
     let cfg = Config {
-        server_addr:    server.to_string(),
-        logs_dir:       logs.to_string_lossy().into_owned(),
-        mode:           Mode::Agent,
-        duration_secs:  2,
+        server_addr: server.to_string(),
+        logs_dir: logs.to_string_lossy().into_owned(),
+        mode: Mode::Agent,
+        duration_secs: 2,
         agent_accounts: accounts,
         ..Default::default()
     };
@@ -65,17 +70,32 @@ async fn run_agents(accounts: Vec<AgentAccount>) -> Vec<StatsSnapshot> {
 #[tokio::test]
 async fn all_accounts_registered_are_reported() {
     let snaps = run_agents(vec![account("ok1001"), account("ok1002")]).await;
-    assert!(snaps.iter().all(|s| s.agents_total == 2), "agents_total 應為帳號數：{:?}", snaps);
-    assert_eq!(snaps.iter().map(|s| s.agents_registered).max(), Some(2), "{:?}", snaps);
+    assert!(
+        snaps.iter().all(|s| s.agents_total == 2),
+        "agents_total 應為帳號數：{:?}",
+        snaps
+    );
+    assert_eq!(
+        snaps.iter().map(|s| s.agents_registered).max(),
+        Some(2),
+        "{:?}",
+        snaps
+    );
 }
 
 #[tokio::test]
 async fn rejected_accounts_are_not_counted() {
-    let snaps = run_agents(vec![account("ok1001"), account("bad1002"), account("bad1003")]).await;
+    let snaps = run_agents(vec![
+        account("ok1001"),
+        account("bad1002"),
+        account("bad1003"),
+    ])
+    .await;
     assert!(snaps.iter().all(|s| s.agents_total == 3));
     assert!(
         snaps.iter().all(|s| s.agents_registered <= 1),
-        "被拒絕的帳號不可計入已註冊：{:?}", snaps
+        "被拒絕的帳號不可計入已註冊：{:?}",
+        snaps
     );
     assert_eq!(snaps.last().unwrap().agents_registered, 1);
 }

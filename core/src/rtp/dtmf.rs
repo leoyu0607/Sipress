@@ -5,23 +5,23 @@ pub const PT_TELEPHONE_EVENT: u8 = 101;
 
 pub fn digit_to_event(ch: char) -> Option<u8> {
     match ch {
-        '0'       => Some(0),
-        '1'       => Some(1),
-        '2'       => Some(2),
-        '3'       => Some(3),
-        '4'       => Some(4),
-        '5'       => Some(5),
-        '6'       => Some(6),
-        '7'       => Some(7),
-        '8'       => Some(8),
-        '9'       => Some(9),
-        '*'       => Some(10),
-        '#'       => Some(11),
+        '0' => Some(0),
+        '1' => Some(1),
+        '2' => Some(2),
+        '3' => Some(3),
+        '4' => Some(4),
+        '5' => Some(5),
+        '6' => Some(6),
+        '7' => Some(7),
+        '8' => Some(8),
+        '9' => Some(9),
+        '*' => Some(10),
+        '#' => Some(11),
         'A' | 'a' => Some(12),
         'B' | 'b' => Some(13),
         'C' | 'c' => Some(14),
         'D' | 'd' => Some(15),
-        _         => None,
+        _ => None,
     }
 }
 
@@ -56,14 +56,26 @@ pub fn build_dtmf_packets(
     for i in 0..frames {
         let dur_ts = ((i + 1) * 160) as u16;
         let payload = dtmf_payload(event, false, volume, dur_ts);
-        pkts.push(RtpPacket::new(PT_TELEPHONE_EVENT, seq, ts_start, ssrc, payload));
+        pkts.push(RtpPacket::new(
+            PT_TELEPHONE_EVENT,
+            seq,
+            ts_start,
+            ssrc,
+            payload,
+        ));
         seq = seq.wrapping_add(1);
     }
 
     let final_dur = (frames * 160) as u16;
     for _ in 0..3 {
         let payload = dtmf_payload(event, true, volume, final_dur);
-        pkts.push(RtpPacket::new(PT_TELEPHONE_EVENT, seq, ts_start, ssrc, payload));
+        pkts.push(RtpPacket::new(
+            PT_TELEPHONE_EVENT,
+            seq,
+            ts_start,
+            ssrc,
+            payload,
+        ));
         seq = seq.wrapping_add(1);
     }
 
@@ -83,7 +95,9 @@ pub fn parse_dtmf_sequence(seq: &str) -> Vec<DtmfAction> {
     let mut actions = Vec::new();
     for part in seq.split(',') {
         let part = part.trim();
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some(ms_str) = part.strip_prefix('w').or_else(|| part.strip_prefix('W')) {
             if let Ok(ms) = ms_str.parse::<u32>() {
                 actions.push(DtmfAction::Wait(ms));
@@ -140,13 +154,16 @@ mod tests {
     #[test]
     fn parse_sequence() {
         let actions = parse_dtmf_sequence("1,w2000,2,w500,#");
-        assert_eq!(actions, vec![
-            DtmfAction::Digit('1', 160),
-            DtmfAction::Wait(2000),
-            DtmfAction::Digit('2', 160),
-            DtmfAction::Wait(500),
-            DtmfAction::Digit('#', 160),
-        ]);
+        assert_eq!(
+            actions,
+            vec![
+                DtmfAction::Digit('1', 160),
+                DtmfAction::Wait(2000),
+                DtmfAction::Digit('2', 160),
+                DtmfAction::Wait(500),
+                DtmfAction::Digit('#', 160),
+            ]
+        );
     }
 
     #[test]

@@ -19,13 +19,13 @@ use tokio::sync::mpsc;
 /// 單一模式（民眾端或座席端）的執行狀態
 #[derive(Default)]
 pub struct Session {
-    pub snapshot:   Mutex<Option<StatsSnapshot>>,
-    pub report:     Mutex<Option<FinalReport>>,
+    pub snapshot: Mutex<Option<StatsSnapshot>>,
+    pub report: Mutex<Option<FinalReport>>,
     /// 引擎執行失敗的原因（get_report 會回傳此錯誤給前端）
-    pub error:      Mutex<Option<String>>,
-    pub stop_tx:    Mutex<Option<mpsc::Sender<()>>>,
+    pub error: Mutex<Option<String>>,
+    pub stop_tx: Mutex<Option<mpsc::Sender<()>>>,
     /// 此模式是否有壓測正在執行（含停止後的收尾階段），防止重複啟動
-    pub running:    AtomicBool,
+    pub running: AtomicBool,
 }
 
 impl Session {
@@ -51,7 +51,12 @@ impl Session {
             let mut snap = self.snapshot.lock().unwrap();
             match snap.as_mut() {
                 Some(s) => s.finished = true,
-                None    => *snap = Some(StatsSnapshot { finished: true, ..Default::default() }),
+                None => {
+                    *snap = Some(StatsSnapshot {
+                        finished: true,
+                        ..Default::default()
+                    })
+                }
             }
         }
         *self.stop_tx.lock().unwrap() = None;
@@ -63,14 +68,14 @@ impl Session {
 #[derive(Default)]
 pub struct AppState {
     pub caller: Arc<Session>,
-    pub agent:  Arc<Session>,
+    pub agent: Arc<Session>,
 }
 
 impl AppState {
     fn session(&self, mode: &Mode) -> Arc<Session> {
         match mode {
             Mode::Caller => Arc::clone(&self.caller),
-            Mode::Agent  => Arc::clone(&self.agent),
+            Mode::Agent => Arc::clone(&self.agent),
         }
     }
 }
@@ -80,21 +85,22 @@ impl AppState {
 /// 啟動壓測
 /// 前端呼叫：await invoke('start_test', { config: {...} })
 #[tauri::command]
-pub async fn start_test(
-    state:  State<'_, Arc<AppState>>,
-    config: Config,
-) -> Result<String, String> {
+pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Result<String, String> {
     config.validate().map_err(|e| e.to_string())?;
     let state = state.session(&config.mode);
     if !state.try_begin() {
-        let side = if config.mode == Mode::Agent { "座席端" } else { "民眾端" };
+        let side = if config.mode == Mode::Agent {
+            "座席端"
+        } else {
+            "民眾端"
+        };
         return Err(format!("{}已有壓測正在執行，請先停止或等待結束", side));
     }
 
     // 清除舊結果
     *state.snapshot.lock().unwrap() = None;
-    *state.report.lock().unwrap()   = None;
-    *state.error.lock().unwrap()    = None;
+    *state.report.lock().unwrap() = None;
+    *state.error.lock().unwrap() = None;
 
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
@@ -109,7 +115,7 @@ pub async fn start_test(
     let run = tokio::spawn(async move {
         match mode {
             Mode::Caller => {
-                let engine      = Engine::new(config);
+                let engine = Engine::new(config);
                 let stop_handle = engine.stop_handle();
                 let forward = tokio::spawn(async move {
                     if stop_rx.recv().await.is_some() {
@@ -122,7 +128,7 @@ pub async fn start_test(
                 r
             }
             Mode::Agent => {
-                let engine      = AgentEngine::new(config);
+                let engine = AgentEngine::new(config);
                 let stop_handle = engine.stop_handle();
                 // 將前端的 stop 訊號轉發成 watch::Sender(true)
                 // 讓 AgentEngine 可以走完 graceful stop（REGISTER Expires=0 + drain）
@@ -140,7 +146,7 @@ pub async fn start_test(
     });
     tokio::spawn(async move {
         let result = match run.await {
-            Ok(r)  => r.map_err(|e| e.to_string()),
+            Ok(r) => r.map_err(|e| e.to_string()),
             Err(e) => Err(format!("壓測引擎異常終止: {}", e)),
         };
         state.finish(result);
@@ -151,10 +157,7 @@ pub async fn start_test(
 
 /// 手動停止指定模式的壓測
 #[tauri::command]
-pub async fn stop_test(
-    state: State<'_, Arc<AppState>>,
-    mode:  Mode,
-) -> Result<String, String> {
+pub async fn stop_test(state: State<'_, Arc<AppState>>, mode: Mode) -> Result<String, String> {
     // Take the sender out BEFORE any await so MutexGuard is not held across threads
     let tx = state.session(&mode).stop_tx.lock().unwrap().take();
     if let Some(tx) = tx {
@@ -167,10 +170,7 @@ pub async fn stop_test(
 
 /// 取得即時快照（前端每秒輪詢）
 #[tauri::command]
-pub fn get_snapshot(
-    state: State<'_, Arc<AppState>>,
-    mode:  Mode,
-) -> Option<StatsSnapshot> {
+pub fn get_snapshot(state: State<'_, Arc<AppState>>, mode: Mode) -> Option<StatsSnapshot> {
     state.session(&mode).snapshot.lock().unwrap().clone()
 }
 
@@ -178,7 +178,7 @@ pub fn get_snapshot(
 #[tauri::command]
 pub fn get_report(
     state: State<'_, Arc<AppState>>,
-    mode:  Mode,
+    mode: Mode,
 ) -> Result<Option<FinalReport>, String> {
     let session = state.session(&mode);
     if let Some(e) = session.error.lock().unwrap().clone() {
@@ -192,19 +192,17 @@ pub fn get_report(
 /// 前端在新增帳號後立即呼叫
 #[tauri::command]
 pub async fn register_account(
-    server:    String,
-    domain:    Option<String>,
-    username:  String,
-    password:  String,
-    expires:   Option<u32>,
+    server: String,
+    domain: Option<String>,
+    username: String,
+    password: String,
+    expires: Option<u32>,
     transport: Option<String>,
 ) -> Result<RegisterResult, String> {
-    let dom_owned = domain
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            // 沒指定 domain → 取 server 的 IP 部分
-            server.split(':').next().unwrap_or(&server).to_string()
-        });
+    let dom_owned = domain.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        // 沒指定 domain → 取 server 的 IP 部分
+        server.split(':').next().unwrap_or(&server).to_string()
+    });
     let tp = transport.unwrap_or_else(|| "UDP".into());
     let exp = expires.unwrap_or(3600);
 
@@ -216,12 +214,17 @@ pub async fn register_account(
 /// 產生 HTML 報告字串（前端負責下載或開啟）
 #[tauri::command]
 pub fn get_html_report(
-    state:       State<'_, Arc<AppState>>,
-    mode:        Mode,
+    state: State<'_, Arc<AppState>>,
+    mode: Mode,
     server_addr: String,
-    timestamp:   String,
+    timestamp: String,
 ) -> Result<String, String> {
-    let report = state.session(&mode).report.lock().unwrap().clone()
+    let report = state
+        .session(&mode)
+        .report
+        .lock()
+        .unwrap()
+        .clone()
         .ok_or_else(|| "尚無測試結果，請先完成或停止一次壓測".to_string())?;
     Ok(HtmlReporter::render(&report, &timestamp, &server_addr))
 }
@@ -266,10 +269,21 @@ mod tests {
         assert!(state.try_begin());
         state.finish(Err("無效的 server 位址".into()));
 
-        assert_eq!(state.error.lock().unwrap().as_deref(), Some("無效的 server 位址"));
+        assert_eq!(
+            state.error.lock().unwrap().as_deref(),
+            Some("無效的 server 位址")
+        );
         assert!(state.report.lock().unwrap().is_none());
-        let snap = state.snapshot.lock().unwrap().clone().expect("應有 snapshot");
-        assert!(snap.finished, "前端靠 finished 偵測結束，失敗時也必須設為 true");
+        let snap = state
+            .snapshot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("應有 snapshot");
+        assert!(
+            snap.finished,
+            "前端靠 finished 偵測結束，失敗時也必須設為 true"
+        );
         assert!(!state.running.load(Ordering::SeqCst));
     }
 
@@ -277,7 +291,10 @@ mod tests {
     fn finish_marks_existing_snapshot_finished() {
         let state = Session::default();
         assert!(state.try_begin());
-        *state.snapshot.lock().unwrap() = Some(StatsSnapshot { calls_initiated: 7, ..Default::default() });
+        *state.snapshot.lock().unwrap() = Some(StatsSnapshot {
+            calls_initiated: 7,
+            ..Default::default()
+        });
         state.finish(Ok(sample_report()));
 
         let snap = state.snapshot.lock().unwrap().clone().unwrap();
@@ -290,11 +307,17 @@ mod tests {
     fn caller_and_agent_run_independently() {
         let app = AppState::default();
         assert!(app.session(&Mode::Caller).try_begin());
-        assert!(app.session(&Mode::Agent).try_begin(), "民眾端執行中，座席端仍應可啟動");
+        assert!(
+            app.session(&Mode::Agent).try_begin(),
+            "民眾端執行中，座席端仍應可啟動"
+        );
         assert!(!app.session(&Mode::Agent).try_begin());
 
         app.session(&Mode::Agent).finish(Ok(sample_report()));
-        assert!(app.caller.running.load(Ordering::SeqCst), "座席端結束不應影響民眾端");
+        assert!(
+            app.caller.running.load(Ordering::SeqCst),
+            "座席端結束不應影響民眾端"
+        );
         assert!(app.caller.report.lock().unwrap().is_none());
         assert!(app.agent.report.lock().unwrap().is_some());
         assert!(app.caller.snapshot.lock().unwrap().is_none());
@@ -305,8 +328,14 @@ mod tests {
     #[test]
     fn mode_deserializes_from_lowercase_json_only() {
         // Tauri 會把前端 invoke 的 `mode` 參數以 JSON 反序列化
-        assert_eq!(serde_json::from_str::<Mode>("\"caller\"").unwrap(), Mode::Caller);
-        assert_eq!(serde_json::from_str::<Mode>("\"agent\"").unwrap(), Mode::Agent);
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"caller\"").unwrap(),
+            Mode::Caller
+        );
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"agent\"").unwrap(),
+            Mode::Agent
+        );
         assert!(serde_json::from_str::<Mode>("\"Caller\"").is_err());
         assert!(serde_json::from_str::<Mode>("\"x\"").is_err());
     }
@@ -316,8 +345,14 @@ mod tests {
         let app = AppState::default();
         assert!(Arc::ptr_eq(&app.session(&Mode::Caller), &app.caller));
         assert!(Arc::ptr_eq(&app.session(&Mode::Agent), &app.agent));
-        assert!(Arc::ptr_eq(&app.session(&Mode::Caller), &app.session(&Mode::Caller)));
-        assert!(!Arc::ptr_eq(&app.caller, &app.agent), "兩端必須是不同的 Session");
+        assert!(Arc::ptr_eq(
+            &app.session(&Mode::Caller),
+            &app.session(&Mode::Caller)
+        ));
+        assert!(
+            !Arc::ptr_eq(&app.caller, &app.agent),
+            "兩端必須是不同的 Session"
+        );
     }
 
     #[test]
@@ -325,17 +360,26 @@ mod tests {
         let app = AppState::default();
         assert!(app.caller.try_begin());
         assert!(app.agent.try_begin());
-        *app.caller.snapshot.lock().unwrap() = Some(StatsSnapshot { calls_initiated: 3, ..Default::default() });
+        *app.caller.snapshot.lock().unwrap() = Some(StatsSnapshot {
+            calls_initiated: 3,
+            ..Default::default()
+        });
 
         app.agent.finish(Err("座席端失敗".into()));
 
-        assert!(app.caller.running.load(Ordering::SeqCst), "民眾端應仍在執行");
+        assert!(
+            app.caller.running.load(Ordering::SeqCst),
+            "民眾端應仍在執行"
+        );
         assert!(app.caller.error.lock().unwrap().is_none());
         assert!(app.caller.report.lock().unwrap().is_none());
         let snap = app.caller.snapshot.lock().unwrap().clone().unwrap();
         assert!(!snap.finished, "民眾端 snapshot 不應被標成結束");
         assert_eq!(snap.calls_initiated, 3);
-        assert_eq!(app.agent.error.lock().unwrap().as_deref(), Some("座席端失敗"));
+        assert_eq!(
+            app.agent.error.lock().unwrap().as_deref(),
+            Some("座席端失敗")
+        );
         assert!(!app.agent.running.load(Ordering::SeqCst));
     }
 
@@ -350,16 +394,28 @@ mod tests {
             // 民眾端先結束，並在座席端仍執行中時重新啟動
             app.caller.finish(Ok(sample_report()));
             assert!(app.agent.running.load(Ordering::SeqCst));
-            assert!(app.caller.try_begin(), "round {round}: 座席端執行中，民眾端應可重啟");
-            assert!(app.caller.report.lock().unwrap().is_some(), "try_begin 不清除舊報告（由 start_test 清除）");
+            assert!(
+                app.caller.try_begin(),
+                "round {round}: 座席端執行中，民眾端應可重啟"
+            );
+            assert!(
+                app.caller.report.lock().unwrap().is_some(),
+                "try_begin 不清除舊報告（由 start_test 清除）"
+            );
 
             app.agent.finish(Err(format!("err{round}")));
             assert!(app.caller.running.load(Ordering::SeqCst));
             app.caller.finish(Ok(sample_report()));
 
-            assert!(!app.caller.running.load(Ordering::SeqCst) && !app.agent.running.load(Ordering::SeqCst));
+            assert!(
+                !app.caller.running.load(Ordering::SeqCst)
+                    && !app.agent.running.load(Ordering::SeqCst)
+            );
             assert!(app.caller.error.lock().unwrap().is_none());
-            assert_eq!(app.agent.error.lock().unwrap().clone(), Some(format!("err{round}")));
+            assert_eq!(
+                app.agent.error.lock().unwrap().clone(),
+                Some(format!("err{round}"))
+            );
             assert!(app.agent.report.lock().unwrap().is_none());
             // 清掉本輪殘留，下一輪重新開始
             *app.caller.report.lock().unwrap() = None;
@@ -373,24 +429,46 @@ mod tests {
 
         let wins = |mode: Mode, app: &Arc<AppState>| {
             let barrier = Arc::new(std::sync::Barrier::new(16));
-            let handles: Vec<_> = (0..16).map(|_| {
-                let (app, b, mode) = (Arc::clone(app), Arc::clone(&barrier), mode.clone());
-                std::thread::spawn(move || { b.wait(); app.session(&mode).try_begin() })
-            }).collect();
-            handles.into_iter().map(|h| h.join().unwrap()).filter(|w| *w).count()
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let (app, b, mode) = (Arc::clone(app), Arc::clone(&barrier), mode.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        app.session(&mode).try_begin()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|w| *w)
+                .count()
         };
-        assert_eq!(wins(Mode::Caller, &app), 1, "同一模式 16 個執行緒只能有一個成功");
+        assert_eq!(
+            wins(Mode::Caller, &app),
+            1,
+            "同一模式 16 個執行緒只能有一個成功"
+        );
         // 民眾端已被佔用不影響座席端
         assert_eq!(wins(Mode::Agent, &app), 1);
 
         // 兩個模式同時競爭：各一個成功
         let app2 = Arc::new(AppState::default());
         let barrier = Arc::new(std::sync::Barrier::new(32));
-        let handles: Vec<_> = (0..32).map(|i| {
-            let (app, b) = (Arc::clone(&app2), Arc::clone(&barrier));
-            let mode = if i % 2 == 0 { Mode::Caller } else { Mode::Agent };
-            std::thread::spawn(move || { b.wait(); (i % 2, app.session(&mode).try_begin()) })
-        }).collect();
+        let handles: Vec<_> = (0..32)
+            .map(|i| {
+                let (app, b) = (Arc::clone(&app2), Arc::clone(&barrier));
+                let mode = if i % 2 == 0 {
+                    Mode::Caller
+                } else {
+                    Mode::Agent
+                };
+                std::thread::spawn(move || {
+                    b.wait();
+                    (i % 2, app.session(&mode).try_begin())
+                })
+            })
+            .collect();
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         assert_eq!(results.iter().filter(|(m, w)| *m == 0 && *w).count(), 1);
         assert_eq!(results.iter().filter(|(m, w)| *m == 1 && *w).count(), 1);
@@ -402,7 +480,10 @@ mod tests {
     //   snapshot/report.json Rust 輸出的範例（由這裡產生）→ vitest 餵給 store 驗證欄位對應
 
     use serde_json::Value;
-    use sipress_core::{rtp::stats::RtpStatsSnapshot, stats::{DetailedStats, LiveStats}};
+    use sipress_core::{
+        rtp::stats::RtpStatsSnapshot,
+        stats::{DetailedStats, LiveStats},
+    };
     use std::path::PathBuf;
 
     fn contract_dir() -> PathBuf {
@@ -432,8 +513,9 @@ mod tests {
         match (sent, known) {
             (Value::Object(s), Value::Object(k)) => {
                 for (key, v) in s {
-                    let kv = k.get(key)
-                        .unwrap_or_else(|| panic!("{}.{} 不是 Rust Config 的欄位（會被忽略）", path, key));
+                    let kv = k.get(key).unwrap_or_else(|| {
+                        panic!("{}.{} 不是 Rust Config 的欄位（會被忽略）", path, key)
+                    });
                     assert_known_keys(v, kv, &format!("{}.{}", path, key));
                 }
             }
@@ -455,53 +537,97 @@ mod tests {
             if !(name.starts_with("config-") && name.ends_with(".json")) {
                 continue;
             }
-            let sent: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let sent: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let cfg: Config = serde_json::from_value(sent.clone())
                 .unwrap_or_else(|e| panic!("{} 無法解析為 Config：{}", name, e));
-            cfg.validate().unwrap_or_else(|e| panic!("{} 未通過 Config::validate：{}", name, e));
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("{} 未通過 Config::validate：{}", name, e));
             assert_known_keys(&sent, &serde_json::to_value(&cfg).unwrap(), &name);
             checked += 1;
         }
-        assert!(checked >= 5, "gui/contract 應有前端產生的 config-*.json（目前 {} 個）", checked);
+        assert!(
+            checked >= 5,
+            "gui/contract 應有前端產生的 config-*.json（目前 {} 個）",
+            checked
+        );
     }
 
     #[test]
     fn snapshot_fixture_matches_rust_output() {
         let live = LiveStats::default();
-        for _ in 0..40 { live.on_invite(); }
-        for _ in 0..30 { live.on_answered(); }
-        for _ in 0..20 { live.on_completed(); }
-        for _ in 0..4  { live.on_failed(); }
-        for _ in 0..2  { live.on_timeout(); }
-        for _ in 0..10 { live.on_rtp_start(); }
+        for _ in 0..40 {
+            live.on_invite();
+        }
+        for _ in 0..30 {
+            live.on_answered();
+        }
+        for _ in 0..20 {
+            live.on_completed();
+        }
+        for _ in 0..4 {
+            live.on_failed();
+        }
+        for _ in 0..2 {
+            live.on_timeout();
+        }
+        for _ in 0..10 {
+            live.on_rtp_start();
+        }
         live.agents_total.store(50, Ordering::Relaxed);
-        for _ in 0..48 { live.on_agent_registered(); }
+        for _ in 0..48 {
+            live.on_agent_registered();
+        }
         let mut snap = live.snapshot();
-        snap.rtp_mos          = Some(4.1);
-        snap.rtp_loss_pct     = Some(0.5);
-        snap.rtp_jitter_ms    = Some(12.5);
+        snap.rtp_mos = Some(4.1);
+        snap.rtp_loss_pct = Some(0.5);
+        snap.rtp_jitter_ms = Some(12.5);
         snap.rtp_sent_packets = Some(5000);
         snap.rtp_recv_packets = Some(4975);
-        snap.pdd_avg_ms       = Some(150.0);
+        snap.pdd_avg_ms = Some(150.0);
         check_fixture("snapshot.json", serde_json::to_value(&snap).unwrap());
     }
 
     #[test]
     fn report_fixture_matches_rust_output() {
         let live = LiveStats::default();
-        for _ in 0..40 { live.on_invite(); }
-        for _ in 0..30 { live.on_answered(); }
-        for _ in 0..30 { live.on_completed(); }
-        for _ in 0..8  { live.on_failed(); }
-        for _ in 0..2  { live.on_timeout(); }
+        for _ in 0..40 {
+            live.on_invite();
+        }
+        for _ in 0..30 {
+            live.on_answered();
+        }
+        for _ in 0..30 {
+            live.on_completed();
+        }
+        for _ in 0..8 {
+            live.on_failed();
+        }
+        for _ in 0..2 {
+            live.on_timeout();
+        }
         let detail = DetailedStats::default();
-        for ms in [100.0, 150.0, 200.0] { detail.record_pdd(ms); }
-        for ms in [300.0, 400.0] { detail.record_setup(ms); }
-        for s in [20.0, 40.0] { detail.record_duration(s); }
-        for code in [486, 486, 486, 486, 486, 503, 503, 404] { detail.record_fail_code(code); }
+        for ms in [100.0, 150.0, 200.0] {
+            detail.record_pdd(ms);
+        }
+        for ms in [300.0, 400.0] {
+            detail.record_setup(ms);
+        }
+        for s in [20.0, 40.0] {
+            detail.record_duration(s);
+        }
+        for code in [486, 486, 486, 486, 486, 503, 503, 404] {
+            detail.record_fail_code(code);
+        }
         let rtp = RtpStatsSnapshot {
-            sent_packets: 9000, recv_packets: 8900, lost_packets: 100, loss_rate_pct: 1.1,
-            jitter_ms: 8.0, mos: 3.9, out_of_order: 3, duplicates: 1,
+            sent_packets: 9000,
+            recv_packets: 8900,
+            lost_packets: 100,
+            loss_rate_pct: 1.1,
+            jitter_ms: 8.0,
+            mos: 3.9,
+            out_of_order: 3,
+            duplicates: 1,
         };
         let report = FinalReport::build(&live.snapshot(), &detail, 20.0, Some(&rtp));
         check_fixture("report.json", serde_json::to_value(&report).unwrap());

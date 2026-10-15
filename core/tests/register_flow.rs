@@ -24,7 +24,10 @@ fn challenge(raw: &str, code: &str, header: &str, nonce: u32) -> String {
         .replacen("SIP/2.0 200 OK", &format!("SIP/2.0 {}", code), 1)
         .replacen(
             "Content-Length: 0",
-            &format!("{}: Digest realm=\"test\", nonce=\"n{}\"\r\nContent-Length: 0", header, nonce),
+            &format!(
+                "{}: Digest realm=\"test\", nonce=\"n{}\"\r\nContent-Length: 0",
+                header, nonce
+            ),
             1,
         )
 }
@@ -45,13 +48,18 @@ async fn spawn_registrar(mode: Registrar) -> (SocketAddr, Arc<AtomicUsize>) {
             counter.fetch_add(1, Ordering::Relaxed);
             nonce += 1;
             let resp = match mode {
-                Registrar::AlwaysReject => challenge(&raw, "401 Unauthorized", "WWW-Authenticate", nonce),
+                Registrar::AlwaysReject => {
+                    challenge(&raw, "401 Unauthorized", "WWW-Authenticate", nonce)
+                }
                 Registrar::ProxyAuth if raw.contains("\r\nProxy-Authorization: Digest ") => {
                     SipMessage::ok_for_server_bye(&raw)
                 }
-                Registrar::ProxyAuth => {
-                    challenge(&raw, "407 Proxy Authentication Required", "Proxy-Authenticate", nonce)
-                }
+                Registrar::ProxyAuth => challenge(
+                    &raw,
+                    "407 Proxy Authentication Required",
+                    "Proxy-Authenticate",
+                    nonce,
+                ),
             };
             let _ = sock.send_to(resp.as_bytes(), peer).await;
         }
@@ -77,15 +85,15 @@ async fn agent_stops_retrying_register_when_credentials_are_rejected() {
     let (server, registers) = spawn_registrar(Registrar::AlwaysReject).await;
     let logs = std::env::temp_dir().join(format!("sipress-reg-test-{}", std::process::id()));
     let cfg = Config {
-        server_addr:    server.to_string(),
-        logs_dir:       logs.to_string_lossy().into_owned(),
-        mode:           Mode::Agent,
-        duration_secs:  1,
+        server_addr: server.to_string(),
+        logs_dir: logs.to_string_lossy().into_owned(),
+        mode: Mode::Agent,
+        duration_secs: 1,
         agent_accounts: vec![AgentAccount {
             extension: "1001".into(),
-            username:  "1001".into(),
-            password:  "wrong".into(),
-            domain:    String::new(),
+            username: "1001".into(),
+            password: "wrong".into(),
+            domain: String::new(),
         }],
         ..Default::default()
     };
@@ -96,5 +104,9 @@ async fn agent_stops_retrying_register_when_credentials_are_rejected() {
 
     let sent = registers.load(Ordering::Relaxed);
     // 初次 REGISTER + 有限次認證重送 + 結束時的 Expires=0
-    assert!(sent <= 5, "密碼錯誤時不應無限重送 REGISTER（實際送出 {} 次）", sent);
+    assert!(
+        sent <= 5,
+        "密碼錯誤時不應無限重送 REGISTER（實際送出 {} 次）",
+        sent
+    );
 }

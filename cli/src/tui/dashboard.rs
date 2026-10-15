@@ -25,22 +25,19 @@ use tokio::sync::mpsc;
 #[derive(Default, Clone)]
 pub struct TuiState {
     pub snapshot: StatsSnapshot,
-    pub progress: f64,        // 0.0 ~ 1.0
+    pub progress: f64, // 0.0 ~ 1.0
     pub elapsed_secs: f64,
     pub target_cps: f64,
     pub target_duration: u64,
 }
 
 /// 啟動 TUI（在獨立 thread 執行，透過 channel 接收更新）
-pub async fn run_tui(
-    state: Arc<Mutex<TuiState>>,
-    mut done_rx: mpsc::Receiver<()>,
-) -> Result<()> {
+pub async fn run_tui(state: Arc<Mutex<TuiState>>, mut done_rx: mpsc::Receiver<()>) -> Result<()> {
     // 初始化終端機
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    let backend  = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
     loop {
@@ -84,10 +81,10 @@ fn draw(f: &mut Frame, st: &TuiState) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // 標題
-            Constraint::Length(3),  // 進度條
-            Constraint::Length(9),  // 指標
-            Constraint::Min(7),     // 延遲（預留）
+            Constraint::Length(3), // 標題
+            Constraint::Length(3), // 進度條
+            Constraint::Length(9), // 指標
+            Constraint::Min(7),    // 延遲（預留）
         ])
         .split(area);
 
@@ -105,14 +102,8 @@ fn draw_title(f: &mut Frame, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "SIP Load Tester",
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(
-            "  [q] 退出",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("SIP Load Tester", Style::default().fg(Color::White)),
+        Span::styled("  [q] 退出", Style::default().fg(Color::DarkGray)),
     ]))
     .block(Block::default().borders(Borders::ALL));
     f.render_widget(title, area);
@@ -136,14 +127,32 @@ fn draw_stats(f: &mut Frame, area: Rect, st: &TuiState) {
     let s = &st.snapshot;
 
     // 先儲存 String，避免臨時值在 Row::new 後立即丟棄
-    let r0 = [fmt_u64(s.calls_initiated), String::new(), String::new(), String::from("接通率 (ASR)"), fmt_pct(s.asr)];
-    let r1 = [fmt_u64(s.calls_answered),  String::new(), String::new(), String::from("失敗"),         fmt_u64(s.calls_failed)];
-    let r2 = [fmt_u64(s.calls_completed), String::new(), String::new(), String::from("逾時"),         fmt_u64(s.calls_timeout)];
+    let r0 = [
+        fmt_u64(s.calls_initiated),
+        String::new(),
+        String::new(),
+        String::from("接通率 (ASR)"),
+        fmt_pct(s.asr),
+    ];
+    let r1 = [
+        fmt_u64(s.calls_answered),
+        String::new(),
+        String::new(),
+        String::from("失敗"),
+        fmt_u64(s.calls_failed),
+    ];
+    let r2 = [
+        fmt_u64(s.calls_completed),
+        String::new(),
+        String::new(),
+        String::from("逾時"),
+        fmt_u64(s.calls_timeout),
+    ];
 
     let rows = vec![
-        Row::new(["發起",  r0[0].as_str(), "", r0[3].as_str(), r0[4].as_str()]),
-        Row::new(["接通",  r1[0].as_str(), "", r1[3].as_str(), r1[4].as_str()]),
-        Row::new(["完成",  r2[0].as_str(), "", r2[3].as_str(), r2[4].as_str()]),
+        Row::new(["發起", r0[0].as_str(), "", r0[3].as_str(), r0[4].as_str()]),
+        Row::new(["接通", r1[0].as_str(), "", r1[3].as_str(), r1[4].as_str()]),
+        Row::new(["完成", r2[0].as_str(), "", r2[3].as_str(), r2[4].as_str()]),
     ];
 
     let widths = [
@@ -157,8 +166,11 @@ fn draw_stats(f: &mut Frame, area: Rect, st: &TuiState) {
     let table = Table::new(rows, widths)
         .block(Block::default().title(" 即時指標 ").borders(Borders::ALL))
         .header(
-            Row::new(vec!["項目", "數量", "", "指標", "值"])
-                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Row::new(vec!["項目", "數量", "", "指標", "值"]).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
         );
     f.render_widget(table, area);
 }
@@ -172,5 +184,9 @@ fn draw_hint(f: &mut Frame, area: Rect) {
 
 // ── 格式化輔助 ───────────────────────────────────────────────────
 
-fn fmt_u64(n: u64) -> String { n.to_string() }
-fn fmt_pct(v: f64) -> String { format!("{:.1}%", v) }
+fn fmt_u64(n: u64) -> String {
+    n.to_string()
+}
+fn fmt_pct(v: f64) -> String {
+    format!("{:.1}%", v)
+}

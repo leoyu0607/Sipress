@@ -148,11 +148,18 @@ pub struct Args {
 fn parse_secs_range(s: &str) -> Result<(f64, f64), String> {
     let num = |v: &str| -> Result<f64, String> {
         let n: f64 = v.trim().parse().map_err(|_| format!("不是數字：{}", v))?;
-        if n.is_finite() && n >= 0.0 { Ok(n) } else { Err(format!("需為 ≥ 0 的秒數：{}", v)) }
+        if n.is_finite() && n >= 0.0 {
+            Ok(n)
+        } else {
+            Err(format!("需為 ≥ 0 的秒數：{}", v))
+        }
     };
     let (min, max) = match s.split_once('-') {
         Some((a, b)) => (num(a)?, num(b)?),
-        None => { let n = num(s)?; (n, n) }
+        None => {
+            let n = num(s)?;
+            (n, n)
+        }
     };
     if min > max {
         return Err(format!("區間最小值大於最大值：{}", s));

@@ -10,14 +10,16 @@ use tokio::sync::Mutex;
 async fn start_session(remote: SocketAddr, base_port: u16) -> RtpSession {
     let cfg = RtpSessionConfig {
         base_port,
-        local_ip:    "127.0.0.1".into(),
+        local_ip: "127.0.0.1".into(),
         remote_addr: remote.to_string(),
-        audio_file:  None,
-        ssrc:        None,
-        local_port:  None,
-        codec_pt:    8,
+        audio_file: None,
+        ssrc: None,
+        local_port: None,
+        codec_pt: 8,
     };
-    RtpSession::start(cfg, Arc::new(Mutex::new(base_port)), None).await.unwrap()
+    RtpSession::start(cfg, Arc::new(Mutex::new(base_port)), None)
+        .await
+        .unwrap()
 }
 
 /// 在 `wait` 時間內收集 sock 收到的封包數
@@ -46,18 +48,25 @@ async fn receives_rtp_from_address_other_than_sdp_and_latches_to_it() {
     let actual = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
     let session = start_session(sdp_addr.local_addr().unwrap(), 41000).await;
-    let local: SocketAddr = format!("127.0.0.1:{}", session.local_port()).parse().unwrap();
+    let local: SocketAddr = format!("127.0.0.1:{}", session.local_port())
+        .parse()
+        .unwrap();
 
     send_rtp(&actual, local, 10).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
-        session.stats.recv_packets.load(Ordering::Relaxed), 10,
+        session.stats.recv_packets.load(Ordering::Relaxed),
+        10,
         "來源位址與 SDP 不同的 RTP 也必須收得到"
     );
 
     // 學習後，送出的 RTP 應改送到實際來源位址
     let at_actual = count_packets(&actual, Duration::from_millis(300)).await;
-    assert!(at_actual >= 5, "應改送到實際來源位址（收到 {} 個）", at_actual);
+    assert!(
+        at_actual >= 5,
+        "應改送到實際來源位址（收到 {} 個）",
+        at_actual
+    );
     session.stop();
 }
 
@@ -65,25 +74,40 @@ async fn receives_rtp_from_address_other_than_sdp_and_latches_to_it() {
 async fn update_remote_switches_target_and_relearns() {
     let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let session = start_session(first.local_addr().unwrap(), 42000).await;
-    let local: SocketAddr = format!("127.0.0.1:{}", session.local_port()).parse().unwrap();
+    let local: SocketAddr = format!("127.0.0.1:{}", session.local_port())
+        .parse()
+        .unwrap();
     send_rtp(&first, local, 3).await;
     tokio::time::sleep(Duration::from_millis(50)).await; // 學習到 first
 
     // RE-INVITE 換新目標
     let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    session.update_remote(&second.local_addr().unwrap().to_string()).await.unwrap();
+    session
+        .update_remote(&second.local_addr().unwrap().to_string())
+        .await
+        .unwrap();
     // 切換後才到的舊來源封包（在途中）不可把目標學習回舊位址
     send_rtp(&first, local, 3).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     count_packets(&first, Duration::from_millis(50)).await; // 清掉切換前送出的封包
-    assert!(count_packets(&second, Duration::from_millis(200)).await >= 5, "應改送到 RE-INVITE 的新位址");
-    assert_eq!(count_packets(&first, Duration::from_millis(100)).await, 0, "不可再送到舊位址");
+    assert!(
+        count_packets(&second, Duration::from_millis(200)).await >= 5,
+        "應改送到 RE-INVITE 的新位址"
+    );
+    assert_eq!(
+        count_packets(&first, Duration::from_millis(100)).await,
+        0,
+        "不可再送到舊位址"
+    );
 
     // 新目標的實際來源又不同 → 重新學習
     let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     send_rtp(&relay, local, 3).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(count_packets(&relay, Duration::from_millis(200)).await >= 5, "RE-INVITE 後應重新學習實際來源");
+    assert!(
+        count_packets(&relay, Duration::from_millis(200)).await >= 5,
+        "RE-INVITE 後應重新學習實際來源"
+    );
     session.stop();
 }
 
@@ -140,19 +164,33 @@ async fn cpu_stall_does_not_burst_packets_and_shows_as_timestamp_gap() {
 
     let mut buf = [0u8; 1500];
     let mut pkts = Vec::new();
-    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(20), receiver.recv(&mut buf)).await {
+    while let Ok(Ok(n)) =
+        tokio::time::timeout(Duration::from_millis(20), receiver.recv(&mut buf)).await
+    {
         pkts.push(RtpPacket::decode(&buf[..n]).unwrap());
     }
     // 約 400ms 的時間軸：卡頓期間的封包不應事後補送（Burst 會送滿 ~20 個）
-    assert!(pkts.len() <= 15, "卡頓後不應一次補送錯過的封包（收到 {} 個）", pkts.len());
+    assert!(
+        pkts.len() <= 15,
+        "卡頓後不應一次補送錯過的封包（收到 {} 個）",
+        pkts.len()
+    );
 
     // 卡頓應呈現為 timestamp 跳躍（序號連續、時間戳跳過卡頓期間），而非連續 timestamp
-    let max_ts_gap = pkts.windows(2)
+    let max_ts_gap = pkts
+        .windows(2)
         .filter(|w| w[1].sequence == w[0].sequence.wrapping_add(1))
         .map(|w| w[1].timestamp.wrapping_sub(w[0].timestamp))
         .max()
         .unwrap();
-    assert!(max_ts_gap >= 160 * 5, "卡頓應反映在 RTP timestamp（最大間隔 {}）", max_ts_gap);
-    assert!(pkts.windows(2).all(|w| w[1].timestamp.wrapping_sub(w[0].timestamp) % 160 == 0),
-        "timestamp 必須維持 20ms（160）的整數倍");
+    assert!(
+        max_ts_gap >= 160 * 5,
+        "卡頓應反映在 RTP timestamp（最大間隔 {}）",
+        max_ts_gap
+    );
+    assert!(
+        pkts.windows(2)
+            .all(|w| w[1].timestamp.wrapping_sub(w[0].timestamp) % 160 == 0),
+        "timestamp 必須維持 20ms（160）的整數倍"
+    );
 }

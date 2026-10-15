@@ -16,9 +16,9 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex},
 };
-use tui::dashboard::{run_tui, TuiState};
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
+use tui::dashboard::{run_tui, TuiState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,35 +33,47 @@ async fn main() -> Result<()> {
     // 解析 transport
     let transport = match args.transport.to_lowercase().as_str() {
         "tcp" => Transport::Tcp,
-        _     => Transport::Udp,  // 預設 UDP（包含 "udp" 與其他未知值）
+        _ => Transport::Udp, // 預設 UDP（包含 "udp" 與其他未知值）
     };
 
-    let mode = if args.mode == "agent" { Mode::Agent } else { Mode::Caller };
-    let agent_accounts = if mode == Mode::Agent { load_accounts(&args)? } else { Vec::new() };
+    let mode = if args.mode == "agent" {
+        Mode::Agent
+    } else {
+        Mode::Caller
+    };
+    let agent_accounts = if mode == Mode::Agent {
+        load_accounts(&args)?
+    } else {
+        Vec::new()
+    };
 
     // 建構設定
     let config = Config {
-        server_addr:          args.server.clone(),
-        local_addr:           args.local_addr.clone(),
-        local_domain:         args.local_domain.clone(),
-        caller_number:        args.caller.clone(),
-        callee_prefix:        args.callee_prefix.clone(),
-        callee_range:         args.callee_range,
-        callee_fixed:         args.callee_fixed.clone(),
-        cps:                  args.cps,
-        cps_pattern:          Default::default(),
+        server_addr: args.server.clone(),
+        local_addr: args.local_addr.clone(),
+        local_domain: args.local_domain.clone(),
+        caller_number: args.caller.clone(),
+        callee_prefix: args.callee_prefix.clone(),
+        callee_range: args.callee_range,
+        callee_fixed: args.callee_fixed.clone(),
+        cps: args.cps,
+        cps_pattern: Default::default(),
         max_concurrent_calls: args.max_concurrent,
-        duration_secs:        args.duration,
-        call_duration_secs:   args.call_duration,
-        invite_timeout_secs:  args.invite_timeout,
+        duration_secs: args.duration,
+        call_duration_secs: args.call_duration,
+        invite_timeout_secs: args.invite_timeout,
         transport,
-        logs_dir:             args.logs_dir.clone(),
-        rtp_base_port:        args.rtp_base_port,
-        audio_file:           args.audio_file.clone(),
-        codec:                Default::default(),
-        enable_rtp:           args.enable_rtp,
-        dtmf_sequence:        None,
-        max_total_calls:      if args.max_calls > 0 { Some(args.max_calls) } else { None },
+        logs_dir: args.logs_dir.clone(),
+        rtp_base_port: args.rtp_base_port,
+        audio_file: args.audio_file.clone(),
+        codec: Default::default(),
+        enable_rtp: args.enable_rtp,
+        dtmf_sequence: None,
+        max_total_calls: if args.max_calls > 0 {
+            Some(args.max_calls)
+        } else {
+            None
+        },
         mode,
         agent_accounts,
         agent_ack_timeout_secs: args.ack_timeout,
@@ -69,11 +81,11 @@ async fn main() -> Result<()> {
         agent_behavior: AgentBehavior {
             ring_min_secs: args.ring.0,
             ring_max_secs: args.ring.1,
-            reject_pct:    args.reject_pct,
+            reject_pct: args.reject_pct,
             no_answer_pct: args.no_answer_pct,
             talk_min_secs: args.talk.0,
             talk_max_secs: args.talk.1,
-            wrap_up_secs:  args.wrap_up,
+            wrap_up_secs: args.wrap_up,
         },
     };
     config.validate()?;
@@ -92,7 +104,7 @@ async fn main() -> Result<()> {
     // ── TUI 模式 ──────────────────────────────────────────────────
     if args.tui {
         let tui_state = Arc::new(Mutex::new(TuiState {
-            target_cps:      args.cps,
+            target_cps: args.cps,
             target_duration: args.duration,
             ..Default::default()
         }));
@@ -104,17 +116,15 @@ async fn main() -> Result<()> {
         let on_progress: ProgressCallback = Arc::new(move |snap: StatsSnapshot, progress: f64| {
             let mut st = tui_state_cb.lock().unwrap();
             st.elapsed_secs = progress * st.target_duration as f64;
-            st.snapshot     = snap;
-            st.progress     = progress;
+            st.snapshot = snap;
+            st.progress = progress;
         });
 
         // 啟動引擎
         let engine_stop = engine.stop_handle();
         let engine_handle = {
             let on_progress = Some(on_progress);
-            tokio::spawn(async move {
-                engine.run(on_progress).await
-            })
+            tokio::spawn(async move { engine.run(on_progress).await })
         };
 
         let stop = engine_stop;
@@ -134,7 +144,7 @@ async fn main() -> Result<()> {
             let ts = report_timestamp();
             match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
                 Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e)   => tracing::warn!("HTML 報告失敗：{}", e),
+                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
             }
         }
 
@@ -163,7 +173,7 @@ async fn main() -> Result<()> {
             let ts = report_timestamp();
             match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
                 Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e)   => tracing::warn!("HTML 報告失敗：{}", e),
+                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
             }
         }
     }
@@ -181,28 +191,30 @@ impl AnyEngine {
     fn new(config: Config) -> Self {
         match config.mode {
             Mode::Caller => Self::Caller(Engine::new(config)),
-            Mode::Agent  => Self::Agent(AgentEngine::new(config)),
+            Mode::Agent => Self::Agent(AgentEngine::new(config)),
         }
     }
 
     fn stop_handle(&self) -> watch::Sender<bool> {
         match self {
             Self::Caller(e) => e.stop_handle(),
-            Self::Agent(e)  => e.stop_handle(),
+            Self::Agent(e) => e.stop_handle(),
         }
     }
 
     async fn run(&self, on_progress: Option<ProgressCallback>) -> Result<FinalReport> {
         match self {
             Self::Caller(e) => e.run(on_progress).await,
-            Self::Agent(e)  => e.run(on_progress).await,
+            Self::Agent(e) => e.run(on_progress).await,
         }
     }
 }
 
 /// 讀取 --accounts 指定的座席帳號檔
 fn load_accounts(args: &Args) -> Result<Vec<AgentAccount>> {
-    let path = args.accounts_file.as_ref()
+    let path = args
+        .accounts_file
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("--mode agent 需要以 --accounts 指定座席帳號檔"))?;
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("無法讀取帳號檔 {}", path.display()))?;

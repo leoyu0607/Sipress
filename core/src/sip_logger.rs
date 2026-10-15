@@ -15,7 +15,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 緩衝寫入器：每則記錄一次寫入，定期 flush，避免高 CPS 下每則訊息多次 syscall
 struct LogWriter {
-    out:        BufWriter<fs::File>,
+    out: BufWriter<fs::File>,
     last_flush: Instant,
 }
 
@@ -42,17 +42,17 @@ impl SipRole {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Agent => "agent",
-            Self::User  => "user",
+            Self::User => "user",
         }
     }
 }
 
 /// 單次壓測的 SIP log 寫入器
 pub struct SipLogger {
-    file:     Mutex<LogWriter>,
+    file: Mutex<LogWriter>,
     pub path: PathBuf,
     #[allow(dead_code)]
-    role:     SipRole,
+    role: SipRole,
 }
 
 impl SipLogger {
@@ -60,12 +60,11 @@ impl SipLogger {
     /// logs_dir：log 目錄（預設 "logs"）
     /// role：agent 或 user
     pub fn new(logs_dir: &str, role: SipRole) -> Result<Self> {
-        fs::create_dir_all(logs_dir)
-            .with_context(|| format!("無法建立 log 目錄: {}", logs_dir))?;
+        fs::create_dir_all(logs_dir).with_context(|| format!("無法建立 log 目錄: {}", logs_dir))?;
 
         let timestamp = Self::timestamp_str();
-        let filename  = format!("{}_{}.sip.log", timestamp, role.as_str());
-        let path      = PathBuf::from(logs_dir).join(&filename);
+        let filename = format!("{}_{}.sip.log", timestamp, role.as_str());
+        let path = PathBuf::from(logs_dir).join(&filename);
 
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -82,7 +81,7 @@ impl SipLogger {
 
         Ok(Self {
             file: Mutex::new(LogWriter {
-                out:        BufWriter::with_capacity(64 * 1024, file),
+                out: BufWriter::with_capacity(64 * 1024, file),
                 last_flush: Instant::now(),
             }),
             path,
@@ -99,10 +98,7 @@ impl SipLogger {
             Direction::Recv => "<<<",
         };
 
-        let header = format!(
-            "── {} {} {} [{}] ──",
-            ts, arrow, peer, direction.label()
-        );
+        let header = format!("── {} {} {} [{}] ──", ts, arrow, peer, direction.label());
 
         // 確保每則訊息之間有空行分隔
         let sep = if msg.ends_with('\n') { "\n" } else { "\n\n" };
@@ -156,9 +152,9 @@ impl SipLogger {
         let dur = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let secs      = dur.as_secs();
-        let millis    = dur.subsec_millis();
-        let day_secs  = secs % 86400;
+        let secs = dur.as_secs();
+        let millis = dur.subsec_millis();
+        let day_secs = secs % 86400;
         let hh = day_secs / 3600;
         let mm = (day_secs % 3600) / 60;
         let ss = day_secs % 60;
@@ -168,14 +164,14 @@ impl SipLogger {
     /// Unix 秒 → YYYYMMDD_HHMMSS（UTC，不依賴外部 crate）
     fn secs_to_datetime(secs: u64) -> String {
         // 計算日期（Gregorian calendar）
-        let days        = secs / 86400;
+        let days = secs / 86400;
         let time_of_day = secs % 86400;
         let hh = time_of_day / 3600;
         let mm = (time_of_day % 3600) / 60;
         let ss = time_of_day % 60;
 
         // 從 1970-01-01 推算年月日
-        let mut year   = 1970u32;
+        let mut year = 1970u32;
         let mut remaining = days;
         loop {
             let days_in_year: u64 = if Self::is_leap(year) { 366 } else { 365 };
@@ -185,8 +181,20 @@ impl SipLogger {
             remaining -= days_in_year;
             year += 1;
         }
-        let months = [31u64, if Self::is_leap(year) { 29 } else { 28 },
-                      31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let months = [
+            31u64,
+            if Self::is_leap(year) { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
         let mut month = 1u32;
         for &days_in_month in &months {
             if remaining < days_in_month {
@@ -197,7 +205,10 @@ impl SipLogger {
         }
         let day = remaining + 1;
 
-        format!("{:04}{:02}{:02}_{:02}{:02}{:02}", year, month, day, hh, mm, ss)
+        format!(
+            "{:04}{:02}{:02}_{:02}{:02}{:02}",
+            year, month, day, hh, mm, ss
+        )
     }
 
     fn is_leap(year: u32) -> bool {
@@ -239,7 +250,11 @@ mod tests {
     fn records_are_complete_after_summary_flush() {
         let dir = std::env::temp_dir().join(format!("sipress-logger-test-{}", std::process::id()));
         let log = SipLogger::new(&dir.to_string_lossy(), SipRole::Agent).unwrap();
-        log.log_message(Direction::Send, "INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n", "1.2.3.4:5060");
+        log.log_message(
+            Direction::Send,
+            "INVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n",
+            "1.2.3.4:5060",
+        );
         log.log_message(Direction::Recv, "SIP/2.0 200 OK", "1.2.3.4:5060");
         log.log_event("x", "TIMEOUT");
         log.log_summary("done");
@@ -247,7 +262,9 @@ mod tests {
         // 不 drop logger：摘要寫入時必須已 flush 到檔案
         let content = fs::read_to_string(&log.path).unwrap();
         // 格式與改用緩衝寫入前相同：header、訊息、（不以換行結尾時補一行）、空行
-        assert!(content.contains(">>> 1.2.3.4:5060 [→ SERVER] ──\nINVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n\n\n── "));
+        assert!(content.contains(
+            ">>> 1.2.3.4:5060 [→ SERVER] ──\nINVITE sip:a@b SIP/2.0\r\nCall-ID: x\r\n\r\n\n\n── "
+        ));
         assert!(content.contains("<<< 1.2.3.4:5060 [← SERVER] ──\nSIP/2.0 200 OK\n\n\n── "));
         assert!(content.contains("[EVENT] call-id=x → TIMEOUT ──\n\n"));
         assert!(content.trim_end().ends_with("done"));
