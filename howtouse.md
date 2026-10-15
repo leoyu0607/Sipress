@@ -390,6 +390,8 @@ extension,username,password,domain
 --auth-user <帳號>          撥號認證帳號（預設：主叫號碼）
 --auth-pass <密碼>          撥號認證密碼；INVITE 收到 401 / 407 時帶認證重送
 --trace-file <檔案>         結束後寫出每通的追蹤紀錄（端到端對照用）
+--interval <時長>           分時段統計的時段長度，例如 5m、1h（預設：5m，0 = 不分段）
+--timeline-csv <檔案>       結束後把分時段統計寫成 CSV
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
 --ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）

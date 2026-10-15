@@ -353,6 +353,10 @@ pub struct FinalReport {
 
     // ── 具體失敗回應碼（key = SIP 狀態碼，value = 次數）──
     pub fail_codes: HashMap<u16, u64>,
+
+    /// 分時段統計（`stats_interval_secs` 一段；0 = 不分段時為空）
+    #[serde(default)]
+    pub timeline: Vec<crate::timeline::TimelineBucket>,
 }
 
 impl FinalReport {
@@ -408,6 +412,7 @@ impl FinalReport {
             rtp_sent: rtp.map(|r| r.sent_packets),
             rtp_recv: rtp.map(|r| r.recv_packets),
             rtp_out_of_order: rtp.map(|r| r.out_of_order),
+            timeline: Vec::new(),
         }
     }
 

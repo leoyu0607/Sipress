@@ -39,6 +39,7 @@ impl HtmlReporter {
             ("MAX", r.setup_max_ms),
         ]);
         let dist = dist_bar(r);
+        let timeline_section = timeline_section(r);
 
         // RTP 區塊
         let rtp_section = match (r.mos, r.loss_rate_pct, r.jitter_ms) {
@@ -149,6 +150,12 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 .card{{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow)}}
 .gauge-row{{display:flex;gap:28px;align-items:center;flex-wrap:wrap}}
 .bar-chart{{display:flex;flex-direction:column;gap:9px;margin-top:4px}}
+.trend-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}}
+.trend{{border:1px solid var(--border);border-radius:8px;padding:10px 12px}}
+.trend-head{{display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);margin-bottom:6px}}
+.trend-head strong{{color:var(--text)}}
+.trend svg{{width:100%;height:110px;display:block}}
+.trend-axis{{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px}}
 .bar-row{{display:flex;align-items:center;gap:8px}}
 .bar-tag{{font-family:var(--mono);font-size:10px;color:var(--text-muted);width:28px;text-align:right;flex-shrink:0}}
 .bar-track{{flex:1;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;border:1px solid var(--border)}}
@@ -251,6 +258,8 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 
 {rtp_section}
 
+{timeline_section}
+
 <div class="card">
   <div class="section-title">SIP 錯誤碼明細</div>
   <table class="data-table">
@@ -307,10 +316,168 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
             pdd_bars = pdd_bars,
             setup_bars = setup_bars,
             rtp_section = rtp_section,
+            timeline_section = timeline_section,
             p4 = pct(r.fail_4xx, fail_total),
             p5 = pct(r.fail_5xx, fail_total),
             p6 = pct(r.fail_6xx, fail_total),
         )
+    }
+}
+
+// ── 分時段統計 ──────────────────────────────────────────────────
+
+/// 分時段統計區塊：四張趨勢圖（CPS / ASR / PDD p50 / MOS）+ 每段明細表；不足兩段時不顯示
+fn timeline_section(r: &FinalReport) -> String {
+    let tl = &r.timeline;
+    if tl.len() < 2 {
+        return String::new();
+    }
+    let x: Vec<f64> = tl
+        .iter()
+        .map(|b| (b.start_secs + b.end_secs) / 2.0)
+        .collect();
+    let charts = [
+        trend_svg(
+            "CPS（每秒發起）",
+            &x,
+            &tl.iter().map(|b| Some(b.cps())).collect::<Vec<_>>(),
+            "",
+            "var(--accent)",
+            None,
+        ),
+        trend_svg(
+            "ASR %",
+            &x,
+            &tl.iter().map(|b| b.asr).collect::<Vec<_>>(),
+            "%",
+            "var(--green)",
+            Some(100.0),
+        ),
+        trend_svg(
+            "PDD p50",
+            &x,
+            &tl.iter().map(|b| b.pdd_p50_ms).collect::<Vec<_>>(),
+            "ms",
+            "var(--yellow)",
+            None,
+        ),
+        trend_svg(
+            "MOS",
+            &x,
+            &tl.iter().map(|b| b.mos).collect::<Vec<_>>(),
+            "",
+            "var(--accent)",
+            Some(5.0),
+        ),
+    ]
+    .concat();
+    let opt = |v: Option<f64>, prec: usize, unit: &str| {
+        v.map_or("—".to_string(), |x| format!("{:.*}{}", prec, x, unit))
+    };
+    let rows: String = tl
+        .iter()
+        .map(|b| {
+            let codes: Vec<String> = b
+                .fail_codes
+                .iter()
+                .map(|(c, n)| format!("{}×{}", c, n))
+                .collect();
+            format!(
+                "<tr><td>{}–{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td style=\"color:var(--text-muted)\">{}</td></tr>",
+                clock(b.start_secs),
+                clock(b.end_secs),
+                b.initiated,
+                b.cps(),
+                b.answered,
+                opt(b.asr, 1, "%"),
+                opt(b.pdd_p50_ms, 0, " ms"),
+                opt(b.pdd_p95_ms, 0, " ms"),
+                opt(b.mos, 2, ""),
+                if codes.is_empty() { "—".to_string() } else { codes.join(" ") },
+            )
+        })
+        .collect();
+    format!(
+        r#"<div class="card">
+  <div class="section-title">分時段統計 — 每 {interval:.0} 秒一段</div>
+  <div class="trend-grid">{charts}</div>
+  <table class="data-table" style="margin-top:14px">
+    <thead><tr><th>時段</th><th>發起</th><th>CPS</th><th>接通</th><th>ASR</th><th>PDD p50</th><th>PDD p95</th><th>MOS</th><th>失敗碼</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+</div>"#,
+        interval = tl[0].duration_secs(),
+    )
+}
+
+/// 單一指標的折線圖（inline SVG）；None 的時段斷開線段，`y_max` 未給時取資料最大值
+fn trend_svg(
+    title: &str,
+    x: &[f64],
+    y: &[Option<f64>],
+    unit: &str,
+    color: &str,
+    y_max: Option<f64>,
+) -> String {
+    const W: f64 = 300.0;
+    const H: f64 = 110.0;
+    const PAD: f64 = 6.0;
+    let x_max = x.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let data_max = y.iter().flatten().cloned().fold(0.0_f64, f64::max);
+    let top = y_max.unwrap_or(data_max * 1.15).max(1e-9);
+    let px = |v: f64| PAD + v / x_max * (W - 2.0 * PAD);
+    let py = |v: f64| H - PAD - (v / top).clamp(0.0, 1.0) * (H - 2.0 * PAD);
+
+    let mut lines = String::new();
+    let mut dots = String::new();
+    let mut seg: Vec<String> = Vec::new();
+    let flush = |seg: &mut Vec<String>, lines: &mut String| {
+        if seg.len() > 1 {
+            lines.push_str(&format!(
+                r#"<polyline fill="none" stroke="{color}" stroke-width="2" points="{}"/>"#,
+                seg.join(" ")
+            ));
+        }
+        seg.clear();
+    };
+    for (xi, yi) in x.iter().zip(y) {
+        match yi {
+            Some(v) => {
+                let (cx, cy) = (px(*xi), py(*v));
+                seg.push(format!("{:.1},{:.1}", cx, cy));
+                dots.push_str(&format!(
+                    r#"<circle cx="{cx:.1}" cy="{cy:.1}" r="2.5" fill="{color}"><title>{t} · {v:.2}{unit}</title></circle>"#,
+                    t = clock(*xi),
+                ));
+            }
+            None => flush(&mut seg, &mut lines),
+        }
+    }
+    flush(&mut seg, &mut lines);
+    let last = y
+        .iter()
+        .rev()
+        .flatten()
+        .next()
+        .map_or("—".to_string(), |v| format!("{:.1}{}", v, unit));
+    format!(
+        r#"<div class="trend"><div class="trend-head"><span>{title}</span><strong>{last}</strong></div>
+<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{title}"><line x1="{PAD}" y1="{base}" x2="{right}" y2="{base}" stroke="var(--border)"/>{lines}{dots}</svg>
+<div class="trend-axis"><span>0</span><span>最高 {top:.1}{unit}</span><span>{end}</span></div></div>"#,
+        base = H - PAD,
+        right = W - PAD,
+        top = data_max,
+        end = clock(x_max),
+    )
+}
+
+/// 秒數 → `h:mm:ss`（不足一小時為 `m:ss`）
+fn clock(secs: f64) -> String {
+    let t = secs.round() as u64;
+    if t >= 3600 {
+        format!("{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60)
+    } else {
+        format!("{}:{:02}", t / 60, t % 60)
     }
 }
 

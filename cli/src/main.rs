@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     }
 
     // ── TUI 模式 ──────────────────────────────────────────────────
-    if args.tui {
+    let report = if args.tui {
         let tui_state = Arc::new(Mutex::new(TuiState {
             target_cps: args.cps,
             target_duration: args.duration,
@@ -95,16 +95,7 @@ async fn main() -> Result<()> {
         let _ = done_tx.send(()).await;
 
         // TUI 退出後仍然印出最終報告
-        let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
-        Reporter::print(&report, fmt);
-
-        if args.html {
-            let ts = report_timestamp();
-            match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
-                Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
-            }
-        }
+        report
 
     // ── 無頭模式 ─────────────────────────────────────────────────
     } else {
@@ -123,23 +114,45 @@ async fn main() -> Result<()> {
             None
         };
 
-        let report = engine.run(on_progress).await?;
-        let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
-        Reporter::print(&report, fmt);
+        engine.run(on_progress).await?
+    };
 
-        if args.html {
-            let ts = report_timestamp();
-            match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
-                Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
-            }
+    let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
+    Reporter::print(&report, fmt);
+
+    if args.html {
+        let ts = report_timestamp();
+        match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
+            Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
+            Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
         }
+    }
+
+    if let Some(path) = &args.timeline_csv {
+        write_timeline_csv(path, &report)?;
     }
 
     if let Some(path) = &args.trace_file {
         write_trace_file(path, &traces, mode, &args.server)?;
     }
 
+    Ok(())
+}
+
+/// --timeline-csv：分時段統計每段一列
+fn write_timeline_csv(path: &std::path::Path, report: &FinalReport) -> Result<()> {
+    let mut out = String::from(sipress_core::timeline::TimelineBucket::CSV_HEADER);
+    out.push('\n');
+    for b in &report.timeline {
+        out.push_str(&b.csv_row());
+        out.push('\n');
+    }
+    std::fs::write(path, out).with_context(|| format!("無法寫入 {}", path.display()))?;
+    tracing::info!(
+        "分時段統計（{} 段）→ {}",
+        report.timeline.len(),
+        path.display()
+    );
     Ok(())
 }
 
@@ -199,6 +212,7 @@ fn build_config(args: &Args, agent_accounts: Vec<AgentAccount>) -> Config {
             wrap_up_secs: args.wrap_up,
             busy_in_call: args.busy_in_call,
         },
+        stats_interval_secs: args.interval,
     }
 }
 

@@ -524,6 +524,8 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--format` | `table` | 輸出格式：`table` / `json` / `csv` |
 | `--html` | 關閉 | 產生 HTML 視覺化報告 |
 | `--report-dir` | `reports/` | HTML 報告輸出目錄 |
+| `--interval` | `5m` | 分時段統計的時段長度（`300`、`30s`、`5m`、`1h`；`0` = 不分段）。報告附上每段的 CPS、ASR、PDD、MOS、失敗碼；HTML 報告畫成趨勢圖 |
+| `--timeline-csv` | — | 結束後把分時段統計寫成 CSV（每段一列） |
 | `--logs-dir` | `logs/` | SIP log 輸出目錄 |
 | `--verbose` | 關閉 | 顯示詳細 debug log |
 

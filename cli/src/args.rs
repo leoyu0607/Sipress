@@ -195,6 +195,14 @@ pub struct Args {
     #[arg(long = "correlate-window", default_value_t = 120)]
     pub correlate_window: u64,
 
+    /// 分時段統計的時段長度：`300`、`30s`、`5m`、`1h`（0 = 不分段）。報告會附上每段的 ASR、PDD、MOS、失敗碼
+    #[arg(long = "interval", value_parser = parse_interval, default_value = "5m")]
+    pub interval: u64,
+
+    /// 結束後把分時段統計寫成 CSV（每段一列）
+    #[arg(long = "timeline-csv")]
+    pub timeline_csv: Option<std::path::PathBuf>,
+
     /// 顯示詳細 debug log
     #[arg(long)]
     pub verbose: bool,
@@ -287,6 +295,21 @@ fn parse_cps_spike(s: &str) -> Result<CpsPattern, String> {
     Ok(p)
 }
 
+/// `300` / `30s` / `5m` / `1h` → 秒
+fn parse_interval(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mul) = match s.char_indices().last() {
+        Some((i, 's')) => (&s[..i], 1),
+        Some((i, 'm')) => (&s[..i], 60),
+        Some((i, 'h')) => (&s[..i], 3600),
+        _ => (s, 1),
+    };
+    num.trim()
+        .parse::<u64>()
+        .map(|n| n * mul)
+        .map_err(|_| format!("格式需為秒數或加上 s / m / h，例如 300、5m、1h：{}", s))
+}
+
 fn parse_dtmf(s: &str) -> Result<String, String> {
     sipress_core::rtp::dtmf::validate_dtmf_sequence(s)?;
     Ok(s.trim().to_string())
@@ -355,6 +378,17 @@ mod tests {
             &["--cps-ramp", "1-5", "--cps-spike", "10,100,50,10"],
         ] {
             assert!(parse(bad).is_err(), "{:?} 應被拒絕", bad);
+        }
+    }
+
+    #[test]
+    fn interval_flag() {
+        assert_eq!(parse(&[]).unwrap().interval, 300);
+        for (v, secs) in [("90", 90), ("30s", 30), ("5m", 300), ("1h", 3600), ("0", 0)] {
+            assert_eq!(parse(&["--interval", v]).unwrap().interval, secs, "{}", v);
+        }
+        for bad in ["", "m", "5x", "-1", "1.5m"] {
+            assert!(parse(&["--interval", bad]).is_err(), "{:?} 應被拒絕", bad);
         }
     }
 

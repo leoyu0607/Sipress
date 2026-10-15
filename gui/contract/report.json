@@ -30,5 +30,6 @@
   "setup_max_ms": 400.127,
   "setup_p50_ms": 300.031,
   "setup_p95_ms": 400.127,
-  "setup_p99_ms": 400.127
+  "setup_p99_ms": 400.127,
+  "timeline": []
 }

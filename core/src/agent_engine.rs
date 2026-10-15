@@ -21,6 +21,7 @@ use crate::sip::{
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats};
+use crate::timeline::TimelineRecorder;
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -151,6 +152,27 @@ impl AgentEngine {
             });
         }
 
+        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
+        let timeline = Arc::new(std::sync::Mutex::new(Some(TimelineRecorder::new(
+            cfg.stats_interval_secs,
+        ))));
+        if cfg.stats_interval_secs > 0 {
+            let tl = Arc::clone(&timeline);
+            let live = Arc::clone(&live);
+            let detail = Arc::clone(&detail);
+            let src = Arc::clone(&rtp_registry);
+            tokio::spawn(async move {
+                let mut interval = time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let mos = src.lock().await.live_aggregate().map(|a| a.mos);
+                    let mut guard = tl.lock().unwrap();
+                    let Some(rec) = guard.as_mut() else { break };
+                    rec.tick(start.elapsed().as_secs_f64(), &live, &detail, mos);
+                }
+            });
+        }
+
         // ── 為每個帳號 spawn 一個 runner ──
         let mut handles = Vec::new();
         for acc in &cfg.agent_accounts {
@@ -213,12 +235,15 @@ impl AgentEngine {
             elapsed,
         ));
 
-        Ok(FinalReport::build(
-            &snap,
-            &detail,
-            elapsed,
-            rtp_final.as_ref(),
-        ))
+        let timeline = timeline
+            .lock()
+            .unwrap()
+            .take()
+            .map(|r| r.finish(elapsed, &live, &detail))
+            .unwrap_or_default();
+        let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_final.as_ref());
+        report.timeline = timeline;
+        Ok(report)
     }
 }
 

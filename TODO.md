@@ -158,9 +158,13 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - 同時修正：時間到後引擎收尾（CANCEL / BYE、座席解除註冊）期間，進度回報原本就停了，GUI 停在最後一筆；現在持續回報到引擎結束（保留寬限時間避免引擎異常時 task 不停）。
 測試：`stats` 單元測試（即時 / 最終 ASR、`RateMeter`、PDD p50 與報告一致）、`core/tests/live_metrics.rs`（20 CPS 實跑，每秒 CPS 15–25、響鈴中的通話不拉低 ASR、最後一筆快照為已結束）、GUI vitest 改為採用引擎的 `cps` 與 `pdd_p50_ms`。
 
-### [ ] 19. 長時間耐久測試的分時段統計（功能）
+### [x] 19. 長時間耐久測試的分時段統計（功能）
 
-報告只有整體結果，看不出第幾小時開始變差。加上每 N 分鐘一段的 ASR、PDD、MOS、失敗碼統計，HTML 報告畫成時序圖，CLI 可輸出 CSV。
+原本報告只有整體結果，看不出第幾小時開始變差。
+已完成：`core/src/timeline.rs` 的 `TimelineRecorder`，兩端引擎每秒取樣，每 `stats_interval_secs`（CLI `--interval`，預設 5 分鐘）結算一段：發起 / 接通 / 完成 / 失敗 / 逾時、CPS、ASR、PDD p50 / p95、MOS、失敗碼（計算方式見 `METRICS.md` 第 13 節）。
+- 最終報告新增 `timeline`（JSON 報告直接帶出）；HTML 報告兩段以上時顯示 CPS / ASR / PDD / MOS 趨勢圖（inline SVG）與每段明細表；CLI 表格輸出後附分段表，`--timeline-csv` 輸出 CSV。
+- GUI 匯出的 HTML 報告同樣有分段統計（使用預設 5 分鐘）；GUI 目前沒有調整時段長度的欄位。
+- 測試：`timeline` 單元測試（分段差值、PDD 只含本段樣本、跳過的取樣、收尾尾段併入、CSV）；`core/tests/live_metrics.rs` 實跑 4 秒 / 每段 1 秒，各段加總等於最終報告、503 失敗碼、時段連續、`--interval 0` 不分段。實跑 CLI（階梯 3→10 CPS、每段 2 秒）並以 Chromium 截圖確認 HTML 圖表。
 
 ### [ ] 20. 大量並發的效能基準（效能）
 

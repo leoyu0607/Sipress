@@ -425,6 +425,10 @@ pub struct Config {
     #[serde(default)]
     pub agent_behavior: AgentBehavior,
 
+    /// 分時段統計的時段長度（秒，0 = 不分段）；長時間耐久測試看第幾段開始變差
+    #[serde(default = "default_stats_interval")]
+    pub stats_interval_secs: u64,
+
     /// Agent 模式：每通結束後立即重新 REGISTER（預設關閉，只在接近 Expires 時刷新）。
     /// 只有交換機要求通話後重新註冊才會繼續派話時才需要開啟；高話務下會對交換機多送大量 REGISTER
     #[serde(default)]
@@ -434,6 +438,10 @@ pub struct Config {
 fn default_ack_timeout() -> u64 {
     10
 }
+fn default_stats_interval() -> u64 {
+    300
+}
+
 fn default_bye_timeout() -> u64 {
     150
 }
@@ -470,6 +478,7 @@ impl Default for Config {
             agent_ack_timeout_secs: default_ack_timeout(),
             agent_bye_timeout_secs: default_bye_timeout(),
             agent_behavior: AgentBehavior::default(),
+            stats_interval_secs: default_stats_interval(),
             agent_reregister_after_call: false,
         }
     }
