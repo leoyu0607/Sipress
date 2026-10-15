@@ -36,6 +36,12 @@ pub struct Dialog {
     // 協商出的 codec（0 = PCMU、8 = PCMA）：建立時為偏好值，收到 200 OK 後依 answer 更新
     pub codec_pt: u8,
 
+    // 這通的主叫號碼（--from-seq 時每通不同；ACK / CANCEL / BYE 的 From 必須與 INVITE 相同）
+    pub caller_number: String,
+
+    // 已帶認證重送 INVITE 的次數（401 / 407）
+    pub auth_attempts: u8,
+
     // UDP 重傳（INVITE：Timer A；BYE：Timer E）
     /// 等待回應中的請求原文（重傳時原樣送出）
     retx_msg: Option<String>,
@@ -89,6 +95,8 @@ impl Dialog {
             local_rtp_port,
             remote_contact: None,
             codec_pt: crate::sip::sdp::PT_PCMA,
+            caller_number: String::new(),
+            auth_attempts: 0,
             retx_msg: None,
             retx_interval: T1,
             next_retx_at: None,
@@ -124,6 +132,16 @@ impl Dialog {
         self.retx_interval = max_interval.map_or(doubled, |m| doubled.min(m));
         self.next_retx_at = Some(now + self.retx_interval);
         self.retx_msg.clone()
+    }
+
+    /// 收到 401 / 407 後帶認證重送 INVITE：新的 transaction（CSeq + 1、新 branch），回到 Calling 讓 INVITE 能再重傳。
+    /// 呼叫端用回傳的 CSeq 與新 branch 組出 INVITE 並重新 `arm_retransmit`；PDD 仍從第一次送出 INVITE 起算
+    pub fn restart_invite(&mut self, branch: String) -> u32 {
+        self.cseq += 1;
+        self.branch = branch;
+        self.state = DialogState::Calling;
+        self.auth_attempts += 1;
+        self.cseq
     }
 
     /// 收到 100 Trying
@@ -211,6 +229,17 @@ impl Dialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_invite_starts_a_new_transaction() {
+        let mut d = Dialog::new("c".into(), "f".into(), "branch-1".into(), "2001".into(), 0);
+        d.on_trying();
+        let cseq = d.restart_invite("branch-2".into());
+        assert_eq!((cseq, d.cseq), (2, 2));
+        assert_eq!(d.branch, "branch-2");
+        assert_eq!(d.state, DialogState::Calling, "重送後要能再次重傳 INVITE");
+        assert_eq!(d.auth_attempts, 1);
+    }
 
     fn new_dialog() -> Dialog {
         Dialog::new(

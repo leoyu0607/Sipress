@@ -41,6 +41,14 @@ pub struct Args {
     #[arg(long = "from-seq")]
     pub caller_number_seq: bool,
 
+    /// 撥號認證帳號：SIPX 對 INVITE 回 401 / 407 時用（未填 = 該通的主叫號碼）
+    #[arg(long = "auth-user")]
+    pub auth_user: Option<String>,
+
+    /// 撥號認證密碼：設定後收到 401 / 407 會帶 Digest 認證重送 INVITE 一次
+    #[arg(long = "auth-pass")]
+    pub auth_pass: Option<String>,
+
     /// 固定被叫號碼（指定後所有通話都打給這個號碼，覆蓋 --to-prefix/--to-range）
     #[arg(long = "to")]
     pub callee_fixed: Option<String>,

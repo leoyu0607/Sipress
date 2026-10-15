@@ -111,10 +111,12 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 原本每通掛斷後立即送一次 REGISTER（`trigger_re_register`），原 commit 沒有說明原因；高話務時會對 SIPX 多送大量 REGISTER，干擾測試結果。
 已修正：預設只在 Expires 到期前刷新；保留原行為為選項 `Config.agent_reregister_after_call`（CLI `--reregister-after-call`、GUI 座席區塊「通話後重新註冊」，預設關閉），供交換機確實要求通話後重新註冊的環境使用。測試：`core/tests/agent_behavior.rs` 的 `call_end_does_not_reregister_by_default` / `reregister_after_call_is_opt_in`（對方 BYE 與座席主動掛斷兩條路徑）。
 
-### [ ] 13. 民眾端 INVITE 不支援 401 / 407 認證（正確性，視環境）
+### [x] 13. 民眾端 INVITE 不支援 401 / 407 認證（正確性，視環境）
 
-REGISTER 有 Digest 認證，INVITE 沒有；SIPX 入口若要求撥號認證，所有通話都會被當成失敗。需先確認實際環境是否要求。
-要做：收到 401 / 407 時帶 `Authorization` / `Proxy-Authorization` 重送 INVITE（CSeq 遞增、同一個 Call-ID），帳密由設定提供；GUI 與 CLI 加上對應欄位。
+原本 REGISTER 有 Digest 認證、INVITE 沒有，SIPX 入口要求撥號認證時所有通話都會失敗。
+已修正：設定撥號認證密碼後（`Config.caller_auth_username` / `caller_auth_password`；CLI `--auth-user` / `--auth-pass`；GUI 民眾端「撥號認證帳號 / 密碼」），INVITE 收到 401 / 407 會以同一個 Call-ID、CSeq + 1、新 branch 帶 `Authorization` / `Proxy-Authorization` 重送一次；帶認證仍被拒才算失敗。帳號未填時用該通的主叫號碼。舊 transaction 重傳的 401 以 CSeq 判斷並忽略。GUI 的 CLI 預覽以 `"<密碼>"` 代替真實密碼。
+同時修正：開啟 `--from-seq` 時 ACK / CANCEL / BYE / RE-INVITE 回應的 From 仍用基本號碼，與該通 INVITE 不一致（主叫號碼改存在 dialog）。
+測試：`core/tests/invite_auth.rs`（401、407、未設密碼、密碼錯誤只重試一次，mock 會驗證 Digest 雜湊並重傳 401）。
 
 ### [ ] 14. IPv6 位址解析錯誤（正確性）
 

@@ -33,7 +33,7 @@
 | **終端機 TUI** | ratatui 儀表板，顯示即時 ASR、CPS、並發數（`--tui`） |
 | **雙模式壓測** | **民眾端**（主動撥出）/ **座席端**（REGISTER 後等待來電並自動接聽） |
 | **SIP 信令** | INVITE / 100 / 180 / 200 / ACK / BYE / CANCEL（RFC 3261）；可處理伺服器主動 RE-INVITE（Session-Expires）與 BYE |
-| **REGISTER + Digest 認證** | 完整 RFC 2617 Digest 流程（401/407 challenge → MD5 response → re-REGISTER 自動刷新）|
+| **Digest 認證** | 座席 REGISTER 與民眾端 INVITE 都支援 RFC 2617 Digest（401 → `Authorization`、407 → `Proxy-Authorization`）；REGISTER 自動刷新 |
 | **真實 RTP** | 每 20ms 傳送 G.711 **PCMA**（A-law）封包，支援 WAV 音檔自動轉檔（PCM16/A-law/μ-law → PCMA）|
 | **聲音品質分析** | MOS 估算（ITU-T E-Model G.107）、掉包率、Jitter（RFC 3550） |
 | **總通數上限** | 民眾模式可設定 `--max-calls N`，達上限後自動停止（不依時長）；GUI 前端自動偵測引擎完成並停止 |
@@ -500,6 +500,8 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--from` | `1000` | 主叫號碼 |
 | `--to-prefix` | `2` | 被叫號碼前綴 |
 | `--to-range` | `9999` | 被叫尾數最大值（隨機） |
+| `--auth-user` | 主叫號碼 | 撥號認證帳號（SIPX 對 INVITE 回 401 / 407 時使用） |
+| `--auth-pass` | 不認證 | 撥號認證密碼；設定後收到 401 / 407 會帶 Digest 認證（`Authorization` / `Proxy-Authorization`）重送 INVITE 一次，仍被拒才算失敗 |
 
 ### RTP 音訊
 

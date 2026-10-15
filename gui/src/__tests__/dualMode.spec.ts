@@ -643,3 +643,22 @@ describe('端到端對照報告', () => {
     expect(sent.caller_number_seq).toBe(true)
   })
 })
+
+describe('撥號認證', () => {
+  it('送出帳密；CLI 預覽不顯示密碼；空白時送 null', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    expect(s.cliCommand).not.toContain('--auth')
+    s.config.caller.authUser = ' trunk01 '
+    s.config.caller.authPass = 'p@ss'
+    expect(s.cliCommand).toContain('--auth-user trunk01 --auth-pass "<密碼>"')
+    expect(s.cliCommand).not.toContain('p@ss')
+    s.config.caller.authUser = ''
+    expect(s.cliCommand).not.toContain('--auth-user')
+    await s.startTest('caller')
+    const sent = calls.find(c => c.cmd === 'start_test')?.args?.config as Record<string, unknown>
+    expect(sent.caller_auth_username).toBeNull()
+    expect(sent.caller_auth_password).toBe('p@ss')
+  })
+})
+

@@ -302,6 +302,13 @@ pub struct Config {
     #[serde(default)]
     pub caller_number_seq: bool,
 
+    /// 民眾端撥號認證：SIPX 對 INVITE 回 401 / 407 時，帶 Digest 認證重送一次。
+    /// 密碼為 None 時不認證（直接算失敗）；帳號為空時用該通的主叫號碼
+    #[serde(default)]
+    pub caller_auth_username: Option<String>,
+    #[serde(default)]
+    pub caller_auth_password: Option<String>,
+
     /// 被叫號碼前綴（若 callee_fixed 為 Some 則忽略）
     pub callee_prefix: String,
 
@@ -398,6 +405,8 @@ impl Default for Config {
             local_domain: None,
             caller_number: "1000".to_string(),
             caller_number_seq: false,
+            caller_auth_username: None,
+            caller_auth_password: None,
             callee_prefix: "2".to_string(),
             callee_range: 9999,
             callee_fixed: None,
@@ -437,6 +446,17 @@ impl Config {
     }
 
     /// 傳輸層名稱字串（給 SIP message 用）
+    /// 撥號認證的帳號與密碼（未設定密碼時為 None）；帳號未填時用該通的主叫號碼
+    pub fn caller_auth<'a>(&'a self, caller_number: &'a str) -> Option<(&'a str, &'a str)> {
+        let password = self.caller_auth_password.as_deref()?;
+        let user = self
+            .caller_auth_username
+            .as_deref()
+            .filter(|u| !u.is_empty())
+            .unwrap_or(caller_number);
+        Some((user, password))
+    }
+
     /// 第 `n` 通（從 0 起算）的主叫號碼
     pub fn caller_number_for(&self, n: u64) -> String {
         if !self.caller_number_seq {
@@ -631,6 +651,27 @@ mod tests {
             };
             assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
         }
+    }
+
+    #[test]
+    fn caller_auth_defaults_username_to_caller_number() {
+        let none = Config::default();
+        assert_eq!(none.caller_auth("0912"), None, "沒有密碼就不認證");
+        let pw_only = Config {
+            caller_auth_password: Some("pw".into()),
+            ..Default::default()
+        };
+        assert_eq!(pw_only.caller_auth("0912"), Some(("0912", "pw")));
+        let empty_user = Config {
+            caller_auth_username: Some(String::new()),
+            ..pw_only.clone()
+        };
+        assert_eq!(empty_user.caller_auth("0912"), Some(("0912", "pw")));
+        let both = Config {
+            caller_auth_username: Some("trunk".into()),
+            ..pw_only
+        };
+        assert_eq!(both.caller_auth("0912"), Some(("trunk", "pw")));
     }
 
     #[test]

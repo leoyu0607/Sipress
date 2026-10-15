@@ -4,6 +4,8 @@
   "local_domain": null,
   "caller_number": "0938530031",
   "caller_number_seq": true,
+  "caller_auth_username": "trunk01",
+  "caller_auth_password": "p@ss",
   "callee_prefix": "2",
   "callee_range": 9999,
   "callee_fixed": "0912345678",

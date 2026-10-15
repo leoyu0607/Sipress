@@ -62,6 +62,8 @@ async fn main() -> Result<()> {
         local_domain: args.local_domain.clone(),
         caller_number: args.caller.clone(),
         caller_number_seq: args.caller_number_seq,
+        caller_auth_username: args.auth_user.clone(),
+        caller_auth_password: args.auth_pass.clone(),
         callee_prefix: args.callee_prefix.clone(),
         callee_range: args.callee_range,
         callee_fixed: args.callee_fixed.clone(),

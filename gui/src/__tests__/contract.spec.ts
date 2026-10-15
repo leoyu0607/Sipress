@@ -34,6 +34,7 @@ const SCENARIOS: Scenario[] = [
       c.cliVerbose = true
       Object.assign(c.caller, {
         calleeFixed: '0912345678', totalCalls: 500, callDuration: 0, numberSeq: true,
+        authUser: 'trunk01', authPass: 'p@ss',
         enableAudio: true, audioFile: 'C:/audio/prompt 1.wav', codec: 'pcmu', dtmfSequence: '123#',
       })
       Object.assign(c.caller.cpsPattern, { type: 'ramp', rampStart: 2, rampEnd: 40 })
