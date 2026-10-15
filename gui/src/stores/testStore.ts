@@ -48,6 +48,7 @@ export interface CallerProfile {
   audioFile:     string
   dtmfSequence:  string
   codec:         'pcma' | 'pcmu'
+  duration:      number   // 壓測持續秒數（0 = 不限）
 }
 
 export interface AgentProfile {
@@ -56,13 +57,13 @@ export interface AgentProfile {
   defaultDomain: string
   ackTimeout: number
   byeTimeout: number
+  duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
 export interface TestConfig {
   server: string
   transport: 'UDP' | 'TCP'
   localPort: number
-  duration: number
   /** 僅影響 CLI 預覽（GUI 執行不使用） */
   cliFormat: 'tui' | 'json' | 'csv' | 'table'
   /** 僅影響 CLI 預覽（GUI 執行不使用） */
@@ -241,12 +242,15 @@ export function mosGrade(m: number): { key: 'excellent' | 'fair' | 'poor' | 'non
   return { key: 'none', label: '—', color: 'var(--text2)' }
 }
 
+function fmtDuration(sec: number) {
+  return sec > 0 ? `${sec}s` : '不限'
+}
+
 function defaultConfig(): TestConfig {
   return {
     server: '192.168.166.60:5066',
     transport: 'UDP',
     localPort: 5070,
-    duration: 60,
     cliFormat: 'tui',
     cliVerbose: false,
     mode: 'caller',
@@ -273,6 +277,7 @@ function defaultConfig(): TestConfig {
       audioFile:    '',
       dtmfSequence: '',
       codec:        'pcma',
+      duration:     60,
     },
     agent: {
       count: 0,
@@ -280,6 +285,7 @@ function defaultConfig(): TestConfig {
       defaultDomain: '192.168.166.60',
       ackTimeout: 10,
       byeTimeout: 150,
+      duration: 0,
     },
   }
 }
@@ -290,16 +296,20 @@ function loadConfig(): TestConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return def
-    const saved = JSON.parse(raw) as Partial<TestConfig>
+    const saved = JSON.parse(raw) as Partial<TestConfig> & { duration?: number }
+    // v0.4 以前持續時間是兩端共用的頂層欄位 → 兩端都沿用舊值
+    const legacyDuration = typeof saved.duration === 'number' ? { duration: saved.duration } : {}
+    delete saved.duration
     const cfg: TestConfig = {
       ...def,
       ...saved,
       caller: {
         ...def.caller,
+        ...legacyDuration,
         ...saved.caller,
         cpsPattern: { ...def.caller.cpsPattern, ...saved.caller?.cpsPattern },
       },
-      agent: { ...def.agent, ...saved.agent },
+      agent: { ...def.agent, ...legacyDuration, ...saved.agent },
     }
     if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
     // 註冊狀態不跨啟動保留
@@ -386,7 +396,7 @@ export const useTestStore = defineStore('test', () => {
       if (!(p.concurrency >= 1)) errs.push('併發數量需 ≥ 1')
       if (p.cpsPattern.type === 'flat' && !(p.cps > 0)) errs.push('CPS 需 > 0')
       if (p.cpsPattern.type === 'step' && p.cpsPattern.steps.length === 0) errs.push('階梯模式至少需要一個階層')
-      if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && c.duration === 0)
+      if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
       if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
     } else if (c.agent.accounts.length === 0) {
@@ -417,12 +427,12 @@ export const useTestStore = defineStore('test', () => {
       const a = c.agent
       parts.push('--mode agent --accounts sipress_accounts.csv')
       if (a.defaultDomain.trim()) parts.push(`--account-domain ${a.defaultDomain.trim()}`)
-      parts.push(`-d ${c.duration}`, `--ack-timeout ${a.ackTimeout}`, `--bye-timeout ${a.byeTimeout}`)
+      parts.push(`-d ${a.duration}`, `--ack-timeout ${a.ackTimeout}`, `--bye-timeout ${a.byeTimeout}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
-      parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${c.duration}`, `--call-duration ${p.callDuration}`)
+      parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
@@ -433,11 +443,12 @@ export const useTestStore = defineStore('test', () => {
     return parts.join(' ')
   })
 
-  const progressPct = computed(() =>
-    status.value === 'running' && config.value.duration > 0
-      ? Math.min(100, (elapsedSec.value / config.value.duration) * 100)
+  const progressPct = computed(() => {
+    const duration = config.value[config.value.mode].duration
+    return status.value === 'running' && duration > 0
+      ? Math.min(100, (elapsedSec.value / duration) * 100)
       : 0  // duration=0 means unlimited → no progress bar
-  )
+  })
 
   // ── Log ───────────────────────────────────────────────────────────────────────
   function addLog(level: LogEntry['level'], msg: string, mode?: CallMode) {
@@ -482,7 +493,7 @@ export const useTestStore = defineStore('test', () => {
       cps_pattern:          buildCpsPattern(c.caller.cpsPattern),
       max_concurrent_calls: c.caller.concurrency,
       max_total_calls:      c.caller.totalCalls > 0 ? c.caller.totalCalls : null,
-      duration_secs:        c.duration,
+      duration_secs:        c[mode].duration,
       call_duration_secs:   c.caller.callDuration,
       invite_timeout_secs:  8,
       transport:            c.transport.toLowerCase(),
@@ -660,7 +671,7 @@ export const useTestStore = defineStore('test', () => {
       await invoke('start_test', { config: buildRustConfig(mode) })
       addLog('ok',   `測試開始 → ${c.server}  [${MODE_LABEL[mode]}]`, mode)
       if (mode === 'caller') {
-        addLog('info', `持續時間: ${c.duration > 0 ? c.duration + 's' : '不限'}  cps: ${c.caller.cps}  併發: ${c.caller.concurrency}${c.caller.totalCalls > 0 ? `  總通數: ${c.caller.totalCalls}` : ''}`, mode)
+        addLog('info', `持續時間: ${fmtDuration(c.caller.duration)}  cps: ${c.caller.cps}  併發: ${c.caller.concurrency}${c.caller.totalCalls > 0 ? `  總通數: ${c.caller.totalCalls}` : ''}`, mode)
         if (c.caller.enableAudio && c.caller.audioFile) {
           const fname = c.caller.audioFile.replace(/\\/g, '/').split('/').pop() ?? c.caller.audioFile
           addLog('info', `RTP codec=${codecLabel.value.full}  audio="${fname}"  port=${buildRustConfig(mode).rtp_base_port}`, mode)
@@ -669,7 +680,7 @@ export const useTestStore = defineStore('test', () => {
         }
       } else {
         const total = c.agent.accounts.length
-        addLog('info', `座席端：${total} 個帳號待註冊；持續時間: ${c.duration > 0 ? c.duration + 's' : '不限'}`, mode)
+        addLog('info', `座席端：${total} 個帳號待註冊；持續時間: ${fmtDuration(c.agent.duration)}`, mode)
         addLog('info', `行為：每個帳號 REGISTER → 等待 INVITE → 自動 200 OK → 等 BYE → 結束 deregister`, mode)
       }
     } catch (e) {
@@ -729,6 +740,10 @@ export const useTestStore = defineStore('test', () => {
       for (const e of bothValidationErrors.value) addLog('err', e)
       return
     }
+    const cd = config.value.caller.duration
+    const ad = config.value.agent.duration
+    if (ad > 0 && (cd === 0 || ad < cd))
+      addLog('warn', `座席端持續時間（${fmtDuration(ad)}）比民眾端（${fmtDuration(cd)}）短，座席會先結束，後段來電將無人接聽`)
     if (!await startTest('agent')) return
     addLog('info', `雙端啟動：等待座席註冊完成（最多 ${AGENT_REGISTER_TIMEOUT_MS / 1000}s）後開始撥號`)
     const deadline = Date.now() + AGENT_REGISTER_TIMEOUT_MS

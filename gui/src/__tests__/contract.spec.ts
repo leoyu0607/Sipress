@@ -29,7 +29,7 @@ const SCENARIOS: Scenario[] = [
     apply: c => {
       c.transport = 'TCP'
       c.localPort = 0
-      c.duration = 120
+      c.caller.duration = 120
       c.cliFormat = 'json'
       c.cliVerbose = true
       Object.assign(c.caller, {
@@ -58,7 +58,7 @@ const SCENARIOS: Scenario[] = [
     name: 'agent',
     apply: c => {
       c.mode = 'agent'
-      c.duration = 0
+      c.agent.duration = 0
       c.agent.ackTimeout = 5
       c.agent.byeTimeout = 60
       c.agent.defaultDomain = 'pbx.example'

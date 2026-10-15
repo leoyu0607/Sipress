@@ -57,9 +57,9 @@
 
 新增 `--mode agent`（不再隱藏）、`--accounts <檔案>`、`--account-domain`、`--ack-timeout`、`--bye-timeout`。帳號檔格式與 GUI 匯入相同（解析在 core 的 `AgentAccount::parse_list`，格式錯誤 / 分機重複會指出行號）。CLI 加上 Ctrl-C 與 TUI `q` 的 graceful stop（座席端會先解除註冊）。GUI 的 CLI 預覽在座席模式產生對應指令（帳號檔 = 「匯出 CSV」的 `sipress_accounts.csv`），契約 fixture `cli-agent.txt` 由 CLI e2e 驗證。
 
-### [ ] 6. 持續時間分兩端設定
+### [x] 6. 持續時間分兩端設定
 
-目前 SIP server、Transport、持續時間為兩端共用。常見需求是座席端先開、比民眾端晚關，持續時間應可分開設定。
+持續時間從頂層 `duration` 移到 `caller.duration` / `agent.duration`（座席端預設 0 = 不限）；Sidebar 的欄位跟著模式分頁切換。舊版 localStorage 的共用值會同時套用到兩端。雙端啟動時座席端比民眾端早結束會在事件記錄警告。SIP server、Transport 仍為共用。
 
 ### [x] 7. 修好 Node 26 的前端測試環境
 

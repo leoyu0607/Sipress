@@ -20,6 +20,12 @@ const sec = ref({ target:true, caller:true, agent:true, cliOpts:false })
 
 const locked = computed(() => store.isRunning)
 const serverInvalid = computed(() => !/^[^\s:]+:\d{1,5}$/.test(store.config.server.trim()))
+const durationHint = computed(() => {
+  const mode = store.config.mode
+  const d    = store.config[mode].duration
+  if (d > 0) return `${d} 秒後自動停止`
+  return mode === 'agent' ? '0 = 不限時間（手動停止；雙端時建議比民眾端晚關）' : '0 = 不限時間（需搭配總通數或手動停止）'
+})
 const audioMissing  = computed(() => store.config.caller.enableAudio && !store.config.caller.audioFile.trim())
 
 // 清除全部帳號：兩段式確認
@@ -125,12 +131,12 @@ function statusTitle(s: string) {
           </div>
         </div>
         <div class="field">
-          <label>持續時間 (s) <span class="tag">--duration</span></label>
+          <label>{{ store.config.mode === 'agent' ? '座席端' : '民眾端' }}持續時間 (s) <span class="tag">--duration</span></label>
           <div class="slider-row">
-            <input type="range" min="0" max="3600" v-model.number="store.config.duration">
-            <input type="number" min="0" v-model.number="store.config.duration" class="num-input">
+            <input type="range" min="0" max="3600" v-model.number="store.config[store.config.mode].duration">
+            <input type="number" min="0" v-model.number="store.config[store.config.mode].duration" class="num-input">
           </div>
-          <div class="field-hint">{{ store.config.duration === 0 ? '0 = 不限時間（需搭配總通數或手動停止）' : `${store.config.duration} 秒後自動停止` }}</div>
+          <div class="field-hint">{{ durationHint }}</div>
         </div>
       </div>
     </div>

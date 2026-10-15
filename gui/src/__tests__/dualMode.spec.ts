@@ -170,7 +170,8 @@ describe('雙端：狀態隔離', () => {
     routeSeq({ caller: [1], agent: [1] })
     const s = useTestStore()
     withAccount(s)
-    s.config.duration = 10
+    s.config.caller.duration = 10
+    s.config.agent.duration = 10
     await s.startTest('caller')
     for (let i = 0; i < 4; i++) await tick()
     await s.startTest('agent')
@@ -535,5 +536,61 @@ describe('雙端啟動等待座席註冊', () => {
     expect(s.agents).toEqual({ registered: 48, total: 50 })
     s.config.mode = 'caller'
     expect(s.agents).toEqual({ registered: 0, total: 0 })
+  })
+})
+
+describe('持續時間兩端分開設定', () => {
+  it('各端送出自己的 duration_secs，CLI 預覽跟著檢視中的模式', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    withAccount(s)
+    s.config.caller.duration = 120
+    s.config.agent.duration = 300
+    await s.startTest('caller')
+    await s.startTest('agent')
+    const sent = calls.filter(c => c.cmd === 'start_test').map(c => c.args?.config as { mode: string; duration_secs: number })
+    expect(sent.map(c => [c.mode, c.duration_secs])).toEqual([['caller', 120], ['agent', 300]])
+
+    expect(s.cliCommand).toContain('-d 120')
+    s.config.mode = 'agent'
+    expect(s.cliCommand).toContain('-d 300')
+  })
+
+  it('舊版 localStorage 的共用 duration → 兩端都沿用', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ duration: 45 }))
+    const s = useTestStore()
+    expect(s.config.caller.duration).toBe(45)
+    expect(s.config.agent.duration).toBe(45)
+    expect('duration' in s.config).toBe(false)
+  })
+
+  it('新版設定的各端 duration 優先於舊欄位', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ duration: 45, caller: { duration: 10 }, agent: { duration: 0 } }))
+    const s = useTestStore()
+    expect(s.config.caller.duration).toBe(10)
+    expect(s.config.agent.duration).toBe(0)
+  })
+
+  it.each([
+    [60, true], [0, false], [120, false], [300, false],
+  ])('雙端啟動：民眾端 120s、座席端 %ss → 警告=%s', async (agentDuration, warned) => {
+    vi.useFakeTimers()
+    try {
+      routeInvoke({
+        start_test:   () => 'started',
+        get_snapshot: () => snap({ agents_registered: 1, agents_total: 1 }),
+      })
+      const s = useTestStore()
+      withAccount(s)
+      s.config.caller.duration = 120
+      s.config.agent.duration = agentDuration
+      const done = s.startBoth()
+      await vi.advanceTimersByTimeAsync(1500)
+      await done
+      expect(s.sessions.caller.status).toBe('running')
+      expect(s.logs.some(l => l.level === 'warn' && l.msg.includes('座席會先結束'))).toBe(warned)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -61,7 +61,7 @@ describe('validationErrors', () => {
 
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {
     const s = useTestStore()
-    s.config.duration = 0
+    s.config.caller.duration = 0
     s.config.caller.cpsPattern.type = 'ramp'
     expect(s.validationErrors).toContain('漸增模式需設定持續時間（> 0）')
     s.config.caller.cpsPattern.type = 'spike'

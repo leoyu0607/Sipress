@@ -103,7 +103,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 - 檢視座席端時，指標列最後一格顯示 **REG 已註冊/總數**（綠＝全部成功、黃＝部分、紅＝全部失敗）；座席端量不到 PDD，所以這格取代 PDD。
 - 事件記錄每行會標示來源（民眾端 / 座席端）。
 - 民眾端的被叫號碼需能經 SIPX 路由到座席帳號（例如固定被叫設為座席分機或對應的接入號）。
-- SIP server、Transport、持續時間為兩端共用設定。
+- SIP server、Transport 為兩端共用設定；**持續時間兩端各自設定**（欄位顯示目前分頁的那一端）。座席端通常先開後關：設得比民眾端長或設 0（手動停止）。雙端啟動時若座席端比民眾端早結束，事件記錄會警告。
 
 ---
 
@@ -116,7 +116,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 | SIP 伺服器 | `192.168.1.100:5060` | 目標 SIP Proxy 的 IP 與 Port |
 | 傳輸層 | `UDP` / `TCP` / `TLS` | 須與伺服器設定一致 |
 | 本機 Port | `5070` | 民眾端 SIP 綁定的本機 port；**0 = 自動分配**。port 被其他程式佔用時無法啟動。座席端不使用此設定（每個帳號各自隨機 port） |
-| 持續時間（秒）| `60` | **設為 0 = 不限時間**，需搭配總通數或手動停止 |
+| 持續時間（秒）| 民眾端 `60`、座席端 `0` | **每端各自設定**，欄位跟著目前的模式分頁切換。**設為 0 = 不限時間**，需搭配總通數或手動停止 |
 
 ### 民眾端設定（Caller mode）
 
@@ -337,6 +337,17 @@ extension,username,password,domain
 --format <格式>             table | json | csv（預設：table）
 --logs-dir <目錄>           Log 輸出目錄（預設：logs）
 --tui                      啟用即時儀表板介面
+--mode <模式>               caller（預設）| agent
+--accounts <檔案>           座席帳號檔（agent 模式必填，格式同 GUI 匯入 / 匯出 CSV）
+--account-domain <domain>  帳號未填 domain 時的預設值（預設：SIP server IP）
+--ack-timeout <秒>          座席端等待 ACK 逾時（預設：10）
+--bye-timeout <秒>          座席端等待 BYE 逾時（預設：150）
+```
+
+座席端範例（Ctrl-C 結束時會先解除註冊）：
+
+```bash
+./sipress -s 192.168.1.100:5060 --mode agent --accounts sipress_accounts.csv -d 0 --tui
 ```
 
 ---
