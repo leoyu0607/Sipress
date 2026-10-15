@@ -159,6 +159,57 @@ impl AgentAccount {
     }
 }
 
+/// 座席行為模擬（預設：立即接聽、不拒接、不主動掛斷、無休息時間）
+///
+/// 秒數區間在 `[min, max]` 內均勻隨機；`max` 為 0 表示停用該項。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AgentBehavior {
+    /// 響鈴幾秒後才接聽（180 Ringing 到 200 OK 之間）
+    pub ring_min_secs: f64,
+    pub ring_max_secs: f64,
+    /// 拒接比例（%）：響鈴後回 486 Busy Here
+    pub reject_pct: f64,
+    /// 不接比例（%）：一直響鈴，等 SIPX 逾時 CANCEL（回 487）；
+    /// 超過 `AgentBehavior::NO_ANSWER_CAP_SECS` 仍未取消則回 480
+    pub no_answer_pct: f64,
+    /// 通話幾秒後由座席主動掛斷（從接聽起算；max = 0 → 等對方 BYE）
+    pub talk_min_secs: f64,
+    pub talk_max_secs: f64,
+    /// 兩通之間的休息時間（wrap-up）：通話結束後這段時間內的來電直接回 486
+    pub wrap_up_secs: f64,
+}
+
+impl AgentBehavior {
+    /// 「不接」的來電最多響這麼久，之後回 480 Temporarily Unavailable
+    pub const NO_ANSWER_CAP_SECS: u64 = 120;
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let secs = [
+            ("響鈴秒數", self.ring_min_secs, self.ring_max_secs),
+            ("通話秒數", self.talk_min_secs, self.talk_max_secs),
+            ("休息時間", self.wrap_up_secs, self.wrap_up_secs),
+        ];
+        for (name, min, max) in secs {
+            if !(min.is_finite() && max.is_finite() && min >= 0.0 && max >= 0.0) {
+                anyhow::bail!("座席{}需為 ≥ 0 的數字", name);
+            }
+            if min > max {
+                anyhow::bail!("座席{}的最小值（{}）不可大於最大值（{}）", name, min, max);
+            }
+        }
+        for (name, pct) in [("拒接比例", self.reject_pct), ("不接比例", self.no_answer_pct)] {
+            if !(pct.is_finite() && (0.0..=100.0).contains(&pct)) {
+                anyhow::bail!("座席{}需介於 0–100%（目前為 {}）", name, pct);
+            }
+        }
+        if self.reject_pct + self.no_answer_pct > 100.0 {
+            anyhow::bail!("座席拒接 + 不接比例合計不可超過 100%");
+        }
+        Ok(())
+    }
+}
+
 /// 傳輸層協定
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -262,6 +313,10 @@ pub struct Config {
     /// Agent 模式：等待 BYE 的逾時秒數（預設 150）
     #[serde(default = "default_bye_timeout")]
     pub agent_bye_timeout_secs: u64,
+
+    /// Agent 模式：座席行為模擬（響鈴延遲、拒接 / 不接、主動掛斷、休息時間）
+    #[serde(default)]
+    pub agent_behavior: AgentBehavior,
 }
 
 fn default_ack_timeout() -> u64 { 10 }
@@ -295,6 +350,7 @@ impl Default for Config {
             agent_accounts:           Vec::new(),
             agent_ack_timeout_secs:   default_ack_timeout(),
             agent_bye_timeout_secs:   default_bye_timeout(),
+            agent_behavior:           AgentBehavior::default(),
         }
     }
 }
@@ -327,6 +383,9 @@ impl Config {
             if self.max_concurrent_calls == 0 {
                 anyhow::bail!("最大並發通話數必須大於 0");
             }
+        }
+        if self.mode == Mode::Agent {
+            self.agent_behavior.validate()?;
         }
         if self.invite_timeout_secs == 0 {
             anyhow::bail!("INVITE 逾時秒數必須大於 0");
@@ -450,6 +509,29 @@ mod tests {
         for bad in ["localhost", "0.0.0.0:", "0.0.0.0:99999", "1.2.3"] {
             let cfg = Config { local_addr: Some(bad.into()), ..Default::default() };
             assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
+        }
+    }
+
+    #[test]
+    fn agent_behavior_validation() {
+        let ok = AgentBehavior {
+            ring_min_secs: 1.0, ring_max_secs: 3.0, reject_pct: 20.0, no_answer_pct: 80.0,
+            talk_min_secs: 5.0, talk_max_secs: 5.0, wrap_up_secs: 2.0,
+        };
+        assert!(ok.validate().is_ok());
+        assert!(AgentBehavior::default().validate().is_ok());
+        let bad = [
+            AgentBehavior { ring_min_secs: 3.0, ring_max_secs: 1.0, ..Default::default() },
+            AgentBehavior { talk_max_secs: -1.0, ..Default::default() },
+            AgentBehavior { wrap_up_secs: f64::NAN, ..Default::default() },
+            AgentBehavior { reject_pct: 101.0, ..Default::default() },
+            AgentBehavior { reject_pct: 60.0, no_answer_pct: 50.0, ..Default::default() },
+        ];
+        for b in bad {
+            assert!(b.validate().is_err(), "{:?} 應被拒絕", b);
+            // 只在座席模式檢查
+            assert!(Config { agent_behavior: b.clone(), ..Default::default() }.validate().is_ok());
+            assert!(Config { mode: Mode::Agent, agent_behavior: b, ..Default::default() }.validate().is_err());
         }
     }
 

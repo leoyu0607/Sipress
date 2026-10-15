@@ -6,7 +6,7 @@ use args::Args;
 use clap::Parser;
 use sipress_core::{
     agent_engine::AgentEngine,
-    config::{AgentAccount, Config, Mode, Transport},
+    config::{AgentAccount, AgentBehavior, Config, Mode, Transport},
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     reporter::{OutputFormat, Reporter},
@@ -66,6 +66,15 @@ async fn main() -> Result<()> {
         agent_accounts,
         agent_ack_timeout_secs: args.ack_timeout,
         agent_bye_timeout_secs: args.bye_timeout,
+        agent_behavior: AgentBehavior {
+            ring_min_secs: args.ring.0,
+            ring_max_secs: args.ring.1,
+            reject_pct:    args.reject_pct,
+            no_answer_pct: args.no_answer_pct,
+            talk_min_secs: args.talk.0,
+            talk_max_secs: args.talk.1,
+            wrap_up_secs:  args.wrap_up,
+        },
     };
     config.validate()?;
 

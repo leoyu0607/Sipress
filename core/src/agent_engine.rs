@@ -11,7 +11,7 @@
 ///   8. 結束時送 REGISTER Expires=0 解除註冊
 ///
 /// 設計原則：簡單、可觀察。用單一 socket 收發，避免多 socket 同步問題。
-use crate::config::{AgentAccount, Config};
+use crate::config::{AgentAccount, AgentBehavior, Config};
 use crate::engine::ProgressCallback;
 use crate::rtp::session::{RtpSession, RtpSessionConfig};
 use crate::rtp::stats::{aggregate_snapshots, RtpStats, RtpStatsSnapshot};
@@ -234,13 +234,71 @@ struct DialogCtx {
     ack_received:    bool,
     ack_timeout_secs: u64,
     bye_timeout_secs: u64,
+    /// 座席主動掛斷的時間（行為模擬；None = 等對方 BYE）
+    hangup_at:       Option<Instant>,
 }
 
 impl DialogCtx {
-    fn deadline(&self) -> Instant {
+    fn timeout_at(&self) -> Instant {
         let secs = if self.ack_received { self.bye_timeout_secs } else { self.ack_timeout_secs };
         self.answered_at + Duration::from_secs(secs)
     }
+
+    /// 已收到 ACK 且到了主動掛斷時間
+    fn agent_hangup_due(&self, now: Instant) -> bool {
+        self.ack_received && self.hangup_at.is_some_and(|t| now >= t)
+    }
+
+    fn deadline(&self) -> Instant {
+        let timeout = self.timeout_at();
+        match self.hangup_at {
+            Some(t) if self.ack_received => timeout.min(t),
+            _ => timeout,
+        }
+    }
+}
+
+// ─── 座席行為模擬 ─────────────────────────────────────────────────
+
+/// 響鈴結束後要做的事
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RingOutcome {
+    Answer,
+    /// 486 Busy Here
+    Reject,
+    /// 不接：等 CANCEL，逾時回 480
+    NoAnswer,
+}
+
+impl RingOutcome {
+    /// `roll` 為 [0, 100) 的隨機數
+    fn decide(b: &AgentBehavior, roll: f64) -> Self {
+        if roll < b.reject_pct {
+            Self::Reject
+        } else if roll < b.reject_pct + b.no_answer_pct {
+            Self::NoAnswer
+        } else {
+            Self::Answer
+        }
+    }
+}
+
+/// [min, max] 秒內均勻隨機；max = 0 → None（停用）
+fn random_secs(min: f64, max: f64) -> Option<Duration> {
+    use rand::Rng;
+    if max <= 0.0 { return None; }
+    let secs = if max > min { rand::thread_rng().gen_range(min..=max) } else { max };
+    Some(Duration::from_secs_f64(secs))
+}
+
+/// 已送 180 Ringing、尚未送最終回應的來電
+struct PendingInvite {
+    invite_raw:      String,
+    local_to_tag:    String,
+    remote_from_tag: String,
+    outcome:         RingOutcome,
+    /// 響鈴結束（送出最終回應）的時間
+    due:             Instant,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -283,6 +341,11 @@ async fn account_runner(
     };
 
     let dialogs: Arc<Mutex<HashMap<String, DialogCtx>>> = Arc::new(Mutex::new(HashMap::new()));
+    // 響鈴中（尚未接聽 / 拒接）的來電
+    let mut pending: HashMap<String, PendingInvite> = HashMap::new();
+    // wrap-up：此時間之前的新來電一律 486
+    let mut wrap_until: Option<Instant> = None;
+    let wrap_up = Duration::from_secs_f64(cfg.agent_behavior.wrap_up_secs);
     // runner 結束或被 abort 時 drop → 自動取消註冊計數
     let mut registered = RegisteredGauge::new(Arc::clone(&live));
 
@@ -306,7 +369,9 @@ async fn account_runner(
         let next_timeout = {
             let dlgs = dialogs.lock().await;
             dlgs.values()
-                .map(|ctx| tokio::time::Instant::from_std(ctx.deadline()))
+                .map(|ctx| ctx.deadline())
+                .chain(pending.values().map(|p| p.due))
+                .map(tokio::time::Instant::from_std)
                 .min()
                 .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600))
         };
@@ -331,9 +396,10 @@ async fn account_runner(
                     let needs_reregister = handle_request(
                         &raw, &sock, &log, &local_addr, &local_ip,
                         &account, &cfg, &live, &detail, Arc::clone(&dialogs),
-                        &port_counter, &rtp_registry,
+                        &port_counter, &rtp_registry, &mut pending, wrap_until,
                     ).await;
                     if needs_reregister {
+                        wrap_until = Some(Instant::now() + wrap_up);
                         trigger_re_register(
                             &sock, &log, &server_addr_str, &local_addr,
                             &account, &reg_from_tag, &reg_call_id, transport_str,
@@ -369,17 +435,50 @@ async fn account_runner(
                 let _ = sock.send(req.as_bytes()).await;
             }
 
-            // 通話 timeout（ACK / BYE）→ 座席主動 BYE
+            // 響鈴結束（接聽 / 拒接 / 不接逾時）；通話 timeout（ACK / BYE）或主動掛斷 → 座席主動 BYE
             _ = time::sleep_until(next_timeout) => {
-                let mut dlgs = dialogs.lock().await;
                 let now = Instant::now();
+                let due: Vec<String> = pending.iter()
+                    .filter(|(_, p)| now >= p.due)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for call_id in due {
+                    let Some(p) = pending.remove(&call_id) else { continue };
+                    match p.outcome {
+                        RingOutcome::Answer => {
+                            let ctx = answer_call(
+                                &p.invite_raw, &call_id, p.local_to_tag, p.remote_from_tag,
+                                &sock, &log, &local_addr, &local_ip, &account, &cfg, &live,
+                                &port_counter, &rtp_registry,
+                            ).await;
+                            dialogs.lock().await.insert(call_id, ctx);
+                        }
+                        RingOutcome::Reject => {
+                            log.log_event(&account.extension, &format!("[{}] 拒接 → 486", short(&call_id)));
+                            fail_invite(&p.invite_raw, &p.local_to_tag, "486 Busy Here", 486, &sock, &log, &live, &detail).await;
+                        }
+                        RingOutcome::NoAnswer => {
+                            log.log_event(&account.extension, &format!(
+                                "[{}] 響鈴 {}s 未被取消 → 480", short(&call_id), AgentBehavior::NO_ANSWER_CAP_SECS));
+                            fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail).await;
+                        }
+                    }
+                }
+
+                let mut dlgs = dialogs.lock().await;
                 let timed_out: Vec<String> = dlgs.iter()
                     .filter(|(_, ctx)| now >= ctx.deadline())
                     .map(|(k, _)| k.clone())
                     .collect();
                 for call_id in timed_out {
                     if let Some(mut ctx) = dlgs.remove(&call_id) {
-                        let reason = if !ctx.ack_received { "ACK timeout" } else { "BYE timeout" };
+                        let reason = if ctx.agent_hangup_due(now) {
+                            "座席掛斷"
+                        } else if !ctx.ack_received {
+                            "ACK timeout"
+                        } else {
+                            "BYE timeout"
+                        };
                         log.log_event(&account.extension,
                             &format!("[{}] {} → 主動 BYE", short(&call_id), reason));
                         // 建構 agent-initiated BYE
@@ -392,6 +491,7 @@ async fn account_runner(
                         stop_call_rtp(&call_id, &mut ctx, &rtp_registry, &live).await;
                         detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                         live.on_completed();
+                        wrap_until = Some(Instant::now() + wrap_up);
                         // 通話結束後 re-REGISTER 維持在線
                         trigger_re_register(
                             &sock, &log, &server_addr_str, &local_addr,
@@ -406,6 +506,10 @@ async fn account_runner(
             _ = stop.changed() => {
                 log.log_event(&account.extension, "收到停止訊號，發送 REGISTER Expires=0");
                 registered.set(false);
+                // 響鈴中的來電 → 480（座席下線）
+                for (_, p) in pending.drain() {
+                    fail_invite(&p.invite_raw, &p.local_to_tag, "480 Temporarily Unavailable", 480, &sock, &log, &live, &detail).await;
+                }
                 // 停止所有 RTP sessions
                 {
                     let mut dlgs = dialogs.lock().await;
@@ -634,6 +738,8 @@ async fn handle_request(
     dialogs:      Arc<Mutex<HashMap<String, DialogCtx>>>,
     port_counter: &Arc<Mutex<u16>>,
     rtp_registry: &SharedRtpRegistry,
+    pending:      &mut HashMap<String, PendingInvite>,
+    wrap_until:   Option<Instant>,
 ) -> bool {
     let method = raw.lines().next()
         .and_then(|l| l.split_whitespace().next())
@@ -671,12 +777,25 @@ async fn handle_request(
                     }
                 }
                 log.log_event(&account.extension, &format!("[{}] 回應 RE-INVITE", short(&call_id)));
+            } else if let Some(p) = pending.get(&call_id) {
+                // 響鈴中收到重傳的 INVITE → 重送 180
+                let ringing = SipMessage::response_with_to_tag(raw, "180 Ringing", &p.local_to_tag);
+                log.log_message(Direction::Send, &ringing, "server");
+                let _ = sock.send(ringing.as_bytes()).await;
             } else {
-                // ── 新通話：100 Trying → 180 Ringing → 200 OK + SDP ──
-                // 座席端立即自動接聽，PDD / 建立時間只會量到本機處理時間，故不記錄
+                // ── 新通話：100 Trying → 180 Ringing →（響鈴延遲）→ 200 OK + SDP / 486 / 不接 ──
+                // PDD / 建立時間只會量到本機處理時間（或刻意的響鈴延遲），故不記錄
                 live.on_invite();
 
                 let local_to_tag = SipMessage::new_tag();
+                let behavior = &cfg.agent_behavior;
+
+                // wrap-up 休息中 → 直接忙線
+                if wrap_until.is_some_and(|t| Instant::now() < t) {
+                    log.log_event(&account.extension, &format!("[{}] 休息中 → 486", short(&call_id)));
+                    fail_invite(raw, &local_to_tag, "486 Busy Here", 486, sock, log, live, detail).await;
+                    return false;
+                }
 
                 // 從 INVITE 解析遠端 From-tag
                 let remote_from_tag = SipParser::from_tag(raw).unwrap_or_default();
@@ -686,87 +805,38 @@ async fn handle_request(
                 log.log_message(Direction::Send, &trying, "server");
                 let _ = sock.send(trying.as_bytes()).await;
 
-
                 // 180 Ringing
                 let ringing = SipMessage::response_with_to_tag(raw, "180 Ringing", &local_to_tag);
                 log.log_message(Direction::Send, &ringing, "server");
                 let _ = sock.send(ringing.as_bytes()).await;
 
-                // 分配真實 RTP port（若啟用）
-                let (rtp_port, pre_bound) = if cfg.enable_rtp {
-                    match RtpSession::allocate_port(port_counter, local_ip).await {
-                        Ok((p, s)) => (p, Some(s)),
-                        Err(e) => {
-                            log.log_event(&account.extension,
-                                &format!("RTP port 分配失敗: {}", e));
-                            (pick_dummy_rtp_port(local_ip), None)
-                        }
+                let outcome = RingOutcome::decide(behavior, rand::random::<f64>() * 100.0);
+                let ring = match outcome {
+                    RingOutcome::NoAnswer => Some(Duration::from_secs(AgentBehavior::NO_ANSWER_CAP_SECS)),
+                    _ => random_secs(behavior.ring_min_secs, behavior.ring_max_secs),
+                };
+                match (outcome, ring) {
+                    (RingOutcome::Answer, None) => {
+                        let ctx = answer_call(
+                            raw, &call_id, local_to_tag, remote_from_tag,
+                            sock, log, local_addr, local_ip, account, cfg, live,
+                            port_counter, rtp_registry,
+                        ).await;
+                        dlgs.insert(call_id.clone(), ctx);
                     }
-                } else {
-                    (pick_dummy_rtp_port(local_ip), None)
-                };
-
-                // 解析 INVITE SDP 中的遠端 RTP 地址
-                let sip_ip = cfg.server_addr.split(':').next().unwrap_or("127.0.0.1");
-                let remote_rtp_addr = SipResponse::sdp_rtp_addr(raw, sip_ip);
-
-                // 200 OK + SDP
-                let ok = build_response_with_sdp(raw, "200 OK", &local_to_tag, local_addr, rtp_port);
-                log.log_message(Direction::Send, &ok, "server");
-                let _ = sock.send(ok.as_bytes()).await;
-
-                let answered_at = Instant::now();
-                live.on_answered();
-
-                // 啟動 RTP session（若啟用且有遠端地址）
-                let rtp_session = if cfg.enable_rtp {
-                    if let Some(ref remote_addr) = remote_rtp_addr {
-                        let rtp_cfg = RtpSessionConfig {
-                            base_port:   cfg.rtp_base_port,
-                            local_ip:    local_ip.to_string(),
-                            remote_addr: remote_addr.clone(),
-                            audio_file:  cfg.audio_file.clone(),
-                            ssrc:        None,
-                            local_port:  Some(rtp_port),
-                            codec_pt:    cfg.codec.payload_type(),
-                        };
-                        match RtpSession::start(rtp_cfg, Arc::clone(port_counter), pre_bound).await {
-                            Ok(session) => {
-                                // 登記為進行中（用於即時品質聚合）
-                                rtp_registry.lock().await.active
-                                    .insert(call_id.clone(), Arc::clone(&session.stats));
-                                live.on_rtp_start();
-                                log.log_event(&account.extension,
-                                    &format!("[{}] RTP 啟動 port={} → {}", short(&call_id), rtp_port, remote_addr));
-                                Some(session)
-                            }
-                            Err(e) => {
-                                log.log_event(&account.extension,
-                                    &format!("[{}] RTP 啟動失敗: {}", short(&call_id), e));
-                                None
-                            }
-                        }
-                    } else {
-                        log.log_event(&account.extension,
-                            &format!("[{}] INVITE SDP 無 RTP 地址，跳過 RTP", short(&call_id)));
-                        None
+                    (outcome, ring) => {
+                        log.log_event(&account.extension, &format!(
+                            "[{}] 響鈴中（{:?}，{:.1}s）", short(&call_id), outcome,
+                            ring.unwrap_or_default().as_secs_f64()));
+                        pending.insert(call_id.clone(), PendingInvite {
+                            invite_raw: raw.to_string(),
+                            local_to_tag,
+                            remote_from_tag,
+                            outcome,
+                            due: Instant::now() + ring.unwrap_or_default(),
+                        });
                     }
-                } else {
-                    None
-                };
-
-                let ctx = DialogCtx {
-                    invite_raw:      raw.to_string(),
-                    local_to_tag,
-                    answered_at,
-                    remote_from_tag,
-                    rtp_session,
-                    ack_received:    false,
-                    ack_timeout_secs: cfg.agent_ack_timeout_secs,
-                    bye_timeout_secs: cfg.agent_bye_timeout_secs,
-                };
-                dlgs.insert(call_id.clone(), ctx);
-                log.log_event(&account.extension, &format!("[{}] 接聽來電", short(&call_id)));
+                }
             }
         }
         "ACK" => {
@@ -789,8 +859,17 @@ async fn handle_request(
                 return true;
             }
         }
+        "CANCEL" if pending.contains_key(&call_id) => {
+            // 響鈴中被取消（主叫掛斷或 ACD 逾時改派）：CANCEL 回 200，INVITE 回 487
+            let p = pending.remove(&call_id).unwrap();
+            let resp = SipMessage::response_for_request(raw, "200 OK");
+            log.log_message(Direction::Send, &resp, "server");
+            let _ = sock.send(resp.as_bytes()).await;
+            log.log_event(&account.extension, &format!("[{}] 響鈴中被取消 → 487", short(&call_id)));
+            fail_invite(&p.invite_raw, &p.local_to_tag, "487 Request Terminated", 487, sock, log, live, detail).await;
+        }
         "CANCEL" => {
-            // 座席收到 INVITE 即同步回 200 OK，CANCEL 到達時 INVITE transaction 必定已完成：
+            // 不在響鈴中 → INVITE transaction 已完成（已接聽或已回最終回應）：
             // 依 RFC 3261 §9.2，CANCEL 回 200 OK 但不影響已建立的通話（由後續 BYE 結束）；
             // 找不到對應通話則回 481
             let known = dialogs.lock().await.contains_key(&call_id);
@@ -813,6 +892,123 @@ async fn handle_request(
         }
     }
     false
+}
+
+/// 接聽來電：分配 RTP port、送 200 OK + SDP、啟動 RTP，回傳 dialog
+#[allow(clippy::too_many_arguments)]
+async fn answer_call(
+    raw:             &str,
+    call_id:         &str,
+    local_to_tag:    String,
+    remote_from_tag: String,
+    sock:            &UdpSocket,
+    log:             &SipLogger,
+    local_addr:      &str,
+    local_ip:        &str,
+    account:         &AgentAccount,
+    cfg:             &Config,
+    live:            &LiveStats,
+    port_counter:    &Arc<Mutex<u16>>,
+    rtp_registry:    &SharedRtpRegistry,
+) -> DialogCtx {
+    let call_id = call_id.to_string();
+    // 分配真實 RTP port（若啟用）
+    let (rtp_port, pre_bound) = if cfg.enable_rtp {
+        match RtpSession::allocate_port(port_counter, local_ip).await {
+            Ok((p, s)) => (p, Some(s)),
+            Err(e) => {
+                log.log_event(&account.extension,
+                    &format!("RTP port 分配失敗: {}", e));
+                (pick_dummy_rtp_port(local_ip), None)
+            }
+        }
+    } else {
+        (pick_dummy_rtp_port(local_ip), None)
+    };
+
+    // 解析 INVITE SDP 中的遠端 RTP 地址
+    let sip_ip = cfg.server_addr.split(':').next().unwrap_or("127.0.0.1");
+    let remote_rtp_addr = SipResponse::sdp_rtp_addr(raw, sip_ip);
+
+    // 200 OK + SDP
+    let ok = build_response_with_sdp(raw, "200 OK", &local_to_tag, local_addr, rtp_port);
+    log.log_message(Direction::Send, &ok, "server");
+    let _ = sock.send(ok.as_bytes()).await;
+
+    let answered_at = Instant::now();
+    live.on_answered();
+
+    // 啟動 RTP session（若啟用且有遠端地址）
+    let rtp_session = if cfg.enable_rtp {
+        if let Some(ref remote_addr) = remote_rtp_addr {
+            let rtp_cfg = RtpSessionConfig {
+                base_port:   cfg.rtp_base_port,
+                local_ip:    local_ip.to_string(),
+                remote_addr: remote_addr.clone(),
+                audio_file:  cfg.audio_file.clone(),
+                ssrc:        None,
+                local_port:  Some(rtp_port),
+                codec_pt:    cfg.codec.payload_type(),
+            };
+            match RtpSession::start(rtp_cfg, Arc::clone(port_counter), pre_bound).await {
+                Ok(session) => {
+                    // 登記為進行中（用於即時品質聚合）
+                    rtp_registry.lock().await.active
+                        .insert(call_id.clone(), Arc::clone(&session.stats));
+                    live.on_rtp_start();
+                    log.log_event(&account.extension,
+                        &format!("[{}] RTP 啟動 port={} → {}", short(&call_id), rtp_port, remote_addr));
+                    Some(session)
+                }
+                Err(e) => {
+                    log.log_event(&account.extension,
+                        &format!("[{}] RTP 啟動失敗: {}", short(&call_id), e));
+                    None
+                }
+            }
+        } else {
+            log.log_event(&account.extension,
+                &format!("[{}] INVITE SDP 無 RTP 地址，跳過 RTP", short(&call_id)));
+            None
+        }
+    } else {
+        None
+    };
+
+    let hangup_at = random_secs(cfg.agent_behavior.talk_min_secs, cfg.agent_behavior.talk_max_secs)
+        .map(|d| answered_at + d);
+    let ctx = DialogCtx {
+        invite_raw:      raw.to_string(),
+        local_to_tag,
+        answered_at,
+        remote_from_tag,
+        rtp_session,
+        ack_received:    false,
+        ack_timeout_secs: cfg.agent_ack_timeout_secs,
+        bye_timeout_secs: cfg.agent_bye_timeout_secs,
+        hangup_at,
+    };
+    log.log_event(&account.extension, &format!("[{}] 接聽來電", short(&call_id)));
+    ctx
+}
+
+/// 對 INVITE 送最終失敗回應（486 / 487 / 480），計為失敗通話
+#[allow(clippy::too_many_arguments)]
+async fn fail_invite(
+    invite_raw:   &str,
+    local_to_tag: &str,
+    status_line:  &str,
+    code:         u16,
+    sock:         &UdpSocket,
+    log:          &SipLogger,
+    live:         &LiveStats,
+    detail:       &DetailedStats,
+) {
+    let resp = SipMessage::response_with_to_tag(invite_raw, status_line, local_to_tag);
+    log.log_message(Direction::Send, &resp, "server");
+    let _ = sock.send(resp.as_bytes()).await;
+    live.on_failed();
+    detail.record_fail_code(code);
 }
 
 // ─── 共用：建構回應訊息 ─────────────────────────────────────────────
@@ -914,6 +1110,47 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     fn registered(live: &LiveStats) -> u64 { live.agents_registered.load(Ordering::Relaxed) }
+
+    #[test]
+    fn ring_outcome_follows_percentages() {
+        let b = AgentBehavior { reject_pct: 20.0, no_answer_pct: 30.0, ..Default::default() };
+        assert_eq!(RingOutcome::decide(&b, 0.0),   RingOutcome::Reject);
+        assert_eq!(RingOutcome::decide(&b, 19.9),  RingOutcome::Reject);
+        assert_eq!(RingOutcome::decide(&b, 20.0),  RingOutcome::NoAnswer);
+        assert_eq!(RingOutcome::decide(&b, 49.9),  RingOutcome::NoAnswer);
+        assert_eq!(RingOutcome::decide(&b, 50.0),  RingOutcome::Answer);
+        assert_eq!(RingOutcome::decide(&b, 99.99), RingOutcome::Answer);
+        // 預設行為一律接聽
+        assert_eq!(RingOutcome::decide(&AgentBehavior::default(), 0.0), RingOutcome::Answer);
+    }
+
+    #[test]
+    fn random_secs_stays_in_range() {
+        assert_eq!(random_secs(0.0, 0.0), None);
+        assert_eq!(random_secs(2.0, 2.0), Some(Duration::from_secs(2)));
+        for _ in 0..100 {
+            let d = random_secs(1.0, 3.0).unwrap().as_secs_f64();
+            assert!((1.0..=3.0).contains(&d), "{}", d);
+        }
+    }
+
+    #[test]
+    fn dialog_deadline_uses_agent_hangup_only_after_ack() {
+        let now = Instant::now();
+        let mut ctx = DialogCtx {
+            invite_raw: String::new(), local_to_tag: String::new(), answered_at: now,
+            remote_from_tag: String::new(), rtp_session: None, ack_received: false,
+            ack_timeout_secs: 10, bye_timeout_secs: 150,
+            hangup_at: Some(now + Duration::from_secs(3)),
+        };
+        assert_eq!(ctx.deadline(), now + Duration::from_secs(10), "未收到 ACK 前依 ACK 逾時");
+        assert!(!ctx.agent_hangup_due(now + Duration::from_secs(5)));
+        ctx.ack_received = true;
+        assert_eq!(ctx.deadline(), now + Duration::from_secs(3));
+        assert!(ctx.agent_hangup_due(now + Duration::from_secs(3)));
+        ctx.hangup_at = Some(now + Duration::from_secs(500));
+        assert_eq!(ctx.deadline(), now + Duration::from_secs(150), "BYE 逾時較早時以逾時為準");
+    }
 
     #[test]
     fn gauge_counts_only_state_changes() {

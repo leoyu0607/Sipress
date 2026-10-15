@@ -258,12 +258,13 @@ extension,username,password,domain
 
 | 收到的請求 | 自動回應 |
 |---|---|
-| `INVITE` 新通話 | `100 Trying` → `180 Ringing` → `200 OK` + SDP（PCMA）；啟動真實 RTP（若 enable_rtp） |
+| `INVITE` 新通話 | `100 Trying` → `180 Ringing` →（響鈴延遲）→ `200 OK` + SDP（PCMA）；啟動真實 RTP（若 enable_rtp）。依行為模擬也可能回 `486`（拒接 / 休息中）或一直響鈴不接 |
 | `INVITE` （已建立 dialog） | RE-INVITE 視為保活，回 `200 OK` + SDP；更新 RTP 目標地址 |
 | `ACK` | 標記通話已建立（10s 未收到 → 座席主動 BYE） |
 | `BYE` | `200 OK`，停止 RTP，計入 calls_completed，**自動 re-REGISTER 維持在線** |
 | （BYE timeout） | 通話 150s 未收到 BYE → 座席主動送 BYE 掛斷，re-REGISTER |
-| `CANCEL` | `200 OK`（CANCEL）+ `487 Request Terminated`（INVITE） |
+| `CANCEL` | 響鈴中：`200 OK`（CANCEL）+ `487 Request Terminated`（INVITE）；已接聽：`200 OK` 且不影響通話（等 BYE） |
+| （主動掛斷） | 設定 `--talk` 時，接聽後隨機秒數由座席送 BYE |
 | `OPTIONS` | `200 OK`（健康檢查） |
 
 ### 座席端 RTP
@@ -457,6 +458,11 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--account-domain` | SIP server IP | 帳號未填 domain 時使用的預設值 |
 | `--ack-timeout` | `10` | 接聽後等待 ACK 的逾時秒數（逾時主動 BYE） |
 | `--bye-timeout` | `150` | 通話中等待對方 BYE 的逾時秒數（逾時主動 BYE） |
+| `--ring` | `0` | 響鈴幾秒後才接聽，`N` 或區間 `MIN-MAX`（隨機） |
+| `--talk` | `0` | 接聽幾秒後座席主動掛斷，`N` 或 `MIN-MAX`；0 = 等對方 BYE |
+| `--reject-pct` | `0` | 拒接比例 %（響鈴後回 486 Busy Here） |
+| `--no-answer-pct` | `0` | 不接比例 %（一直響鈴，等 SIPX 逾時 CANCEL 改派；120 秒未取消回 480） |
+| `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
 
 agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被忽略；Ctrl-C 或 TUI 按 `q` 會先送 `REGISTER Expires=0` 解除註冊再結束。
 

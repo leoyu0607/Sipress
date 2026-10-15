@@ -38,5 +38,14 @@
     }
   ],
   "agent_ack_timeout_secs": 5,
-  "agent_bye_timeout_secs": 60
+  "agent_bye_timeout_secs": 60,
+  "agent_behavior": {
+    "ring_min_secs": 1,
+    "ring_max_secs": 3,
+    "reject_pct": 10,
+    "no_answer_pct": 5,
+    "talk_min_secs": 30,
+    "talk_max_secs": 30,
+    "wrap_up_secs": 2
+  }
 }

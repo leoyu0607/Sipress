@@ -222,6 +222,20 @@ extension,username,password,domain
 5. 也會處理 RE-INVITE（Session-Expires）/ CANCEL / OPTIONS
 6. 測試結束時對每個帳號發 REGISTER Expires=0 解除註冊
 
+### 5.5 座席行為模擬
+
+預設座席收到來電立即接聽、等對方掛斷。要測 ACD 的重新分配與座席忙碌時的行為，可在座席端設定：
+
+| 欄位 | CLI | 說明 |
+|---|---|---|
+| 響鈴後接聽（秒，最小–最大） | `--ring 2-5` | 送 180 Ringing 後隨機等幾秒才 200 OK；最大值 0 = 立即接聽 |
+| 主動掛斷（秒，最小–最大） | `--talk 30-90` | 接聽後隨機幾秒由座席送 BYE；最大值 0 = 等對方 BYE |
+| 拒接 % | `--reject-pct 10` | 響鈴後回 `486 Busy Here` |
+| 不接 % | `--no-answer-pct 10` | 一直響鈴，等 SIPX 逾時 CANCEL（回 487）改派別的座席；120 秒仍未取消則回 480 |
+| 休息（秒） | `--wrap-up 5` | 通話結束後的 wrap-up 時間，期間的新來電直接回 486 |
+
+拒接、不接、休息中被拒的來電在座席端計為失敗通話（4xx），ASR 會相應降低；響鈴延遲會反映在民眾端的通話建立時間（Setup，到 200 OK），PDD（到第一個 18x）不受影響。
+
 ---
 
 ## 6. 執行測試與讀取即時指標
@@ -342,6 +356,11 @@ extension,username,password,domain
 --account-domain <domain>  帳號未填 domain 時的預設值（預設：SIP server IP）
 --ack-timeout <秒>          座席端等待 ACK 逾時（預設：10）
 --bye-timeout <秒>          座席端等待 BYE 逾時（預設：150）
+--ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）
+--talk <秒|最小-最大>       座席端接聽幾秒後主動掛斷（預設：0 = 等對方）
+--reject-pct <%>           座席端拒接比例（486）
+--no-answer-pct <%>        座席端不接比例（等 CANCEL）
+--wrap-up <秒>              座席端兩通之間休息秒數（期間來電回 486）
 ```
 
 座席端範例（Ctrl-C 結束時會先解除註冊）：

@@ -363,6 +363,43 @@ function statusTitle(s: string) {
           </div>
         </div>
 
+        <!-- Behavior simulation -->
+        <div class="field-row">
+          <div class="field" style="flex:1">
+            <label>響鈴後接聽 (秒) <span class="tag">--ring</span></label>
+            <div class="range-pair">
+              <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
+              <span>–</span>
+              <input v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
+            </div>
+          </div>
+          <div class="field" style="flex:1">
+            <label>主動掛斷 (秒) <span class="tag">--talk</span></label>
+            <div class="range-pair">
+              <input v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
+              <span>–</span>
+              <input v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
+            </div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:1">
+            <label>拒接 % <span class="tag">486</span></label>
+            <input v-model.number="store.config.agent.behavior.rejectPct" type="number" min="0" max="100"
+                   title="響鈴後回 486 Busy Here 的比例">
+          </div>
+          <div class="field" style="flex:1">
+            <label>不接 %</label>
+            <input v-model.number="store.config.agent.behavior.noAnswerPct" type="number" min="0" max="100"
+                   title="一直響鈴不接，等 SIPX 逾時 CANCEL 重派的比例">
+          </div>
+          <div class="field" style="flex:1">
+            <label>休息 (秒)</label>
+            <input v-model.number="store.config.agent.behavior.wrapUp" type="number" min="0"
+                   title="通話結束後的 wrap-up 時間，期間來電回 486">
+          </div>
+        </div>
+
         <!-- Upload -->
         <div
           class="drop-zone"
@@ -957,4 +994,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .cli-text { font-family: var(--mono); font-size: 10px; color: var(--text1); word-break: break-all; line-height: 1.6; flex: 1; }
 .cli-copy { font-size: 12px; color: var(--text2); flex-shrink: 0; margin-top: 1px; transition: color 0.2s; }
 .cli-box:hover .cli-copy { color: var(--accent); }
+.range-pair { display: flex; align-items: center; gap: 4px; }
+.range-pair input { flex: 1; min-width: 0; }
+.range-pair span { color: var(--text2); }
 </style>

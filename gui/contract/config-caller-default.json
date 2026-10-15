@@ -25,5 +25,14 @@
   "mode": "caller",
   "agent_accounts": [],
   "agent_ack_timeout_secs": 10,
-  "agent_bye_timeout_secs": 150
+  "agent_bye_timeout_secs": 150,
+  "agent_behavior": {
+    "ring_min_secs": 0,
+    "ring_max_secs": 0,
+    "reject_pct": 0,
+    "no_answer_pct": 0,
+    "talk_min_secs": 0,
+    "talk_max_secs": 0,
+    "wrap_up_secs": 0
+  }
 }

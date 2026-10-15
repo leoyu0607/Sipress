@@ -45,13 +45,10 @@
 
 產出一份合併的 HTML 報告。需要先確認 SIPX 轉送時是否保留可配對的欄位（Call-ID 通常會被 B2BUA 改掉，可能要用主叫號碼加時間窗或自訂 header）。
 
-### [ ] 4. 座席行為模擬
+### [x] 4. 座席行為模擬
 
-目前座席收到來電一律立即接聽，測不到 ACD 的重新分配。新增參數：
-- 響鈴幾秒後才接
-- 一定比例拒接（486 Busy）或不接（讓 SIPX 逾時重派）
-- 通話中由座席主動掛斷
-- 兩通之間的休息時間（wrap-up time）
+`Config.agent_behavior`（`AgentBehavior`）：響鈴延遲區間、拒接 %（486）、不接 %（響到 CANCEL → 487，120 秒上限回 480）、接聽後主動掛斷區間、wrap-up 休息秒數（期間來電 486）。座席 runner 新增「響鈴中」狀態，響鈴中的 CANCEL 回 487。CLI 參數 `--ring` / `--talk`（`N` 或 `MIN-MAX`）、`--reject-pct`、`--no-answer-pct`、`--wrap-up`；GUI 座席區塊有對應欄位與驗證，CLI 預覽只帶非預設值。流程測試在 `core/tests/agent_behavior.rs`。
+目前座席同時可接多通（通話中來電仍會接聽），沒有模擬「通話中忙線」。
 
 ### [x] 5. CLI 支援座席模式
 
@@ -68,3 +65,7 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 ### [ ] 8. 決定 `cargo fmt` 的政策
 
 既有程式碼採對齊排版，不符合 rustfmt 預設。二選一：一次格式化全部並加進 CI；或加 `rustfmt.toml` / 文件說明不使用 rustfmt。
+
+### [ ] 9. 座席「通話中忙線」模擬
+
+第 4 項的行為模擬只在 wrap-up 期間拒接；座席通話中收到新來電仍會接聽（一個帳號可同時多通）。真實話機通常一次一通，可加一個選項讓通話中的來電回 486，ACD 才會改派給其他座席。

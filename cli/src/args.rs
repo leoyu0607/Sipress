@@ -78,6 +78,26 @@ pub struct Args {
     #[arg(long = "bye-timeout", default_value_t = 150)]
     pub bye_timeout: u64,
 
+    /// 座席端：響鈴幾秒後才接聽，`N` 或區間 `MIN-MAX`（隨機）
+    #[arg(long = "ring", value_parser = parse_secs_range, default_value = "0")]
+    pub ring: (f64, f64),
+
+    /// 座席端：拒接比例 %（響鈴後回 486 Busy Here）
+    #[arg(long = "reject-pct", default_value_t = 0.0)]
+    pub reject_pct: f64,
+
+    /// 座席端：不接比例 %（一直響鈴，等 SIPX 逾時 CANCEL 重派）
+    #[arg(long = "no-answer-pct", default_value_t = 0.0)]
+    pub no_answer_pct: f64,
+
+    /// 座席端：接聽幾秒後由座席主動掛斷，`N` 或區間 `MIN-MAX`（0 = 等對方 BYE）
+    #[arg(long = "talk", value_parser = parse_secs_range, default_value = "0")]
+    pub talk: (f64, f64),
+
+    /// 座席端：兩通之間的休息秒數（wrap-up），期間來電回 486
+    #[arg(long = "wrap-up", default_value_t = 0.0)]
+    pub wrap_up: f64,
+
     /// 本機綁定 IP 或 IP:port（預設自動選擇 IP，port 由系統分配）
     #[arg(long = "local")]
     pub local_addr: Option<String>,
@@ -122,4 +142,35 @@ pub struct Args {
     /// 顯示詳細 debug log
     #[arg(long)]
     pub verbose: bool,
+}
+
+/// 秒數或秒數區間：`5` → (5, 5)；`2-8` → (2, 8)
+fn parse_secs_range(s: &str) -> Result<(f64, f64), String> {
+    let num = |v: &str| -> Result<f64, String> {
+        let n: f64 = v.trim().parse().map_err(|_| format!("不是數字：{}", v))?;
+        if n.is_finite() && n >= 0.0 { Ok(n) } else { Err(format!("需為 ≥ 0 的秒數：{}", v)) }
+    };
+    let (min, max) = match s.split_once('-') {
+        Some((a, b)) => (num(a)?, num(b)?),
+        None => { let n = num(s)?; (n, n) }
+    };
+    if min > max {
+        return Err(format!("區間最小值大於最大值：{}", s));
+    }
+    Ok((min, max))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secs_range_parses_single_value_and_range() {
+        assert_eq!(parse_secs_range("0"), Ok((0.0, 0.0)));
+        assert_eq!(parse_secs_range("2.5"), Ok((2.5, 2.5)));
+        assert_eq!(parse_secs_range("2-8"), Ok((2.0, 8.0)));
+        for bad in ["", "x", "8-2", "1-", "-1", "inf"] {
+            assert!(parse_secs_range(bad).is_err(), "{:?} 應被拒絕", bad);
+        }
+    }
 }

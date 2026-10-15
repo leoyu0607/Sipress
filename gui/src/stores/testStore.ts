@@ -51,12 +51,24 @@ export interface CallerProfile {
   duration:      number   // 壓測持續秒數（0 = 不限）
 }
 
+/** 座席行為模擬（秒數區間在 min–max 內隨機；max = 0 停用） */
+export interface AgentBehaviorConfig {
+  ringMin:     number   // 響鈴幾秒後才接
+  ringMax:     number
+  rejectPct:   number   // 拒接（486）比例 %
+  noAnswerPct: number   // 不接（等 CANCEL）比例 %
+  talkMin:     number   // 接聽幾秒後座席主動掛斷
+  talkMax:     number
+  wrapUp:      number   // 兩通之間休息秒數
+}
+
 export interface AgentProfile {
   count: number
   accounts: SipAccount[]
   defaultDomain: string
   ackTimeout: number
   byeTimeout: number
+  behavior:   AgentBehaviorConfig
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
@@ -285,6 +297,7 @@ function defaultConfig(): TestConfig {
       defaultDomain: '192.168.166.60',
       ackTimeout: 10,
       byeTimeout: 150,
+      behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0 },
       duration: 0,
     },
   }
@@ -309,7 +322,12 @@ function loadConfig(): TestConfig {
         ...saved.caller,
         cpsPattern: { ...def.caller.cpsPattern, ...saved.caller?.cpsPattern },
       },
-      agent: { ...def.agent, ...legacyDuration, ...saved.agent },
+      agent: {
+        ...def.agent,
+        ...legacyDuration,
+        ...saved.agent,
+        behavior: { ...def.agent.behavior, ...saved.agent?.behavior },
+      },
     }
     if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
     // 註冊狀態不跨啟動保留
@@ -399,8 +417,18 @@ export const useTestStore = defineStore('test', () => {
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
       if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
-    } else if (c.agent.accounts.length === 0) {
-      errs.push('座席模式需要至少一個帳號')
+    } else {
+      if (c.agent.accounts.length === 0) errs.push('座席模式需要至少一個帳號')
+      const b = c.agent.behavior
+      const nonNeg = (v: number) => Number.isFinite(v) && v >= 0
+      if (![b.ringMin, b.ringMax, b.talkMin, b.talkMax, b.wrapUp].every(nonNeg)) errs.push('座席行為的秒數需 ≥ 0')
+      else {
+        if (b.ringMin > b.ringMax) errs.push('響鈴秒數最小值不可大於最大值')
+        if (b.talkMin > b.talkMax) errs.push('通話秒數最小值不可大於最大值')
+      }
+      const pctOk = (v: number) => Number.isFinite(v) && v >= 0 && v <= 100
+      if (!pctOk(b.rejectPct) || !pctOk(b.noAnswerPct)) errs.push('拒接 / 不接比例需介於 0–100%')
+      else if (b.rejectPct + b.noAnswerPct > 100) errs.push('拒接 + 不接比例合計不可超過 100%')
     }
     return errs
   }
@@ -428,6 +456,13 @@ export const useTestStore = defineStore('test', () => {
       parts.push('--mode agent --accounts sipress_accounts.csv')
       if (a.defaultDomain.trim()) parts.push(`--account-domain ${a.defaultDomain.trim()}`)
       parts.push(`-d ${a.duration}`, `--ack-timeout ${a.ackTimeout}`, `--bye-timeout ${a.byeTimeout}`)
+      const b = a.behavior
+      const range = (min: number, max: number) => min === max ? `${max}` : `${min}-${max}`
+      if (b.ringMax > 0)     parts.push(`--ring ${range(b.ringMin, b.ringMax)}`)
+      if (b.rejectPct > 0)   parts.push(`--reject-pct ${b.rejectPct}`)
+      if (b.noAnswerPct > 0) parts.push(`--no-answer-pct ${b.noAnswerPct}`)
+      if (b.talkMax > 0)     parts.push(`--talk ${range(b.talkMin, b.talkMax)}`)
+      if (b.wrapUp > 0)      parts.push(`--wrap-up ${b.wrapUp}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
@@ -514,6 +549,15 @@ export const useTestStore = defineStore('test', () => {
         : [],
       agent_ack_timeout_secs: c.agent.ackTimeout,
       agent_bye_timeout_secs: c.agent.byeTimeout,
+      agent_behavior: {
+        ring_min_secs: c.agent.behavior.ringMin,
+        ring_max_secs: c.agent.behavior.ringMax,
+        reject_pct:    c.agent.behavior.rejectPct,
+        no_answer_pct: c.agent.behavior.noAnswerPct,
+        talk_min_secs: c.agent.behavior.talkMin,
+        talk_max_secs: c.agent.behavior.talkMax,
+        wrap_up_secs:  c.agent.behavior.wrapUp,
+      },
     }
   }
 

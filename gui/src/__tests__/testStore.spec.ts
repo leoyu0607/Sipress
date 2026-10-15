@@ -59,6 +59,33 @@ describe('validationErrors', () => {
     ])
   })
 
+  it('座席行為：秒數區間與比例', () => {
+    const s = useTestStore()
+    s.config.mode = 'agent'
+    s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'p', domain: '', status: 'idle' }]
+    const b = s.config.agent.behavior
+    expect(s.validationErrors).toEqual([])
+    Object.assign(b, { ringMin: 5, ringMax: 2 })
+    expect(s.validationErrors).toEqual(['響鈴秒數最小值不可大於最大值'])
+    Object.assign(b, { ringMin: 0, talkMin: -1 })
+    expect(s.validationErrors).toEqual(['座席行為的秒數需 ≥ 0'])
+    Object.assign(b, { talkMin: 0, rejectPct: 60, noAnswerPct: 50 })
+    expect(s.validationErrors).toEqual(['拒接 + 不接比例合計不可超過 100%'])
+    Object.assign(b, { rejectPct: 101, noAnswerPct: 0 })
+    expect(s.validationErrors).toEqual(['拒接 / 不接比例需介於 0–100%'])
+  })
+
+  it('座席行為：預設值不出現在 CLI 預覽，舊設定補上預設值', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ mode: 'agent', agent: { ackTimeout: 5 } }))
+    const s = useTestStore()
+    expect(s.config.agent.behavior.rejectPct).toBe(0)
+    expect(s.config.agent.ackTimeout).toBe(5)
+    expect(s.cliCommand).not.toMatch(/--ring|--talk|--reject-pct|--no-answer-pct|--wrap-up/)
+    Object.assign(s.config.agent.behavior, { ringMin: 2, ringMax: 2, talkMin: 10, talkMax: 60 })
+    expect(s.cliCommand).toContain('--ring 2 ')
+    expect(s.cliCommand).toContain('--talk 10-60')
+  })
+
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {
     const s = useTestStore()
     s.config.caller.duration = 0
