@@ -60,6 +60,7 @@
 | Windows | `sipress-gui-windows-x86_64-setup.exe`（NSIS） | — |
 | Linux | `sipress-gui-linux-x86_64-installer.deb` | `sipress-gui-linux-x86_64-portable.AppImage` |
 | macOS ARM | `sipress-gui-macos-arm64-installer.dmg` | `sipress-gui-macos-arm64-portable` |
+| macOS Intel | `sipress-gui-macos-x86_64-installer.dmg` | `sipress-gui-macos-x86_64-portable` |
 
 > **CLI 執行檔**（無 GUI）：
 > - Windows：`sipress-windows-x86_64-native.exe`（MSVC）或 `sipress-windows-x86_64.exe`（GNU zigbuild）
@@ -85,7 +86,11 @@ sipress/
 │   └── src/
 │       ├── config.rs             ← 設定結構（Config / Transport / Mode / AgentAccount）
 │       ├── engine.rs             ← 民眾端壓測主引擎（並發通話控制）
-│       ├── agent_engine.rs       ← 座席端壓測引擎（REGISTER + 等待來電 + 自動接聽）
+│       ├── agent_engine/         ← 座席端壓測引擎（REGISTER + 等待來電 + 自動接聽）
+│       │   ├── mod.rs            ← AgentEngine：啟動每個帳號的 runner、進度回報、最終報告
+│       │   ├── runner.rs         ← 單一帳號的狀態（socket / 註冊 / 通話 / 響鈴中來電）與事件處理
+│       │   ├── register.rs       ← 註冊狀態、REGISTER 重傳、已註冊計數
+│       │   └── call.rs           ← 通話狀態、座席行為的隨機決定、SIP 訊息組裝
 │       ├── registrar.rs          ← 一次性 REGISTER 握手（Phase 1：新增帳號立即驗證）
 │       ├── stats.rs              ← 指標收集（ASR/ACD/PDD/延遲/即時 RTP 品質/finished 旗標）
 │       ├── reporter.rs           ← 終端機輸出（Table / JSON / CSV）
@@ -734,9 +739,9 @@ RTP 品質統計，所有計算均符合 RFC 3550 標準：
 | `get_html_report(server_addr, timestamp)` | 產生 HTML 報告字串（前端下載為 `.html` 檔）；`server_addr` 會顯示在報告標頭 |
 | `register_account(server, domain, username, password, expires, transport)` | 對單一帳號發起一次性 REGISTER（含 401 Digest 重送），用於座席模式新增帳號時的即時驗證 |
 
-### `core/src/agent_engine.rs`
+### `core/src/agent_engine/`
 
-座席端壓測引擎，每個 `AgentAccount` 一個獨立 tokio task + 自帶 UDP socket：
+座席端壓測引擎，每個 `AgentAccount` 一個獨立 tokio task（`runner::AccountRunner`）+ 自帶 socket。每個帳號的狀態只由自己的 task 存取，不需上鎖；主迴圈等待「收到 SIP 訊息 / 註冊刷新 / REGISTER 重傳 / 響鈴與通話計時器 / 停止訊號」之一，交給對應的方法處理：
 
 1. **REGISTER**：初次無認證 → 收 401 解析 `WWW-Authenticate: Digest` → 用 MD5 計算 response → 重送
 2. **保持註冊**：在 `Expires/2` 計時器到期時 re-REGISTER（沿用快取的 challenge）
