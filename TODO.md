@@ -83,3 +83,13 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 ### [x] 9. 座席「通話中忙線」模擬
 
 `AgentBehavior.busy_in_call`（CLI `--busy-in-call`、GUI 座席區塊「通話中忙線」）：座席已有通話或有來電響鈴中時，新來電直接回 486 Busy Here（計為失敗通話），ACD 才會改派給其他座席。預設關閉，維持一個帳號可同時接多通的舊行為。測試在 `core/tests/agent_behavior.rs`（通話中、響鈴中、關閉時照常接聽）。
+
+### [x] 10. 回歸測試發現並修正的問題
+
+以 CLI 實際程序 + 模擬 SIPX（Digest 認證、B2BUA、ACD 改派）、Chromium 操作前端（invoke 轉接真引擎）、Xvfb 中實際操作 Tauri 程式做全功能回歸時發現：
+- **雙端執行中無法切換民眾端 / 座席端分頁**（自加入雙端模式起）：分頁在設定鎖定的 fieldset 內，檢視中的一端一執行就被停用。分頁移出鎖定範圍，新增元件測試 `gui/src/__tests__/sidebar.spec.ts`。
+- **兩端 SIP log 檔名相同**：民眾端也寫 `*_agent.sip.log`，雙端同一秒啟動會寫進同一個檔。民眾端改為 `*_caller.sip.log`。
+- **事件記錄每秒重複 WARN**：只要失敗過一次，之後每秒都寫一次累計失敗。改為只在失敗數增加時記錄。
+- 版面：座席行為的區間欄位在側欄寬度下數字被截斷；「測試執行中」橫幅半透明導致捲動時文字重疊；帳號清單「n / n 已註冊」被擠成直排。
+- CLI 對照摘要在已使用 `--from-seq` 時仍建議加 `--from-seq`（改為與 HTML 相同，只在配對不確定時提示）。
+

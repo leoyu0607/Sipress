@@ -311,7 +311,13 @@ fn print_correlation_table(r: &CorrelationReport) {
         r.mos.pairs
     );
     if r.caller_calls > 0 && r.caller_cin_pct < 100.0 {
-        println!("注意：民眾端只有 {:.0}% 的通話取得 P-CIN-CallId，其餘以主叫號碼配對（建議民眾端加 --from-seq）", r.caller_cin_pct);
+        println!(
+            "注意：民眾端只有 {:.0}% 的通話取得 P-CIN-CallId，其餘以主叫號碼配對",
+            r.caller_cin_pct
+        );
+    }
+    if r.ambiguous > 0 {
+        println!("注意：{} 通以主叫號碼配對時有多通同號碼候選，配對可能錯誤（民眾端加 --from-seq 可一對一配對）", r.ambiguous);
     }
     println!();
 }
