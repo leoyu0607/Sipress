@@ -123,7 +123,8 @@ impl Engine {
         let local_ip_owned: String = match cfg.local_addr.as_deref() {
             Some(ip) => ip.to_string(),
             None => {
-                let probe = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+                let probe =
+                    tokio::net::UdpSocket::bind(crate::net::unspecified_for(&server_addr)).await?;
                 probe.connect(&cfg.server_addr).await?;
                 probe.local_addr()?.ip().to_string()
             }
@@ -134,13 +135,11 @@ impl Engine {
         let udp = Arc::new(SharedUdpSocket::new(server_addr, local_ip).await?);
         let local_addr = udp.local_addr.clone();
 
-        let local_domain_owned = cfg.local_domain.clone().unwrap_or_else(|| {
-            local_addr
-                .split(':')
-                .next()
-                .unwrap_or("127.0.0.1")
-                .to_string()
-        });
+        // From URI 的 domain（IPv6 加中括號）
+        let local_domain_owned = cfg
+            .local_domain
+            .clone()
+            .unwrap_or_else(|| crate::net::uri_host(&local_addr));
         let local_domain = local_domain_owned.as_str();
 
         // 對話內請求 / ACK 的組裝（事件處理、② 掃描與收尾共用）
@@ -496,20 +495,12 @@ impl Engine {
 
                                     // 啟動 RTP session
                                     if cfg.enable_rtp {
-                                        let pure_ip = local_ip
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or(local_ip)
-                                            .to_string();
-                                        let server_ip = cfg
-                                            .server_addr
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or("127.0.0.1");
+                                        let pure_ip = crate::net::host(local_ip);
+                                        let server_ip = crate::net::host(&cfg.server_addr);
                                         // SDP c= + m= 解析出完整 "ip:port"；fallback 為 SIP server IP:16384
                                         let remote_addr = remote_rtp_addr
                                             .clone()
-                                            .unwrap_or_else(|| format!("{}:16384", server_ip));
+                                            .unwrap_or_else(|| crate::net::join(&server_ip, 16384));
                                         let local_pre = dialog.local_rtp_port;
                                         let audio_path = cfg.audio_file.clone();
 
@@ -674,13 +665,9 @@ impl Engine {
 
                                     // 解析 RE-INVITE SDP 中的新 RTP 地址，更新 RTP session 目標
                                     if cfg.enable_rtp {
-                                        let sip_ip = cfg
-                                            .server_addr
-                                            .split(':')
-                                            .next()
-                                            .unwrap_or("127.0.0.1");
+                                        let sip_ip = crate::net::host(&cfg.server_addr);
                                         if let Some(new_rtp_addr) =
-                                            SipResponse::sdp_rtp_addr(&req_raw, sip_ip)
+                                            SipResponse::sdp_rtp_addr(&req_raw, &sip_ip)
                                         {
                                             let sessions = rtp_sessions.lock().await;
                                             if let Some(session) = sessions.get(&call_id) {
@@ -913,7 +900,7 @@ impl Engine {
                     // 預分配 RTP port（保持 socket 綁定以避免 TOCTOU）
                     let (rtp_port, pre_socket) = if cfg.enable_rtp {
                         let pc = Arc::clone(&rtp_port_counter);
-                        let ip = local_ip.split(':').next().unwrap_or(local_ip).to_string();
+                        let ip = crate::net::host(local_ip);
                         match RtpSession::allocate_port(&pc, &ip).await {
                             Ok((p, sock)) => (p, Some(sock)),
                             Err(e) => {

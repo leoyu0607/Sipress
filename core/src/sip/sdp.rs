@@ -72,14 +72,20 @@ pub fn answer_payloads(codec: u8, offer: &[u8]) -> Vec<u8> {
     v
 }
 
-/// 組 SDP body（`ip` 為本機 IP，`payloads` 依順序寫入 m= 行並附上 rtpmap）
+/// 組 SDP body（`ip` 為本機 IP，IPv6 時用 `IN IP6`；`payloads` 依順序寫入 m= 行並附上 rtpmap）
 pub fn body(ip: &str, port: u16, payloads: &[u8]) -> String {
     let fmts: Vec<String> = payloads.iter().map(u8::to_string).collect();
+    let ip = ip.trim_start_matches('[').trim_end_matches(']');
+    let family = if crate::net::is_ipv6(ip) {
+        "IP6"
+    } else {
+        "IP4"
+    };
     let mut s = format!(
         "v=0\r\n\
-         o=sipress 1000 1000 IN IP4 {ip}\r\n\
+         o=sipress 1000 1000 IN {family} {ip}\r\n\
          s=sipress\r\n\
-         c=IN IP4 {ip}\r\n\
+         c=IN {family} {ip}\r\n\
          t=0 0\r\n\
          m=audio {port} RTP/AVP {fmts}\r\n",
         fmts = fmts.join(" "),
@@ -164,5 +170,14 @@ mod tests {
             audio_payloads(&format!("SIP/2.0 200 OK\r\n\r\n{}", b)),
             vec![0, 101]
         );
+    }
+
+    #[test]
+    fn ipv6_body_uses_ip6_address_type() {
+        let b = body("2001:db8::5", 16000, &[8]);
+        assert!(b.contains("c=IN IP6 2001:db8::5\r\n"), "{}", b);
+        assert!(b.contains("o=sipress 1000 1000 IN IP6 2001:db8::5\r\n"));
+        assert!(body("[2001:db8::5]", 16000, &[8]).contains("c=IN IP6 2001:db8::5\r\n"));
+        assert!(body("10.0.0.2", 16000, &[8]).contains("c=IN IP4 10.0.0.2\r\n"));
     }
 }

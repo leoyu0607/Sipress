@@ -189,8 +189,7 @@ impl SipMessage {
 
     /// 本機 SDP（`local` 可為 IP 或 IP:port）
     fn local_sdp(local: &str, rtp_port: u16, payloads: &[u8]) -> String {
-        let ip = local.split(':').next().unwrap_or(local);
-        sdp::body(ip, rtp_port, payloads)
+        sdp::body(&crate::net::host(local), rtp_port, payloads)
     }
 
     /// 產生 branch 參數（RFC 3261 要求以 z9hG4bK 開頭）
@@ -445,7 +444,7 @@ impl SipResponse {
             }
         }
 
-        rtp_port.map(|p| format!("{}:{}", conn_ip, p))
+        rtp_port.map(|p| crate::net::join(&conn_ip, p))
     }
 }
 
@@ -454,6 +453,45 @@ mod tests {
     use super::*;
 
     // ─── SDP parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn sdp_rtp_addr_ipv6() {
+        let raw =
+            "SIP/2.0 200 OK\r\n\r\nv=0\r\nc=IN IP6 2001:db8::7\r\nm=audio 30000 RTP/AVP 8\r\n";
+        assert_eq!(
+            SipResponse::sdp_rtp_addr(raw, "2001:db8::1").as_deref(),
+            Some("[2001:db8::7]:30000")
+        );
+        let no_c = "SIP/2.0 200 OK\r\n\r\nv=0\r\nm=audio 30000 RTP/AVP 8\r\n";
+        let addr = SipResponse::sdp_rtp_addr(no_c, "2001:db8::1").unwrap();
+        assert_eq!(addr, "[2001:db8::1]:30000");
+        assert!(addr.parse::<std::net::SocketAddr>().is_ok());
+    }
+
+    #[test]
+    fn invite_from_ipv6_local_address() {
+        let msg = SipMessage::invite(
+            "c@x",
+            "1000",
+            "2001:db8::2",
+            "2001",
+            "[2001:db8::1]:5060",
+            "[2001:db8::2]:5070",
+            1,
+            "z9hG4bK-1",
+            "t",
+            "UDP",
+            16000,
+            8,
+        );
+        assert!(msg.starts_with("INVITE sip:2001@[2001:db8::1]:5060 SIP/2.0\r\n"));
+        assert!(msg.contains("Via: SIP/2.0/UDP [2001:db8::2]:5070;"));
+        assert!(
+            msg.contains("c=IN IP6 2001:db8::2\r\n"),
+            "SDP 不可把 IPv6 截斷成 \"2001\"：\n{}",
+            msg
+        );
+    }
 
     #[test]
     fn sdp_rtp_addr_session_level_c() {

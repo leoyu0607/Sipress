@@ -371,14 +371,10 @@ async fn account_runner(
     rtp_registry: SharedRtpRegistry,
     traces: Arc<TraceLog>,
 ) -> Result<()> {
-    let sock = UdpSocket::bind("0.0.0.0:0").await?;
+    let sock = UdpSocket::bind(crate::net::unspecified_for(&server)).await?;
     sock.connect(server).await?;
     let local_addr = sock.local_addr()?.to_string();
-    let local_ip = local_addr
-        .split(':')
-        .next()
-        .unwrap_or("0.0.0.0")
-        .to_string();
+    let local_ip = crate::net::host(&local_addr);
 
     let domain = if !account.domain.is_empty() {
         account.domain.clone()
@@ -902,8 +898,8 @@ async fn handle_request(
                 let _ = sock.send(ok.as_bytes()).await;
                 // 更新 RTP 目標地址（對端可能換 port）
                 if cfg.enable_rtp {
-                    let sip_ip = cfg.server_addr.split(':').next().unwrap_or("127.0.0.1");
-                    if let Some(new_rtp_addr) = SipResponse::sdp_rtp_addr(raw, sip_ip) {
+                    let sip_ip = crate::net::host(&cfg.server_addr);
+                    if let Some(new_rtp_addr) = SipResponse::sdp_rtp_addr(raw, &sip_ip) {
                         if let Some(rtp) = &ctx.rtp_session {
                             match rtp.update_remote(&new_rtp_addr).await {
                                 Ok(()) => log.log_event(
@@ -1192,8 +1188,8 @@ async fn answer_call(
     };
 
     // 解析 INVITE SDP 中的遠端 RTP 地址
-    let sip_ip = cfg.server_addr.split(':').next().unwrap_or("127.0.0.1");
-    let remote_rtp_addr = SipResponse::sdp_rtp_addr(raw, sip_ip);
+    let sip_ip = crate::net::host(&cfg.server_addr);
+    let remote_rtp_addr = SipResponse::sdp_rtp_addr(raw, &sip_ip);
 
     // 依 offer 選 codec（響鈴前已排除沒有 G.711 的 offer），answer 只宣告選中的那一個
     let offer = sdp::audio_payloads(raw);
@@ -1335,8 +1331,7 @@ fn build_response_with_sdp(
 ) -> String {
     let (via, from, to, call_id, cseq) = SipMessage::extract_request_headers(raw_request);
     let to_with_tag = crate::sip::message::inject_to_tag_if_missing(&to, to_tag);
-    let ip = local_addr.split(':').next().unwrap_or(local_addr);
-    let sdp = sdp::body(ip, rtp_port, payloads);
+    let sdp = sdp::body(&crate::net::host(local_addr), rtp_port, payloads);
     let sdp_len = sdp.len();
     let user_part = from
         .split_once("sip:")

@@ -216,8 +216,8 @@ pub async fn register_account(
     transport: Option<String>,
 ) -> Result<RegisterResult, String> {
     let dom_owned = domain.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        // 沒指定 domain → 取 server 的 IP 部分
-        server.split(':').next().unwrap_or(&server).to_string()
+        // 沒指定 domain → 取 server 的主機部分（IPv6 加中括號，供 SIP URI 使用）
+        sipress_core::net::uri_host(&server)
     });
     let tp = transport.unwrap_or_else(|| "UDP".into());
     let exp = expires.unwrap_or(3600);

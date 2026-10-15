@@ -320,7 +320,7 @@ impl RtpSession {
             if port < 1024 {
                 continue;
             }
-            let addr = format!("{}:{}", local_ip, port);
+            let addr = crate::net::join(local_ip, port);
             if let Ok(socket) = UdpSocket::bind(&addr).await {
                 *guard = port.wrapping_add(2);
                 return Ok((port, socket));

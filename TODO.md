@@ -118,10 +118,14 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 同時修正：開啟 `--from-seq` 時 ACK / CANCEL / BYE / RE-INVITE 回應的 From 仍用基本號碼，與該通 INVITE 不一致（主叫號碼改存在 dialog）。
 測試：`core/tests/invite_auth.rs`（401、407、未設密碼、密碼錯誤只重試一次，mock 會驗證 Digest 雜湊並重傳 401）。
 
-### [ ] 14. IPv6 位址解析錯誤（正確性）
+### [x] 14. IPv6 位址解析錯誤（正確性）
 
-有 4 處用 `split(':').next()` 取 IP，IPv6 位址會被截斷：`core/src/agent_engine.rs`（3 處）、`core/src/engine.rs`（1 處）。
-要做：改用 `SocketAddr` / `IpAddr` 解析，補 IPv6 的單元測試。
+原本多處用 `split(':')` 取 IP，IPv6 位址會被截斷；另外 Request-URI、SDP、綁定位址也都假設 IPv4。
+已修正：新增 `core/src/net.rs`（`host` / `uri_host` / `join` / `is_ipv6` / `unspecified_for`），兩端引擎、SDP、SIP 訊息、RTP、註冊伺服器與 GUI 改用它：
+- SIP URI 中的 IPv6 加中括號（`sip:2001@[2001:db8::1]:5060`）；`ip:port` 一律由 `join` 組成。
+- SDP 依位址類型寫 `IN IP6` / `IN IP4`；解析對方 SDP 的 IPv6 `c=` 也正確。
+- 連往 IPv6 伺服器時以 `[::]:0` 綁定；`--local ::1` 這類只給 IPv6 IP 的寫法可用。
+測試：`net`、`sdp`、`message`、`transport` 的單元測試；`core/tests/ipv6.rs`（民眾端撥 IPv6 伺服器含 RTP、座席向 IPv6 伺服器註冊）。開發容器沒有 IPv6，此檔在無法綁定 `[::1]` 時會略過並印出原因，實際在 CI 執行。
 
 ### [ ] 15. 在真正的 SIPX 驗證端到端對照（驗證）
 
