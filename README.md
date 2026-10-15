@@ -420,6 +420,9 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 
 # CSV 輸出（匯入試算表）
 ./sipress -s 192.168.1.100:5060 -c 100 --cps 10 -d 60 --format csv > result.csv
+
+# 座席端：用帳號檔註冊 N 支分機並自動接聽，-d 0 = 直到 Ctrl-C（結束時解除註冊）
+./sipress -s 192.168.1.100:5060 --mode agent --accounts accounts.csv -d 0 --tui
 ```
 
 ---
@@ -444,6 +447,18 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--max-calls` | — | 不限 | 總通話上限，達到且所有進行中通話結束後自動停止 |
 | `--call-duration` | — | `30` | 單通通話持續時間（秒，`0` = 不主動 BYE） |
 | `--invite-timeout` | — | `8` | INVITE 逾時秒數 |
+
+### 座席模式
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `--mode` | `caller` | `caller`（民眾端，主動撥出）/ `agent`（座席端，註冊後等待來電並自動接聽） |
+| `--accounts` | — | 座席帳號檔（agent 模式必填），一行一個帳號：`extension,username,password[,domain]`（可有標題列）、`extension:password[:domain]` 或空白分隔；GUI 帳號清單的「匯出 CSV」可直接使用 |
+| `--account-domain` | SIP server IP | 帳號未填 domain 時使用的預設值 |
+| `--ack-timeout` | `10` | 接聽後等待 ACK 的逾時秒數（逾時主動 BYE） |
+| `--bye-timeout` | `150` | 通話中等待對方 BYE 的逾時秒數（逾時主動 BYE） |
+
+agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被忽略；Ctrl-C 或 TUI 按 `q` 會先送 `REGISTER Expires=0` 解除註冊再結束。
 
 ### 號碼設定
 

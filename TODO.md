@@ -53,9 +53,9 @@
 - 通話中由座席主動掛斷
 - 兩通之間的休息時間（wrap-up time）
 
-### [ ] 5. CLI 支援座席模式
+### [x] 5. CLI 支援座席模式
 
-`AgentEngine` 已在 core，CLI 需補參數（例如帳號檔路徑）。目前 `cli/src/args.rs` 的 `--mode` 是隱藏參數且只支援 caller；GUI 的 CLI 預覽在座席模式只顯示註解（`testStore.ts` 的 `cliCommand`）。
+新增 `--mode agent`（不再隱藏）、`--accounts <檔案>`、`--account-domain`、`--ack-timeout`、`--bye-timeout`。帳號檔格式與 GUI 匯入相同（解析在 core 的 `AgentAccount::parse_list`，格式錯誤 / 分機重複會指出行號）。CLI 加上 Ctrl-C 與 TUI `q` 的 graceful stop（座席端會先解除註冊）。GUI 的 CLI 預覽在座席模式產生對應指令（帳號檔 = 「匯出 CSV」的 `sipress_accounts.csv`），契約 fixture `cli-agent.txt` 由 CLI e2e 驗證。
 
 ### [ ] 6. 持續時間分兩端設定
 

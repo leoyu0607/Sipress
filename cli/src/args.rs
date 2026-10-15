@@ -21,7 +21,7 @@ pub struct Args {
     #[arg(long, default_value_t = 10.0)]
     pub cps: f64,
 
-    /// 壓測持續秒數
+    /// 壓測持續秒數（0 = 不限，直到 Ctrl-C 或 TUI 按 q）
     #[arg(short = 'd', long = "duration", default_value_t = 60)]
     pub duration: u64,
 
@@ -57,9 +57,26 @@ pub struct Args {
     #[arg(long = "transport", default_value = "udp")]
     pub transport: String,
 
-    /// 模式：caller（預設，目前唯一支援）
-    #[arg(long = "mode", default_value = "caller", hide = true)]
+    /// 模式：caller（民眾端，主動撥出）/ agent（座席端，註冊後等待來電並接聽）
+    #[arg(long = "mode", default_value = "caller", value_parser = ["caller", "agent"])]
     pub mode: String,
+
+    /// 座席帳號檔（agent 模式必填）。一行一個帳號，格式同 GUI 匯入：
+    /// `extension,username,password[,domain]`、`extension:password[:domain]` 或以空白分隔
+    #[arg(long = "accounts")]
+    pub accounts_file: Option<std::path::PathBuf>,
+
+    /// 座席帳號未填 domain 時使用的預設值（不設 = SIP server 的 IP）
+    #[arg(long = "account-domain", default_value = "")]
+    pub account_domain: String,
+
+    /// 座席端：接聽後等待 ACK 的逾時秒數
+    #[arg(long = "ack-timeout", default_value_t = 10)]
+    pub ack_timeout: u64,
+
+    /// 座席端：通話中等待對方 BYE 的逾時秒數（逾時主動掛斷）
+    #[arg(long = "bye-timeout", default_value_t = 150)]
+    pub bye_timeout: u64,
 
     /// 本機綁定 IP 或 IP:port（預設自動選擇 IP，port 由系統分配）
     #[arg(long = "local")]

@@ -437,11 +437,14 @@ describe('設定保存', () => {
 
 // ── CLI 預覽 ───────────────────────────────────────────────────────
 describe('CLI 預覽', () => {
-  it('座席模式沒有對應的 CLI 指令', () => {
+  it('座席模式產生 --mode agent 指令，民眾端專屬設定不列為不支援', () => {
     const s = useTestStore()
     s.config.mode = 'agent'
-    expect(s.cliCommand.startsWith('#')).toBe(true)
-    expect(s.cliUnsupported).toEqual(['座席模式'])
+    s.config.caller.cpsPattern.type = 'step'
+    s.config.caller.dtmfSequence = '12#'
+    expect(s.cliCommand).toContain('--mode agent --accounts sipress_accounts.csv')
+    expect(s.cliCommand).not.toContain('--cps')
+    expect(s.cliUnsupported).toEqual([])
   })
 
   it('列出 CLI 不支援的 GUI 設定', () => {

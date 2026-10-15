@@ -194,7 +194,7 @@ fn gui_cli_preview_commands_are_accepted_by_cli() {
         );
         checked += 1;
     }
-    assert!(checked >= 4, "gui/contract 應有前端產生的 cli-*.txt（目前 {} 個）", checked);
+    assert!(checked >= 5, "gui/contract 應有前端產生的 cli-*.txt（目前 {} 個）", checked);
 }
 
 #[test]
@@ -301,4 +301,112 @@ fn html_report_is_written_to_report_dir() {
     assert_eq!(html.len(), 1, "應產生一份 HTML 報告");
     let content = std::fs::read_to_string(&html[0]).unwrap();
     assert!(content.contains("<html") && content.contains("ASR"), "HTML 報告內容不完整");
+}
+
+// ── 座席模式（--mode agent）────────────────────────────────────────
+
+/// mock SIPX：REGISTER 一律 200；第一個帳號註冊後對它撥入一通 INVITE → ACK → BYE。
+/// 回傳 server 位址與收到的所有訊息（供檢查 REGISTER / 解除註冊）
+fn spawn_agent_server() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::sync::{Arc, Mutex};
+    let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap());
+    let addr = sock.local_addr().unwrap();
+    let received: Arc<Mutex<Vec<String>>> = Arc::default();
+    let received_rx = Arc::clone(&received);
+    thread::spawn(move || {
+        let mut buf = vec![0u8; 65536];
+        let mut call_started = false;
+        while let Ok((n, agent)) = sock.recv_from(&mut buf) {
+            let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+            received_rx.lock().unwrap().push(raw.clone());
+            if !raw.starts_with("REGISTER") {
+                continue;
+            }
+            let _ = sock.send_to(response(&raw, "200 OK", None).as_bytes(), agent);
+            if std::mem::replace(&mut call_started, true) {
+                continue;
+            }
+            let sock = Arc::clone(&sock);
+            thread::spawn(move || {
+                let req = |method: &str, cseq: u32, body: &str| {
+                    let ctype = if body.is_empty() { "" } else { "Content-Type: application/sdp\r\n" };
+                    format!(
+                        "{method} sip:1001@{agent} SIP/2.0\r\n\
+                         Via: SIP/2.0/UDP {addr};branch=z9hG4bK-{method}\r\n\
+                         Max-Forwards: 70\r\n\
+                         From: <sip:caller@{addr}>;tag=mocktag\r\n\
+                         To: <sip:1001@{agent}>\r\n\
+                         Call-ID: cli-agent-call@mock\r\n\
+                         CSeq: {cseq} {method}\r\n\
+                         Contact: <sip:caller@{addr}>\r\n\
+                         {ctype}Content-Length: {len}\r\n\r\n{body}",
+                        len = body.len(),
+                    )
+                };
+                let sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
+                           m=audio 9 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\n";
+                for (delay_ms, msg) in [(0, req("INVITE", 1, sdp)), (200, req("ACK", 1, "")), (500, req("BYE", 2, ""))] {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                    let _ = sock.send_to(msg.as_bytes(), agent);
+                }
+            });
+        }
+    });
+    (addr, received)
+}
+
+#[test]
+fn agent_mode_registers_answers_and_deregisters() {
+    let (server, received) = spawn_agent_server();
+    let server = server.to_string();
+    let dir = temp_dir("agent");
+    let logs = dir.join("logs").to_string_lossy().into_owned();
+    let accounts = dir.join("accounts.csv");
+    std::fs::write(&accounts, "extension,username,password\n1001,1001,pw\n1002,1002,pw\n").unwrap();
+    let accounts_s = accounts.to_string_lossy().into_owned();
+
+    let out = run_sipress(
+        &["--mode", "agent", "--accounts", &accounts_s, "--server", &server,
+          "--logs-dir", &logs, "-d", "3", "--format", "json"],
+        Duration::from_secs(30),
+    );
+    assert_success(&out);
+
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("stdout 應為 JSON 報告（{}）：\n{}", e, String::from_utf8_lossy(&out.stdout)));
+    assert_eq!(report["calls_answered"], 1);
+    assert_eq!(report["calls_completed"], 1);
+    assert_eq!(report["calls_failed"], 0);
+
+    let received = received.lock().unwrap();
+    for ext in ["1001", "1002"] {
+        let regs: Vec<_> = received.iter()
+            .filter(|m| m.starts_with("REGISTER") && m.contains(&format!("<sip:{}@", ext)))
+            .collect();
+        assert!(!regs.is_empty(), "帳號 {} 應送出 REGISTER", ext);
+        assert!(
+            regs.iter().any(|m| m.to_lowercase().contains("expires: 0")),
+            "帳號 {} 結束時應解除註冊（Expires: 0）", ext
+        );
+    }
+}
+
+#[test]
+fn agent_mode_requires_valid_accounts_file() {
+    let out = run_sipress(&["--mode", "agent", "-d", "1"], Duration::from_secs(10));
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--accounts"), "應提示需要 --accounts");
+
+    let dir = temp_dir("agent-bad");
+    let bad = dir.join("bad.txt");
+    std::fs::write(&bad, "1001\n").unwrap();
+    let out = run_sipress(
+        &["--mode", "agent", "--accounts", &bad.to_string_lossy(), "-d", "1"],
+        Duration::from_secs(10),
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("第 1 行"), "應指出錯誤的行號");
+
+    let out = run_sipress(&["--mode", "pbx"], Duration::from_secs(10));
+    assert!(!out.status.success(), "未知模式應被拒絕");
 }

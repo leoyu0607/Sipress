@@ -1,22 +1,23 @@
 mod args;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use args::Args;
 use clap::Parser;
 use sipress_core::{
-    config::{Config, Mode, Transport},
+    agent_engine::AgentEngine,
+    config::{AgentAccount, Config, Mode, Transport},
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     reporter::{OutputFormat, Reporter},
-    stats::StatsSnapshot,
+    stats::{FinalReport, StatsSnapshot},
 };
 use std::{
     str::FromStr,
     sync::{Arc, Mutex},
 };
 use tui::dashboard::{run_tui, TuiState};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -34,6 +35,9 @@ async fn main() -> Result<()> {
         "tcp" => Transport::Tcp,
         _     => Transport::Udp,  // 預設 UDP（包含 "udp" 與其他未知值）
     };
+
+    let mode = if args.mode == "agent" { Mode::Agent } else { Mode::Caller };
+    let agent_accounts = if mode == Mode::Agent { load_accounts(&args)? } else { Vec::new() };
 
     // 建構設定
     let config = Config {
@@ -58,13 +62,23 @@ async fn main() -> Result<()> {
         enable_rtp:           args.enable_rtp,
         dtmf_sequence:        None,
         max_total_calls:      if args.max_calls > 0 { Some(args.max_calls) } else { None },
-        mode:                 Mode::Caller,
-        agent_accounts:       Vec::new(),
-        agent_ack_timeout_secs: 10,
-        agent_bye_timeout_secs: 150,
+        mode,
+        agent_accounts,
+        agent_ack_timeout_secs: args.ack_timeout,
+        agent_bye_timeout_secs: args.bye_timeout,
     };
+    config.validate()?;
 
-    let engine = Engine::new(config.clone());
+    let engine = AnyEngine::new(config);
+    // Ctrl-C → graceful stop（座席端會先解除註冊再結束）
+    {
+        let stop = engine.stop_handle();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = stop.send(true);
+            }
+        });
+    }
 
     // ── TUI 模式 ──────────────────────────────────────────────────
     if args.tui {
@@ -86,6 +100,7 @@ async fn main() -> Result<()> {
         });
 
         // 啟動引擎
+        let engine_stop = engine.stop_handle();
         let engine_handle = {
             let on_progress = Some(on_progress);
             tokio::spawn(async move {
@@ -93,8 +108,10 @@ async fn main() -> Result<()> {
             })
         };
 
-        // 啟動 TUI（阻塞直到 q 或結束）
+        let stop = engine_stop;
+        // 啟動 TUI（阻塞直到 q 或結束）；按 q 離開時一併停止引擎
         run_tui(Arc::clone(&tui_state), done_rx).await?;
+        let _ = stop.send(true);
 
         // 等待引擎完成
         let report = engine_handle.await??;
@@ -143,6 +160,49 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 民眾端 / 座席端引擎（介面相同：run + stop_handle）
+enum AnyEngine {
+    Caller(Engine),
+    Agent(AgentEngine),
+}
+
+impl AnyEngine {
+    fn new(config: Config) -> Self {
+        match config.mode {
+            Mode::Caller => Self::Caller(Engine::new(config)),
+            Mode::Agent  => Self::Agent(AgentEngine::new(config)),
+        }
+    }
+
+    fn stop_handle(&self) -> watch::Sender<bool> {
+        match self {
+            Self::Caller(e) => e.stop_handle(),
+            Self::Agent(e)  => e.stop_handle(),
+        }
+    }
+
+    async fn run(&self, on_progress: Option<ProgressCallback>) -> Result<FinalReport> {
+        match self {
+            Self::Caller(e) => e.run(on_progress).await,
+            Self::Agent(e)  => e.run(on_progress).await,
+        }
+    }
+}
+
+/// 讀取 --accounts 指定的座席帳號檔
+fn load_accounts(args: &Args) -> Result<Vec<AgentAccount>> {
+    let path = args.accounts_file.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--mode agent 需要以 --accounts 指定座席帳號檔"))?;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("無法讀取帳號檔 {}", path.display()))?;
+    let accounts = AgentAccount::parse_list(&text, &args.account_domain)
+        .with_context(|| format!("帳號檔 {}", path.display()))?;
+    if accounts.is_empty() {
+        anyhow::bail!("帳號檔 {} 沒有任何帳號", path.display());
+    }
+    Ok(accounts)
 }
 
 /// 取得當前時間字串（用於報告檔名）

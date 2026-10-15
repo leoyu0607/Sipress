@@ -500,8 +500,11 @@ function statusTitle(s: string) {
         <span class="cli-text">{{ store.cliCommand }}</span>
         <span class="cli-copy">{{ copied ? '✓' : '⎘' }}</span>
       </div>
-      <div class="cli-warn" v-if="store.cliUnsupported.length > 0 && store.config.mode === 'caller'">
+      <div class="cli-warn" v-if="store.cliUnsupported.length > 0">
         CLI 不支援：{{ store.cliUnsupported.join('、') }}（僅 GUI 生效）
+      </div>
+      <div class="cli-warn" v-if="store.config.mode === 'agent'">
+        帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv
       </div>
     </div>
 

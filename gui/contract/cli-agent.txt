@@ -1,0 +1,1 @@
+./sipress -s 192.168.166.60:5066 --mode agent --accounts sipress_accounts.csv --account-domain pbx.example -d 0 --ack-timeout 5 --bye-timeout 60 --transport udp --tui

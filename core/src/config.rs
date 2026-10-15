@@ -103,6 +103,62 @@ pub struct AgentAccount {
     pub domain:    String,
 }
 
+impl AgentAccount {
+    /// 解析帳號清單文字，格式與 GUI 匯入相同（一行一個帳號）：
+    ///   - `extension,username,password[,domain]`（CSV，第一行可為標題列）
+    ///   - `extension:password[:domain]`（username = extension）
+    ///   - `extension username password [domain]`（空白分隔）
+    ///
+    /// 空行與 `#` 開頭的行略過；未填 domain 時用 `default_domain`
+    /// （空字串 = 由引擎改用 SIP server 的 IP）。分機重複或格式錯誤時回傳錯誤。
+    pub fn parse_list(text: &str, default_domain: &str) -> anyhow::Result<Vec<AgentAccount>> {
+        let mut out: Vec<AgentAccount> = Vec::new();
+        let mut errors = Vec::new();
+        let mut first_content = true;
+        let make = |ext: &str, user: &str, pw: &str, domain: Option<&str>| AgentAccount {
+            extension: ext.to_string(),
+            username:  user.to_string(),
+            password:  pw.to_string(),
+            domain:    domain.filter(|d| !d.is_empty()).unwrap_or(default_domain).to_string(),
+        };
+
+        for (idx, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            let line_no = idx + 1;
+            if line.is_empty() || line.starts_with('#') { continue; }
+            if std::mem::take(&mut first_content) {
+                let head = line.split([',', ':', ' ', '\t']).next().unwrap_or("").to_lowercase();
+                if matches!(head.as_str(), "extension" | "ext" | "username" | "user") { continue; }
+            }
+
+            let acc = if line.contains(',') {
+                let p: Vec<&str> = line.split(',').map(str::trim).collect();
+                if p.len() < 3 { errors.push(format!("第 {} 行：需為 extension,username,password", line_no)); continue; }
+                make(p[0], p[1], p[2], p.get(3).copied())
+            } else if line.contains(':') {
+                let p: Vec<&str> = line.split(':').map(str::trim).collect();
+                make(p[0], p[0], p.get(1).copied().unwrap_or(""), p.get(2).copied())
+            } else {
+                let p: Vec<&str> = line.split_whitespace().collect();
+                if p.len() < 3 { errors.push(format!("第 {} 行：無法辨識格式", line_no)); continue; }
+                make(p[0], p[1], p[2], p.get(3).copied())
+            };
+            if acc.extension.is_empty() {
+                errors.push(format!("第 {} 行：分機不可空白", line_no));
+            } else if out.iter().any(|a| a.extension == acc.extension) {
+                errors.push(format!("第 {} 行：分機 {} 重複", line_no, acc.extension));
+            } else {
+                out.push(acc);
+            }
+        }
+
+        if !errors.is_empty() {
+            anyhow::bail!("帳號清單格式錯誤：{}", errors.join("；"));
+        }
+        Ok(out)
+    }
+}
+
 /// 傳輸層協定
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -395,5 +451,46 @@ mod tests {
             let cfg = Config { local_addr: Some(bad.into()), ..Default::default() };
             assert!(cfg.validate().is_err(), "{} 應被拒絕", bad);
         }
+    }
+
+    #[test]
+    fn account_list_accepts_gui_import_formats() {
+        let text = "extension,username,password,domain\n\
+                    # 註解\n\
+                    \n\
+                    1001,u1001,pw1,sip.example\n\
+                    1002,u1002,pw2\n\
+                    1003:pw3\n\
+                    1004:pw4:other.example\n\
+                    1005 u1005 pw5\r\n";
+        let list = AgentAccount::parse_list(text, "10.0.0.1").unwrap();
+        let got: Vec<_> = list.iter()
+            .map(|a| (a.extension.as_str(), a.username.as_str(), a.password.as_str(), a.domain.as_str()))
+            .collect();
+        assert_eq!(got, vec![
+            ("1001", "u1001", "pw1", "sip.example"),
+            ("1002", "u1002", "pw2", "10.0.0.1"),
+            ("1003", "1003",  "pw3", "10.0.0.1"),
+            ("1004", "1004",  "pw4", "other.example"),
+            ("1005", "u1005", "pw5", "10.0.0.1"),
+        ]);
+    }
+
+    #[test]
+    fn account_list_header_only_skipped_on_first_line() {
+        // 第一行不是標題列時照常解析；標題字樣出現在後面的行也是一般帳號
+        let list = AgentAccount::parse_list("1001,u,p\nuser,u2,p2", "").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].extension, "user");
+        assert_eq!(list[0].domain, "");
+    }
+
+    #[test]
+    fn account_list_rejects_bad_lines_and_duplicates() {
+        let err = AgentAccount::parse_list("1001,u\n1002\n1003,u,p\n1003:p", "").unwrap_err().to_string();
+        assert!(err.contains("第 1 行"), "{}", err);
+        assert!(err.contains("第 2 行"), "{}", err);
+        assert!(err.contains("第 4 行") && err.contains("重複"), "{}", err);
+        assert!(!err.contains("第 3 行"), "{}", err);
     }
 }

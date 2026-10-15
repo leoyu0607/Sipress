@@ -401,24 +401,32 @@ export const useTestStore = defineStore('test', () => {
   /** 目前設定中 CLI 不支援、因此不會出現在 CLI 預覽中的項目 */
   const cliUnsupported = computed(() => {
     const c = config.value
-    if (c.mode === 'agent') return ['座席模式']
     const out: string[] = []
-    if (c.caller.cpsPattern.type !== 'flat') out.push('CPS 模式')
+    if (c.mode === 'caller' && c.caller.cpsPattern.type !== 'flat') out.push('CPS 模式')
     if (c.caller.enableAudio && c.caller.codec !== 'pcma') out.push('Codec')
-    if (c.caller.dtmfSequence) out.push('DTMF')
+    if (c.mode === 'caller' && c.caller.dtmfSequence) out.push('DTMF')
     return out
   })
 
   const cliCommand = computed(() => {
     const c = config.value
-    if (c.mode === 'agent') return '# 座席模式目前僅 GUI 支援，CLI 無對應指令'
     const p      = c.caller
-    const parts  = [`./sipress -s ${c.server}`, `--from ${p.accessNumber}`]
-    parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
-    parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${c.duration}`, `--call-duration ${p.callDuration}`)
-    if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
-    parts.push(`--transport ${c.transport.toLowerCase()}`)
-    if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
+    const parts  = [`./sipress -s ${c.server}`]
+    if (c.mode === 'agent') {
+      // 帳號檔由「匯出 CSV」產生（sipress_accounts.csv）
+      const a = c.agent
+      parts.push('--mode agent --accounts sipress_accounts.csv')
+      if (a.defaultDomain.trim()) parts.push(`--account-domain ${a.defaultDomain.trim()}`)
+      parts.push(`-d ${c.duration}`, `--ack-timeout ${a.ackTimeout}`, `--bye-timeout ${a.byeTimeout}`)
+      parts.push(`--transport ${c.transport.toLowerCase()}`)
+    } else {
+      parts.push(`--from ${p.accessNumber}`)
+      parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
+      parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${c.duration}`, `--call-duration ${p.callDuration}`)
+      if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
+      parts.push(`--transport ${c.transport.toLowerCase()}`)
+      if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
+    }
     if (p.enableAudio && p.audioFile) parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
     parts.push(c.cliFormat === 'tui' ? '--tui' : `--format ${c.cliFormat}`)
     if (c.cliVerbose) parts.push('--verbose')

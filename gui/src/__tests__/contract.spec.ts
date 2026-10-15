@@ -86,10 +86,6 @@ describe.each(SCENARIOS)('$name', ({ name, apply }) => {
   it('CLI 預覽指令（CLI e2e 驗證 gui/contract/cli-*.txt）', async () => {
     const s = useTestStore()
     apply(s.config)
-    if (s.config.mode === 'agent') {
-      expect(s.cliCommand.startsWith('#')).toBe(true)
-      return
-    }
     await expect(s.cliCommand + '\n').toMatchFileSnapshot(`../../contract/cli-${name}.txt`)
   })
 })
