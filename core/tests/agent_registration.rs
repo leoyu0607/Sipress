@@ -97,5 +97,11 @@ async fn rejected_accounts_are_not_counted() {
         "被拒絕的帳號不可計入已註冊：{:?}",
         snaps
     );
-    assert_eq!(snaps.last().unwrap().agents_registered, 1);
+    // 用最大值而非最後一筆：最後一筆快照可能落在結束時的解除註冊之後（會是 0）
+    assert_eq!(
+        snaps.iter().map(|s| s.agents_registered).max(),
+        Some(1),
+        "{:?}",
+        snaps
+    );
 }
