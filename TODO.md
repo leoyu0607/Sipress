@@ -16,7 +16,7 @@
 
 | 項目 | 說明 |
 |---|---|
-| 前端測試 | 本機若是 Node 26，需 `NODE_OPTIONS=--no-webstorage npm test`（見第 7 項）；CI 用 Node 22 |
+| 前端測試 | `npm test`；Node 25+ 的內建 Web Storage 已在 `vitest.config.ts` 關掉（第 7 項）；CI 用 Node 22 |
 | Rust 測試 | 本機沒有 `cargo nextest` 時改用 `cargo test -p sipress-core -p sipress`；GUI 後端在 `gui/src-tauri` 下 `cargo test` |
 | Lint | `cargo clippy … -- -D warnings`（core/cli 與 gui 各跑一次），警告即失敗 |
 | `cargo fmt` | 目前沒有強制，既有檔案本來就不符合（見第 8 項），不要整檔重排 |
@@ -61,9 +61,9 @@
 
 目前 SIP server、Transport、持續時間為兩端共用。常見需求是座席端先開、比民眾端晚關，持續時間應可分開設定。
 
-### [ ] 7. 修好 Node 26 的前端測試環境
+### [x] 7. 修好 Node 26 的前端測試環境
 
-Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `localStorage.clear()` 失敗。在 vitest 設定處理，讓 `npm test` 不需要 `NODE_OPTIONS`。
+Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `localStorage.clear()` 失敗。已在 `vitest.config.ts` 用 `test.execArgv` 對測試 worker 加 `--no-experimental-webstorage`（Node 22 與 26 都認得；不認得的舊版不加），Node 22 / 26 下 `npm test` 皆通過。
 
 ### [ ] 8. 決定 `cargo fmt` 的政策
 
