@@ -8,4 +8,4 @@ pub mod transport;
 pub use dialog::{Dialog, DialogState};
 pub use message::{SipMessage, SipResponse};
 pub use parser::SipParser;
-pub use transport::SharedUdpSocket;
+pub use transport::SipSocket;

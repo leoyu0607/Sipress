@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     // 解析 transport
     let transport = match args.transport.to_lowercase().as_str() {
         "tcp" => Transport::Tcp,
-        _ => Transport::Udp, // 預設 UDP（包含 "udp" 與其他未知值）
+        _ => Transport::Udp,
     };
 
     let mode = if args.mode == "agent" {

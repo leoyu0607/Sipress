@@ -1,12 +1,12 @@
 /// 座席帳號註冊器：對 SIP server 發送 REGISTER，處理 Digest 認證
+use crate::config::Transport;
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
-    SipMessage, SipParser,
+    SipMessage, SipParser, SipSocket,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::net::UdpSocket;
 use tokio::time;
 
 /// 註冊結果狀態
@@ -42,7 +42,7 @@ pub struct RegisterResult {
 /// - `domain`: From/To URI 中的 domain（通常等於 server IP，或自訂）
 /// - `username` / `password`: 帳號認證資訊
 /// - `expires`: 註冊有效期（秒）
-/// - `transport`: 目前固定 "UDP"
+/// - `transport`: "UDP" 或 "TCP"（不分大小寫）
 pub async fn register_once(
     server_addr: &str,
     domain: &str,
@@ -55,12 +55,25 @@ pub async fn register_once(
         .parse()
         .with_context(|| format!("無效的伺服器位址: {}", server_addr))?;
 
-    // ── 取得本機 socket（短期 UDP，用完即關）──
-    let sock = UdpSocket::bind(crate::net::unspecified_for(&server))
-        .await
-        .context("無法綁定本機 UDP socket")?;
-    sock.connect(server).await.context("無法連接 SIP 伺服器")?;
-    let local_sock_str = sock.local_addr()?.to_string();
+    let (tp, transport) = if transport.eq_ignore_ascii_case("tcp") {
+        (Transport::Tcp, "TCP")
+    } else {
+        (Transport::Udp, "UDP")
+    };
+
+    // ── 取得本機 socket（短期，用完即關）──
+    let sock = match SipSocket::connect(tp, server, crate::net::unspecified_for(&server)).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(RegisterResult {
+                status: RegisterStatus::NetworkError,
+                message: format!("{:#}", e),
+                expires_secs: None,
+                sip_code: None,
+            })
+        }
+    };
+    let local_sock_str = sock.local_addr.clone();
 
     let call_id = SipMessage::new_call_id(domain);
     let from_tag = SipMessage::new_tag();
@@ -79,7 +92,7 @@ pub async fn register_once(
         expires,
         None,
     );
-    if let Err(e) = sock.send(req1.as_bytes()).await {
+    if let Err(e) = sock.send(&req1).await {
         return Ok(RegisterResult {
             status: RegisterStatus::NetworkError,
             message: format!("傳送失敗: {}", e),
@@ -131,7 +144,7 @@ pub async fn register_once(
                 expires,
                 Some(&auth_line),
             );
-            if let Err(e) = sock.send(req2.as_bytes()).await {
+            if let Err(e) = sock.send(&req2).await {
                 return Ok(RegisterResult {
                     status: RegisterStatus::NetworkError,
                     message: format!("認證重送失敗: {}", e),
@@ -193,8 +206,7 @@ pub async fn register_once(
 
 // ─── helpers ─────────────────────────────────────────────────────
 
-async fn recv_with_timeout(sock: &UdpSocket, dur: Duration) -> Result<String> {
-    let mut buf = vec![0u8; 4096];
+async fn recv_with_timeout(sock: &SipSocket, dur: Duration) -> Result<String> {
     // 100/180 之類的中繼回應會被一起送來，我們忽略它們，等到最終回應為止
     let deadline = tokio::time::Instant::now() + dur;
     loop {
@@ -202,12 +214,10 @@ async fn recv_with_timeout(sock: &UdpSocket, dur: Duration) -> Result<String> {
         if remaining.is_zero() {
             anyhow::bail!("逾時");
         }
-        let n = match time::timeout(remaining, sock.recv(&mut buf)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(e.into()),
+        let raw = match time::timeout(remaining, sock.recv()).await {
+            Ok(r) => r?,
             Err(_) => anyhow::bail!("逾時"),
         };
-        let raw = String::from_utf8_lossy(&buf[..n]).to_string();
         let code = SipParser::status_code(&raw).unwrap_or(0);
         // 100/180 / provisional → 繼續等
         if (100..200).contains(&code) {

@@ -1,6 +1,6 @@
 /// SIP 訊息建構器
 /// 手刻 SIP RFC 3261 格式，不依賴外部複雜 crate，靜態編譯友好
-use super::sdp;
+use super::{sdp, SipParser};
 use uuid::Uuid;
 
 pub struct SipMessage;
@@ -348,11 +348,12 @@ impl SipMessage {
              {to}\r\n\
              {call_id}\r\n\
              {cseq}\r\n\
-             Contact: <sip:{user}@{local};transport=udp>\r\n\
+             Contact: <sip:{user}@{local};transport={tp}>\r\n\
              Content-Type: application/sdp\r\n\
              Content-Length: {sdp_len}\r\n\
              \r\n\
              {sdp}",
+            tp = SipParser::via_transport(raw_request).to_ascii_lowercase(),
             via = via,
             from = from,
             to = to,

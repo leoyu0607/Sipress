@@ -66,7 +66,7 @@ pub struct Args {
     pub max_calls: u64,
 
     /// 傳輸層協定：udp（預設）/ tcp
-    #[arg(long = "transport", default_value = "udp")]
+    #[arg(long = "transport", default_value = "udp", value_parser = ["udp", "tcp", "UDP", "TCP"])]
     pub transport: String,
 
     /// 模式：caller（民眾端，主動撥出）/ agent（座席端，註冊後等待來電並接聽）

@@ -131,9 +131,16 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 
 確認 sipress 民眾端直接撥入時，SIPX 入口是否產生 `P-CIN-CallId` 並回在 18x / 200（報告的「民眾端 CIN %」）。拿不到時改用 `--from-seq` 配對，並把結果補進第 3 項的紀錄。
 
-### [ ] 16. TCP 傳輸（功能）
+### [x] 16. TCP 傳輸（功能）
 
-GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。要嘛實作（連線管理、訊息分框、`Content-Length` 解析），要嘛在介面上先移除這個選項。TLS / SRTP 視需求另列。
+原本 GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。
+已實作：`core/src/sip/transport.rs` 的 `SipSocket` 把 UDP / TCP 包成同一個介面，民眾端、座席端與 GUI 的「測試註冊」都改用它：
+- TCP 時民眾端整個測試、每個座席帳號各用一條連線；依 `Content-Length`（含 compact `l:`）分框，略過 keep-alive CRLF，單則訊息上限 64 KB。
+- Via 為 `SIP/2.0/TCP`、Contact 帶 `;transport=tcp`（REGISTER 也帶，否則伺服器會用 UDP 找座席）；座席的回應與主動 BYE 依來電 Via 的協定。
+- TCP 不做 SIP 層重傳（INVITE / BYE），由傳輸層保證送達。
+- 連線失敗或伺服器斷線會直接回報錯誤。CLI `--transport` 只接受 udp / tcp（原本 `tls` 會被默默當成 UDP）。
+- 限制：伺服器送給座席的請求必須走座席註冊的那條連線（SIPX 等 proxy 的一般做法）；sipress 不另外監聽 TCP port。RTP 仍為 UDP。TLS / SRTP 視需求另列。
+測試：`take_frame` 分框與 `via_transport` 單元測試、`SipSocket` TCP 收送；`core/tests/tcp_transport.rs`（民眾端單一連線完成兩通、回應延遲超過 T1 也不重傳、兩則回應黏在同一次寫入；座席端 TCP 註冊與接聽；連線被拒立即失敗）。
 
 ### [ ] 17. CLI 補上 GUI 才有的設定（功能）
 

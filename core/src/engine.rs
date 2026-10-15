@@ -1,12 +1,12 @@
 /// SIP 壓測主引擎
-use crate::config::{Config, Transport};
+use crate::config::Config;
 use crate::rtp::{
     session::{RtpSession, RtpSessionConfig},
     stats::{aggregate_snapshots, RtpStatsSnapshot},
 };
 use crate::sip::{
-    register::DigestChallenge, sdp, Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser,
-    SipResponse,
+    register::DigestChallenge, sdp, Dialog, DialogState, SipMessage, SipParser, SipResponse,
+    SipSocket,
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats, StatsSnapshot};
@@ -97,13 +97,6 @@ impl Engine {
             crate::rtp::audio::AudioSource::preload(path).await?;
         }
 
-        // ── TCP transport 目前尚未實作 ──
-        if cfg.transport == Transport::Tcp {
-            return Err(anyhow::anyhow!(
-                "TCP transport 尚未實作，請使用 UDP（--transport udp）"
-            ));
-        }
-
         // ── 建立 SIP log 記錄器 ──
         let sip_log = Arc::new(
             SipLogger::new(&cfg.logs_dir, SipRole::Caller).unwrap_or_else(|e| {
@@ -131,9 +124,10 @@ impl Engine {
         };
         let local_ip = local_ip_owned.as_str();
 
-        // 建立共用 UDP socket
-        let udp = Arc::new(SharedUdpSocket::new(server_addr, local_ip).await?);
+        // 建立共用 SIP socket（UDP 或 TCP 連線）
+        let udp = Arc::new(SipSocket::connect(cfg.transport, server_addr, local_ip).await?);
         let local_addr = udp.local_addr.clone();
+        let reliable = udp.is_reliable();
 
         // From URI 的 domain（IPv6 加中括號）
         let local_domain_owned = cfg
@@ -143,6 +137,7 @@ impl Engine {
         let local_domain = local_domain_owned.as_str();
 
         // 對話內請求 / ACK 的組裝（事件處理、② 掃描與收尾共用）
+        let transport = cfg.transport_str();
         let build_ack = |d: &Dialog| {
             SipMessage::ack(
                 &d.call_id,
@@ -155,7 +150,7 @@ impl Engine {
                 d.cseq,
                 &SipMessage::new_branch(),
                 &d.from_tag,
-                "UDP",
+                transport,
                 d.remote_contact.as_deref(), // 2xx ACK 使用 Contact URI 作為 Request-URI
             )
         };
@@ -170,7 +165,7 @@ impl Engine {
                 d.cseq,
                 &d.branch,
                 &d.from_tag,
-                "UDP",
+                transport,
             )
         };
         // INVITE（首次與帶認證重送共用；`auth` 為完整的 Authorization / Proxy-Authorization 行）
@@ -185,7 +180,7 @@ impl Engine {
                 d.cseq,
                 &d.branch,
                 &d.from_tag,
-                "UDP",
+                transport,
                 if d.local_rtp_port > 0 {
                     d.local_rtp_port
                 } else {
@@ -214,7 +209,7 @@ impl Engine {
                 d.cseq + 1,
                 &SipMessage::new_branch(),
                 &d.from_tag,
-                "UDP",
+                transport,
                 d.remote_contact.as_deref(),
             )
         };
@@ -248,13 +243,14 @@ impl Engine {
         let ev_tx2 = ev_tx.clone();
         let log_recv = Arc::clone(&sip_log);
         let recv_task = tokio::spawn(async move {
-            let mut buf = vec![0u8; 65536];
             loop {
-                let n = match udp_recv.socket.recv(&mut buf).await {
-                    Ok(n) => n,
-                    Err(_) => break,
+                let raw = match udp_recv.recv().await {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        warn!("SIP 接收結束：{:#}", e);
+                        break;
+                    }
                 };
-                let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
                 debug!("< {}", raw.lines().next().unwrap_or(""));
 
                 log_recv.log_message(Direction::Recv, &raw, &udp_recv.server.to_string());
@@ -818,8 +814,8 @@ impl Engine {
                         _ => {}
                     }
 
-                    // UDP 重傳：INVITE 未收到任何 1xx / BYE 未收到最終回應
-                    if let Some(msg) = dialog.due_retransmit(now) {
+                    // UDP 重傳：INVITE 未收到任何 1xx / BYE 未收到最終回應（TCP 由傳輸層保證送達，不重傳）
+                    if let Some(msg) = dialog.due_retransmit(now).filter(|_| !reliable) {
                         let method = msg.split_whitespace().next().unwrap_or("");
                         sip_log.log_event(&dialog.call_id, &format!("RETRANSMIT {}", method));
                         to_send.push(msg);
@@ -1071,7 +1067,7 @@ async fn stop_rtp_session(
 }
 
 /// 記錄並送出一則 SIP 訊息（UDP 送出不會阻塞，不需另開 task）
-async fn send_sip(udp: &SharedUdpSocket, log: &SipLogger, server: &str, msg: &str) {
+async fn send_sip(udp: &SipSocket, log: &SipLogger, server: &str, msg: &str) {
     log.log_message(Direction::Send, msg, server);
     let _ = udp.send(msg).await;
 }

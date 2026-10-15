@@ -30,7 +30,7 @@ impl RegisterMessage {
              To: <sip:{user}@{server}>\r\n\
              Call-ID: {call_id}\r\n\
              CSeq: {cseq} REGISTER\r\n\
-             Contact: <sip:{user}@{local}>\r\n\
+             Contact: <sip:{user}@{local}{contact_tp}>\r\n\
              Max-Forwards: 70\r\n\
              Expires: {expires}\r\n\
              {auth_line}\
@@ -41,6 +41,8 @@ impl RegisterMessage {
              \r\n",
             server    = server,
             tp        = transport,
+            // UDP 維持簡潔 Contact（與 SIPp 一致）；TCP 要標明，否則伺服器會用 UDP 找座席
+            contact_tp = if transport.eq_ignore_ascii_case("UDP") { String::new() } else { format!(";transport={}", transport.to_ascii_lowercase()) },
             local     = local_addr,
             branch    = branch,
             user      = username,

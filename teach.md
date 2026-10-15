@@ -1711,6 +1711,8 @@ build script 從這些路徑複製到 `dist/`。
 
 預設使用 UDP，因為大多數中國電信軟交換機（SoftX3000、S8500 等）預設接受 UDP SIP。TCP 雖然更可靠，但 TCP 連線管理增加了壓測工具的複雜度，且在高 CPS 場景下 TCP 的 SYN 握手開銷更明顯。
 
+sipress 也支援 TCP（`--transport tcp`）：每個民眾端 / 座席帳號只建立一條長連線，避免每通電話都做 TCP 握手；訊息依 `Content-Length` 分框，且 TCP 時不做 SIP 層重傳。
+
 ### B. SIP 認證（401/407）的實作策略
 
 從 v0.2 起，**座席模式**完整實作 RFC 2617 Digest 認證（含 qop=auth 與 RFC 2069 fallback），因為座席必須帶帳密註冊到交換機。實作位於：

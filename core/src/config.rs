@@ -265,7 +265,7 @@ impl AgentBehavior {
 }
 
 /// 傳輸層協定
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Transport {
     #[default]

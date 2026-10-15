@@ -95,7 +95,7 @@ sipress/
 │       │   ├── register.rs       ← REGISTER 訊息 + Digest auth (RFC 2617) 解析與計算
 │       │   ├── dialog.rs         ← SIP 對話狀態機
 │       │   ├── parser.rs         ← SIP 回應解析
-│       │   └── transport.rs      ← UDP / TCP 傳輸層
+│       │   └── transport.rs      ← UDP / TCP 傳輸層（TCP 依 Content-Length 分框）
 │       └── rtp/
 │           ├── audio.rs          ← WAV → PCMA（G.711 A-law）自動轉檔；支援 PCM16 / A-law / μ-law
 │           ├── packet.rs         ← RTP 封包建構與解析（RFC 3550）

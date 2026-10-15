@@ -46,6 +46,17 @@ impl SipParser {
         Self::header_value(raw, &["via", "v"])
     }
 
+    /// 第一個 Via 的傳輸協定（`SIP/2.0/TCP ...` → `"TCP"`）；沒有 Via 時為 `"UDP"`
+    pub fn via_transport(raw: &str) -> String {
+        Self::via(raw)
+            .and_then(|v| {
+                let proto = v.split_whitespace().next()?;
+                Some(proto.rsplit('/').next()?.to_ascii_uppercase())
+            })
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "UDP".into())
+    }
+
     /// 取得 Contact header
     pub fn contact(raw: &str) -> Option<String> {
         Self::header_value(raw, &["contact", "m"])
@@ -147,6 +158,18 @@ impl SipParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn via_transport_reads_top_via() {
+        let tcp = "INVITE sip:a@b SIP/2.0\r\nVia: SIP/2.0/TCP 10.0.0.1:5060;branch=z9hG4bK-1\r\nVia: SIP/2.0/UDP 10.0.0.9\r\n\r\n";
+        assert_eq!(SipParser::via_transport(tcp), "TCP");
+        let compact = "BYE sip:a@b SIP/2.0\r\nv: SIP/2.0/udp 10.0.0.1\r\n\r\n";
+        assert_eq!(SipParser::via_transport(compact), "UDP");
+        assert_eq!(
+            SipParser::via_transport("BYE sip:a@b SIP/2.0\r\n\r\n"),
+            "UDP"
+        );
+    }
 
     #[test]
     fn cin_call_id_and_from_user() {
