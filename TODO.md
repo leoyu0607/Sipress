@@ -62,7 +62,7 @@
 ### [x] 4. 座席行為模擬
 
 `Config.agent_behavior`（`AgentBehavior`）：響鈴延遲區間、拒接 %（486）、不接 %（響到 CANCEL → 487，120 秒上限回 480）、接聽後主動掛斷區間、wrap-up 休息秒數（期間來電 486）。座席 runner 新增「響鈴中」狀態，響鈴中的 CANCEL 回 487。CLI 參數 `--ring` / `--talk`（`N` 或 `MIN-MAX`）、`--reject-pct`、`--no-answer-pct`、`--wrap-up`；GUI 座席區塊有對應欄位與驗證，CLI 預覽只帶非預設值。流程測試在 `core/tests/agent_behavior.rs`。
-目前座席同時可接多通（通話中來電仍會接聽），沒有模擬「通話中忙線」。
+通話中忙線見第 9 項。
 
 ### [x] 5. CLI 支援座席模式
 
@@ -80,6 +80,6 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 
 採 rustfmt 預設設定：一次格式化整個 workspace（純格式化 commit 列在 `.git-blame-ignore-revs`），CI 的 Lint job 加上 `cargo fmt --all -- --check`。
 
-### [ ] 9. 座席「通話中忙線」模擬
+### [x] 9. 座席「通話中忙線」模擬
 
-第 4 項的行為模擬只在 wrap-up 期間拒接；座席通話中收到新來電仍會接聽（一個帳號可同時多通）。真實話機通常一次一通，可加一個選項讓通話中的來電回 486，ACD 才會改派給其他座席。
+`AgentBehavior.busy_in_call`（CLI `--busy-in-call`、GUI 座席區塊「通話中忙線」）：座席已有通話或有來電響鈴中時，新來電直接回 486 Busy Here（計為失敗通話），ACD 才會改派給其他座席。預設關閉，維持一個帳號可同時接多通的舊行為。測試在 `core/tests/agent_behavior.rs`（通話中、響鈴中、關閉時照常接聽）。

@@ -47,6 +47,7 @@
     "no_answer_pct": 5,
     "talk_min_secs": 30,
     "talk_max_secs": 30,
-    "wrap_up_secs": 2
+    "wrap_up_secs": 2,
+    "busy_in_call": true
   }
 }

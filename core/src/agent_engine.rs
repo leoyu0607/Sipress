@@ -936,11 +936,18 @@ async fn handle_request(
                 let local_to_tag = SipMessage::new_tag();
                 let behavior = &cfg.agent_behavior;
 
-                // wrap-up 休息中 → 直接忙線
-                if wrap_until.is_some_and(|t| Instant::now() < t) {
+                // wrap-up 休息中，或通話中忙線（已有通話 / 響鈴中）→ 直接忙線
+                let busy_reason = if wrap_until.is_some_and(|t| Instant::now() < t) {
+                    Some("休息中")
+                } else if behavior.busy_in_call && (!dlgs.is_empty() || !pending.is_empty()) {
+                    Some("通話中")
+                } else {
+                    None
+                };
+                if let Some(reason) = busy_reason {
                     log.log_event(
                         &account.extension,
-                        &format!("[{}] 休息中 → 486", short(&call_id)),
+                        &format!("[{}] {} → 486", short(&call_id), reason),
                     );
                     fail_invite(
                         raw,

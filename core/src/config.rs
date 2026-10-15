@@ -226,6 +226,9 @@ pub struct AgentBehavior {
     pub talk_max_secs: f64,
     /// 兩通之間的休息時間（wrap-up）：通話結束後這段時間內的來電直接回 486
     pub wrap_up_secs: f64,
+    /// 通話中忙線：已有通話（含響鈴中）時，新來電直接回 486，讓 ACD 改派給其他座席。
+    /// 關閉時同一帳號可同時接多通
+    pub busy_in_call: bool,
 }
 
 impl AgentBehavior {
@@ -665,6 +668,7 @@ mod tests {
             talk_min_secs: 5.0,
             talk_max_secs: 5.0,
             wrap_up_secs: 2.0,
+            busy_in_call: true,
         };
         assert!(ok.validate().is_ok());
         assert!(AgentBehavior::default().validate().is_ok());

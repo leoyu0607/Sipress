@@ -80,10 +80,13 @@ describe('validationErrors', () => {
     const s = useTestStore()
     expect(s.config.agent.behavior.rejectPct).toBe(0)
     expect(s.config.agent.ackTimeout).toBe(5)
-    expect(s.cliCommand).not.toMatch(/--ring|--talk|--reject-pct|--no-answer-pct|--wrap-up/)
+    expect(s.cliCommand).not.toMatch(/--ring|--talk|--reject-pct|--no-answer-pct|--wrap-up|--busy-in-call/)
+    expect(s.config.agent.behavior.busyInCall).toBe(false)
     Object.assign(s.config.agent.behavior, { ringMin: 2, ringMax: 2, talkMin: 10, talkMax: 60 })
     expect(s.cliCommand).toContain('--ring 2 ')
     expect(s.cliCommand).toContain('--talk 10-60')
+    s.config.agent.behavior.busyInCall = true
+    expect(s.cliCommand).toContain('--busy-in-call')
   })
 
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {

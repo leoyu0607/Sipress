@@ -234,8 +234,9 @@ extension,username,password,domain
 | 拒接 % | `--reject-pct 10` | 響鈴後回 `486 Busy Here` |
 | 不接 % | `--no-answer-pct 10` | 一直響鈴，等 SIPX 逾時 CANCEL（回 487）改派別的座席；120 秒仍未取消則回 480 |
 | 休息（秒） | `--wrap-up 5` | 通話結束後的 wrap-up 時間，期間的新來電直接回 486 |
+| 通話中忙線 | `--busy-in-call` | 已有通話（含響鈴中）時，新來電直接回 486，讓 ACD 改派給其他座席；關閉時同一帳號可同時接多通（預設） |
 
-拒接、不接、休息中被拒的來電在座席端計為失敗通話（4xx），ASR 會相應降低；響鈴延遲會反映在民眾端的通話建立時間（Setup，到 200 OK），PDD（到第一個 18x）不受影響。
+拒接、不接、休息中或通話中被拒的來電在座席端計為失敗通話（4xx），ASR 會相應降低；響鈴延遲會反映在民眾端的通話建立時間（Setup，到 200 OK），PDD（到第一個 18x）不受影響。
 
 ---
 
@@ -385,6 +386,7 @@ extension,username,password,domain
 --reject-pct <%>           座席端拒接比例（486）
 --no-answer-pct <%>        座席端不接比例（等 CANCEL）
 --wrap-up <秒>              座席端兩通之間休息秒數（期間來電回 486）
+--busy-in-call             座席端通話中（含響鈴中）的新來電回 486
 ```
 
 座席端範例（Ctrl-C 結束時會先解除註冊）：

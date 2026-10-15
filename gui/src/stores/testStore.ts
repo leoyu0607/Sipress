@@ -62,6 +62,7 @@ export interface AgentBehaviorConfig {
   talkMin:     number   // 接聽幾秒後座席主動掛斷
   talkMax:     number
   wrapUp:      number   // 兩通之間休息秒數
+  busyInCall:  boolean  // 通話中（含響鈴中）的新來電回 486
 }
 
 export interface AgentProfile {
@@ -300,7 +301,7 @@ function defaultConfig(): TestConfig {
       defaultDomain: '192.168.166.60',
       ackTimeout: 10,
       byeTimeout: 150,
-      behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0 },
+      behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
       duration: 0,
     },
   }
@@ -466,6 +467,7 @@ export const useTestStore = defineStore('test', () => {
       if (b.noAnswerPct > 0) parts.push(`--no-answer-pct ${b.noAnswerPct}`)
       if (b.talkMax > 0)     parts.push(`--talk ${range(b.talkMin, b.talkMax)}`)
       if (b.wrapUp > 0)      parts.push(`--wrap-up ${b.wrapUp}`)
+      if (b.busyInCall)      parts.push('--busy-in-call')
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
@@ -562,6 +564,7 @@ export const useTestStore = defineStore('test', () => {
         talk_min_secs: c.agent.behavior.talkMin,
         talk_max_secs: c.agent.behavior.talkMax,
         wrap_up_secs:  c.agent.behavior.wrapUp,
+        busy_in_call:  c.agent.behavior.busyInCall,
       },
     }
   }

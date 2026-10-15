@@ -95,6 +95,7 @@ async fn main() -> Result<()> {
             talk_min_secs: args.talk.0,
             talk_max_secs: args.talk.1,
             wrap_up_secs: args.wrap_up,
+            busy_in_call: args.busy_in_call,
         },
     };
     config.validate()?;

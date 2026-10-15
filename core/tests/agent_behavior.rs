@@ -60,6 +60,10 @@ enum Script {
     InviteThenCancel,
     /// INVITE → 收到 200 OK 回 ACK → 收到座席 BYE 回 200 → 300ms 後第二通 INVITE
     AnswerHangupThenSecondCall,
+    /// INVITE → 收到 200 OK 回 ACK → 200ms 後（通話中）第二通 INVITE → 再 600ms 後掛斷第一通
+    SecondCallWhileTalking,
+    /// INVITE 後 300ms（第一通仍在響鈴）送第二通 INVITE
+    SecondCallWhileRinging,
 }
 
 async fn spawn_server(script: Script) -> (SocketAddr, Log) {
@@ -88,6 +92,15 @@ async fn spawn_server(script: Script) -> (SocketAddr, Log) {
                             agent,
                         )
                         .await;
+                    if let Script::SecondCallWhileRinging = script {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        let _ = sock
+                            .send_to(
+                                request("INVITE", "call-2", 1, "inv2", addr, agent, "").as_bytes(),
+                                agent,
+                            )
+                            .await;
+                    }
                     if let Script::InviteThenCancel = script {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         let _ = sock
@@ -98,6 +111,39 @@ async fn spawn_server(script: Script) -> (SocketAddr, Log) {
                             .await;
                     }
                 });
+                continue;
+            }
+            if let Script::SecondCallWhileTalking = script {
+                if raw.starts_with("SIP/2.0 200")
+                    && SipParser::cseq_method(&raw).as_deref() == Some("INVITE")
+                    && SipParser::call_id(&raw).as_deref() == Some("call-1")
+                {
+                    let to_tag = SipParser::to_tag(&raw).unwrap_or_default();
+                    let _ = sock
+                        .send_to(
+                            request("ACK", "call-1", 1, "ack1", addr, agent, &to_tag).as_bytes(),
+                            agent,
+                        )
+                        .await;
+                    let sock = Arc::clone(&sock);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        let _ = sock
+                            .send_to(
+                                request("INVITE", "call-2", 1, "inv2", addr, agent, "").as_bytes(),
+                                agent,
+                            )
+                            .await;
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let _ = sock
+                            .send_to(
+                                request("BYE", "call-1", 2, "bye1", addr, agent, &to_tag)
+                                    .as_bytes(),
+                                agent,
+                            )
+                            .await;
+                    });
+                }
                 continue;
             }
             if !matches!(script, Script::AnswerHangupThenSecondCall) {
@@ -277,4 +323,67 @@ async fn delayed_answer_agent_hangup_and_wrap_up() {
     assert_eq!(report.calls_answered, 1);
     assert_eq!(report.calls_completed, 1);
     assert_eq!(report.calls_failed, 1);
+}
+
+#[tokio::test]
+async fn busy_in_call_rejects_second_call_while_talking() {
+    let behavior = AgentBehavior {
+        busy_in_call: true,
+        ..Default::default()
+    };
+    let (report, msgs) = run(Script::SecondCallWhileTalking, behavior, 3).await;
+
+    let codes1: Vec<u16> = invite_responses(&msgs, "call-1")
+        .iter()
+        .map(|(_, m)| status(m))
+        .collect();
+    assert_eq!(codes1, vec![100, 180, 200]);
+    let codes2: Vec<u16> = invite_responses(&msgs, "call-2")
+        .iter()
+        .map(|(_, m)| status(m))
+        .collect();
+    assert_eq!(codes2, vec![486], "通話中的新來電應直接忙線，不響鈴");
+
+    assert_eq!(report.calls_initiated, 2);
+    assert_eq!(report.calls_answered, 1);
+    assert_eq!(report.calls_completed, 1, "第一通由對方 BYE 正常結束");
+    assert_eq!(report.calls_failed, 1);
+    assert_eq!(report.fail_4xx, 1);
+}
+
+#[tokio::test]
+async fn without_busy_in_call_agent_answers_concurrent_calls() {
+    let (report, msgs) = run(Script::SecondCallWhileTalking, AgentBehavior::default(), 3).await;
+    let codes2: Vec<u16> = invite_responses(&msgs, "call-2")
+        .iter()
+        .map(|(_, m)| status(m))
+        .collect();
+    assert_eq!(
+        codes2,
+        vec![100, 180, 200],
+        "預設行為：同一帳號可同時接多通"
+    );
+    assert_eq!(report.calls_answered, 2);
+}
+
+#[tokio::test]
+async fn busy_in_call_also_rejects_while_ringing() {
+    let behavior = AgentBehavior {
+        busy_in_call: true,
+        ring_min_secs: 1.0,
+        ring_max_secs: 1.0,
+        ..Default::default()
+    };
+    let (report, msgs) = run(Script::SecondCallWhileRinging, behavior, 3).await;
+    let codes1: Vec<u16> = invite_responses(&msgs, "call-1")
+        .iter()
+        .map(|(_, m)| status(m))
+        .collect();
+    assert_eq!(codes1, vec![100, 180, 200], "第一通照常響鈴後接聽");
+    let codes2: Vec<u16> = invite_responses(&msgs, "call-2")
+        .iter()
+        .map(|(_, m)| status(m))
+        .collect();
+    assert_eq!(codes2, vec![486], "第一通響鈴中，新來電應忙線");
+    assert_eq!((report.calls_answered, report.calls_failed), (1, 1));
 }

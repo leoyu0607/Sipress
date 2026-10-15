@@ -406,6 +406,13 @@ function statusTitle(s: string) {
                    title="通話結束後的 wrap-up 時間，期間來電回 486">
           </div>
         </div>
+        <div class="toggle-row field">
+          <span title="已有通話（含響鈴中）時，新來電直接回 486 Busy Here，讓 ACD 改派給其他座席。關閉時同一帳號可同時接多通">通話中忙線 <span class="tag">--busy-in-call</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.agent.behavior.busyInCall">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+        </div>
 
         <!-- Upload -->
         <div
