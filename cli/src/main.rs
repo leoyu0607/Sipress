@@ -6,7 +6,7 @@ use args::Args;
 use clap::Parser;
 use sipress_core::{
     agent_engine::AgentEngine,
-    config::{AgentAccount, AgentBehavior, Config, Mode, Transport},
+    config::{AgentAccount, AgentBehavior, Codec, Config, Mode, Transport},
     correlate::{correlate, CorrelateOptions, CorrelationReport, MatchKind},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
@@ -38,69 +38,13 @@ async fn main() -> Result<()> {
         return run_correlate(&args, &files[0], &files[1]);
     }
 
-    // 解析 transport
-    let transport = match args.transport.to_lowercase().as_str() {
-        "tcp" => Transport::Tcp,
-        _ => Transport::Udp, // 預設 UDP（包含 "udp" 與其他未知值）
-    };
-
-    let mode = if args.mode == "agent" {
-        Mode::Agent
-    } else {
-        Mode::Caller
-    };
+    let mode = args.mode();
     let agent_accounts = if mode == Mode::Agent {
         load_accounts(&args)?
     } else {
         Vec::new()
     };
-
-    // 建構設定
-    let config = Config {
-        server_addr: args.server.clone(),
-        local_addr: args.local_addr.clone(),
-        local_domain: args.local_domain.clone(),
-        caller_number: args.caller.clone(),
-        caller_number_seq: args.caller_number_seq,
-        caller_auth_username: args.auth_user.clone(),
-        caller_auth_password: args.auth_pass.clone(),
-        callee_prefix: args.callee_prefix.clone(),
-        callee_range: args.callee_range,
-        callee_fixed: args.callee_fixed.clone(),
-        cps: args.cps,
-        cps_pattern: Default::default(),
-        max_concurrent_calls: args.max_concurrent,
-        duration_secs: args.duration,
-        call_duration_secs: args.call_duration,
-        invite_timeout_secs: args.invite_timeout,
-        transport,
-        logs_dir: args.logs_dir.clone(),
-        rtp_base_port: args.rtp_base_port,
-        audio_file: args.audio_file.clone(),
-        codec: Default::default(),
-        enable_rtp: args.enable_rtp,
-        dtmf_sequence: None,
-        max_total_calls: if args.max_calls > 0 {
-            Some(args.max_calls)
-        } else {
-            None
-        },
-        mode: mode.clone(),
-        agent_accounts,
-        agent_ack_timeout_secs: args.ack_timeout,
-        agent_bye_timeout_secs: args.bye_timeout,
-        agent_reregister_after_call: args.reregister_after_call,
-        agent_behavior: AgentBehavior {
-            ring_min_secs: args.ring.0,
-            ring_max_secs: args.ring.1,
-            reject_pct: args.reject_pct,
-            no_answer_pct: args.no_answer_pct,
-            talk_min_secs: args.talk.0,
-            talk_max_secs: args.talk.1,
-            wrap_up_secs: args.wrap_up,
-            busy_in_call: args.busy_in_call,
-        },
-    };
+    let config = build_config(&args, agent_accounts);
     config.validate()?;
 
     let engine = AnyEngine::new(config);
@@ -116,7 +60,7 @@ async fn main() -> Result<()> {
     }
 
     // ── TUI 模式 ──────────────────────────────────────────────────
-    if args.tui {
+    let report = if args.tui {
         let tui_state = Arc::new(Mutex::new(TuiState {
             target_cps: args.cps,
             target_duration: args.duration,
@@ -151,16 +95,7 @@ async fn main() -> Result<()> {
         let _ = done_tx.send(()).await;
 
         // TUI 退出後仍然印出最終報告
-        let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
-        Reporter::print(&report, fmt);
-
-        if args.html {
-            let ts = report_timestamp();
-            match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
-                Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
-            }
-        }
+        report
 
     // ── 無頭模式 ─────────────────────────────────────────────────
     } else {
@@ -179,17 +114,22 @@ async fn main() -> Result<()> {
             None
         };
 
-        let report = engine.run(on_progress).await?;
-        let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
-        Reporter::print(&report, fmt);
+        engine.run(on_progress).await?
+    };
 
-        if args.html {
-            let ts = report_timestamp();
-            match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
-                Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
-                Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
-            }
+    let fmt = OutputFormat::from_str(&args.format).unwrap_or(OutputFormat::Table);
+    Reporter::print(&report, fmt);
+
+    if args.html {
+        let ts = report_timestamp();
+        match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
+            Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
+            Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
         }
+    }
+
+    if let Some(path) = &args.timeline_csv {
+        write_timeline_csv(path, &report)?;
     }
 
     if let Some(path) = &args.trace_file {
@@ -197,6 +137,83 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// --timeline-csv：分時段統計每段一列
+fn write_timeline_csv(path: &std::path::Path, report: &FinalReport) -> Result<()> {
+    let mut out = String::from(sipress_core::timeline::TimelineBucket::CSV_HEADER);
+    out.push('\n');
+    for b in &report.timeline {
+        out.push_str(&b.csv_row());
+        out.push('\n');
+    }
+    std::fs::write(path, out).with_context(|| format!("無法寫入 {}", path.display()))?;
+    tracing::info!(
+        "分時段統計（{} 段）→ {}",
+        report.timeline.len(),
+        path.display()
+    );
+    Ok(())
+}
+
+/// 由 CLI 參數建構壓測設定（座席帳號另由 --accounts 讀入）
+fn build_config(args: &Args, agent_accounts: Vec<AgentAccount>) -> Config {
+    // 解析 transport
+    let transport = match args.transport.to_lowercase().as_str() {
+        "tcp" => Transport::Tcp,
+        _ => Transport::Udp,
+    };
+
+    Config {
+        server_addr: args.server.clone(),
+        local_addr: args.local_addr.clone(),
+        local_domain: args.local_domain.clone(),
+        caller_number: args.caller.clone(),
+        caller_number_seq: args.caller_number_seq,
+        caller_auth_username: args.auth_user.clone(),
+        caller_auth_password: args.auth_pass.clone(),
+        callee_prefix: args.callee_prefix.clone(),
+        callee_range: args.callee_range,
+        callee_fixed: args.callee_fixed.clone(),
+        cps: args.cps,
+        cps_pattern: args.cps_pattern(),
+        max_concurrent_calls: args.max_concurrent,
+        duration_secs: args.duration,
+        call_duration_secs: args.call_duration,
+        invite_timeout_secs: args.invite_timeout,
+        transport,
+        logs_dir: args.logs_dir.clone(),
+        rtp_base_port: args.rtp_base_port,
+        audio_file: args.audio_file.clone(),
+        codec: if args.codec.eq_ignore_ascii_case("pcmu") {
+            Codec::Pcmu
+        } else {
+            Codec::Pcma
+        },
+        enable_rtp: args.enable_rtp,
+        dtmf_sequence: args.dtmf.clone(),
+        max_total_calls: if args.max_calls > 0 {
+            Some(args.max_calls)
+        } else {
+            None
+        },
+        mode: args.mode(),
+        agent_accounts,
+        agent_ack_timeout_secs: args.ack_timeout,
+        agent_bye_timeout_secs: args.bye_timeout,
+        agent_reregister_after_call: args.reregister_after_call,
+        agent_behavior: AgentBehavior {
+            ring_min_secs: args.ring.0,
+            ring_max_secs: args.ring.1,
+            reject_pct: args.reject_pct,
+            no_answer_pct: args.no_answer_pct,
+            talk_min_secs: args.talk.0,
+            talk_max_secs: args.talk.1,
+            wrap_up_secs: args.wrap_up,
+            busy_in_call: args.busy_in_call,
+        },
+        stats_interval_secs: args.interval,
+    }
 }
 
 fn write_trace_file(
@@ -426,4 +443,112 @@ fn report_timestamp() -> String {
         .as_secs();
     // 複用 SipLogger 的時間格式
     sipress_core::sip_logger::SipLogger::timestamp_for_filename(secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sipress_core::config::CpsPattern;
+
+    /// 依空白切開指令，雙引號內視為同一個參數
+    fn words(cmd: &str) -> Vec<String> {
+        let (mut out, mut cur, mut quoted) = (Vec::new(), String::new(), false);
+        for ch in cmd.trim().chars() {
+            match ch {
+                '"' => quoted = !quoted,
+                c if c.is_whitespace() && !quoted => {
+                    if !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                }
+                c => cur.push(c),
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+
+    /// GUI 的 CLI 預覽（gui/contract/cli-*.txt）交給 CLI 解析後，要得到與 GUI 實際送給
+    /// start_test 的設定（gui/contract/config-*.json）相同的壓測設定
+    #[test]
+    fn gui_cli_preview_reproduces_gui_config() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gui/contract");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let Some(case) = name
+                .strip_prefix("cli-")
+                .and_then(|n| n.strip_suffix(".txt"))
+            else {
+                continue;
+            };
+            let cmd = std::fs::read_to_string(&path).unwrap();
+            let args = Args::try_parse_from(words(&cmd))
+                .unwrap_or_else(|e| panic!("{}：CLI 無法解析：{}", name, e));
+            let mut cli = build_config(&args, Vec::new());
+            let mut gui: Config = serde_json::from_str(
+                &std::fs::read_to_string(dir.join(format!("config-{}.json", case))).unwrap(),
+            )
+            .unwrap();
+
+            // 預覽不會、也不需要帶的部分：帳號在 CSV 檔、密碼以佔位字代替
+            gui.agent_accounts.clear();
+            assert_eq!(
+                cli.caller_auth_password.is_some(),
+                gui.caller_auth_password.is_some(),
+                "{}",
+                name
+            );
+            cli.caller_auth_password = gui.caller_auth_password.clone();
+            // 沒有 RTP 時不使用 RTP port
+            if !gui.enable_rtp {
+                cli.rtp_base_port = gui.rtp_base_port;
+            }
+            // 非固定 CPS 模式時 --cps 不使用
+            if !matches!(gui.cps_pattern, CpsPattern::Flat) {
+                cli.cps = gui.cps;
+            }
+            if gui.mode == Mode::Agent {
+                // 座席端不使用民眾端的撥號設定
+                for c in [&mut cli, &mut gui] {
+                    c.caller_number.clear();
+                    c.caller_number_seq = false;
+                    c.caller_auth_username = None;
+                    c.caller_auth_password = None;
+                    c.callee_fixed = None;
+                    c.callee_prefix.clear();
+                    c.callee_range = 0;
+                    c.cps = 0.0;
+                    c.cps_pattern = CpsPattern::Flat;
+                    c.max_concurrent_calls = 0;
+                    c.max_total_calls = None;
+                    c.call_duration_secs = 0;
+                    c.dtmf_sequence = None;
+                }
+            }
+
+            let (cli, gui) = (
+                serde_json::to_value(&cli).unwrap(),
+                serde_json::to_value(&gui).unwrap(),
+            );
+            let diff: Vec<String> = gui
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(k, v)| cli.get(k.as_str()) != Some(v))
+                .map(|(k, v)| format!("  {}: GUI={} CLI={}", k, v, cli[k.as_str()]))
+                .collect();
+            assert!(
+                diff.is_empty(),
+                "{} 的預覽與 GUI 設定不一致：\n{}",
+                name,
+                diff.join("\n")
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5, "gui/contract 應有前端產生的 cli-*.txt");
+    }
 }

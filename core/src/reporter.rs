@@ -95,9 +95,42 @@ impl Reporter {
         );
         println!("╚══════════════════════════════════════════════════╝");
         println!();
+        Self::print_timeline(r);
     }
 
     /// 輸出 JSON（適合 pipe 給其他工具）
+    /// 分時段統計（兩段以上才印）：找出第幾段開始變差
+    fn print_timeline(r: &FinalReport) {
+        if r.timeline.len() < 2 {
+            return;
+        }
+        let opt = |v: Option<f64>, prec: usize| {
+            v.map_or("—".to_string(), |x| format!("{:.*}", prec, x))
+        };
+        println!("分時段統計（每段 {:.0} 秒）", r.timeline[0].duration_secs());
+        // 中文字佔兩格，標題列直接寫好對齊
+        println!("       時段     發起      CPS     ASR%    PDD p50    MOS  失敗碼");
+        for b in &r.timeline {
+            let codes: Vec<String> = b
+                .fail_codes
+                .iter()
+                .map(|(c, n)| format!("{}×{}", c, n))
+                .collect();
+            println!(
+                "{:>11}  {:>7}  {:>7.2}  {:>7}  {:>9}  {:>5}  {}",
+                format!("{}–{}", fmt_clock(b.start_secs), fmt_clock(b.end_secs)),
+                b.initiated,
+                b.cps(),
+                opt(b.asr, 1),
+                b.pdd_p50_ms
+                    .map_or("—".to_string(), |v| format!("{:.0}ms", v)),
+                opt(b.mos, 2),
+                codes.join(" "),
+            );
+        }
+        println!();
+    }
+
     pub fn print_json(r: &FinalReport) {
         println!("{}", r.to_json());
     }
@@ -165,5 +198,15 @@ impl std::str::FromStr for OutputFormat {
             "csv" => Ok(Self::Csv),
             other => Err(format!("未知格式: {}", other)),
         }
+    }
+}
+
+/// 秒數 → `h:mm:ss`（不足一小時為 `m:ss`）
+fn fmt_clock(secs: f64) -> String {
+    let t = secs.round() as u64;
+    if t >= 3600 {
+        format!("{}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60)
+    } else {
+        format!("{}:{:02}", t / 60, t % 60)
     }
 }

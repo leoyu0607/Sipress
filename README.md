@@ -20,6 +20,7 @@
 - [CLI 參數完整說明](#cli-參數完整說明)
 - [輸出格式](#輸出格式)
 - [SIP Log](#sip-log)
+- [效能](#效能)
 - [建置說明](#建置說明)
 - [模組說明](#模組說明)
 
@@ -95,7 +96,7 @@ sipress/
 │       │   ├── register.rs       ← REGISTER 訊息 + Digest auth (RFC 2617) 解析與計算
 │       │   ├── dialog.rs         ← SIP 對話狀態機
 │       │   ├── parser.rs         ← SIP 回應解析
-│       │   └── transport.rs      ← UDP / TCP 傳輸層
+│       │   └── transport.rs      ← UDP / TCP 傳輸層（TCP 依 Content-Length 分框）
 │       └── rtp/
 │           ├── audio.rs          ← WAV → PCMA（G.711 A-law）自動轉檔；支援 PCM16 / A-law / μ-law
 │           ├── packet.rs         ← RTP 封包建構與解析（RFC 3550）
@@ -371,7 +372,7 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
 | 座席端（answer） | offer 有偏好的 codec 就用它，否則用 offer 中第一個 G.711；answer 只宣告選中的 codec（offer 有 101 時一併接受）；offer 完全沒有 G.711 → `488 Not Acceptable Here` |
 | RE-INVITE | 帶 SDP 時只回目前的 codec；不帶 SDP 時 200 OK 以 offer 格式列出所有 codec |
 
-偏好的 codec 即 GUI 的 Codec 設定（CLI 預設 PCMA）。
+偏好的 codec 即 GUI 的 Codec 設定（CLI `--codec pcma|pcmu`，預設 PCMA）。
 
 ---
 
@@ -458,6 +459,9 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 |------|------|------|------|
 | `--concurrent` | `-c` | `100` | 最大並發通話數 |
 | `--cps` | — | `10.0` | 每秒發起通話數 |
+| `--cps-ramp` | — | — | CPS 漸增 `START-END`：在 `--duration` 內從 START 線性升到 END（取代 `--cps`，需 `-d` > 0） |
+| `--cps-steps` | — | — | CPS 階梯 `CPS:秒,CPS:秒,...`：依序維持各階，最後一階維持到結束 |
+| `--cps-spike` | — | — | CPS 尖峰 `基準,尖峰,開始%,尖峰秒數`，例如 `10,100,50,10`（需 `-d` > 0）；三種模式擇一 |
 | `--duration` | `-d` | `60` | 壓測持續時間（秒）；**設為 `0` = 不限時間**，需搭配 `--max-calls` 或手動停止 |
 | `--max-calls` | — | 不限 | 總通話上限，達到且所有進行中通話結束後自動停止 |
 | `--call-duration` | — | `30` | 單通通話持續時間（秒，`0` = 不主動 BYE） |
@@ -510,6 +514,8 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--rtp` | 關閉 | 啟用 RTP 音訊傳送與接收 |
 | `--rtp-port` | `10000` | RTP 起始 port（偶數，每通 call +2） |
 | `--audio` | 無（靜音） | 音檔路徑（`.wav` / `.raw` G.711 μ-law） |
+| `--codec` | `pcma` | 偏好的 codec（`pcma` / `pcmu`）；實際使用的以 SDP 協商結果為準 |
+| `--dtmf` | — | 民眾端接通後經 RTP（RFC 4733）送出的 DTMF，例如 `1,w2000,2,#`（`wN` = 等待 N 毫秒）；需搭配 `--rtp` |
 
 ### 輸出與記錄
 
@@ -519,6 +525,8 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--format` | `table` | 輸出格式：`table` / `json` / `csv` |
 | `--html` | 關閉 | 產生 HTML 視覺化報告 |
 | `--report-dir` | `reports/` | HTML 報告輸出目錄 |
+| `--interval` | `5m` | 分時段統計的時段長度（`300`、`30s`、`5m`、`1h`；`0` = 不分段）。報告附上每段的 CPS、ASR、PDD、MOS、失敗碼；HTML 報告畫成趨勢圖 |
+| `--timeline-csv` | — | 結束後把分時段統計寫成 CSV（每段一列） |
 | `--logs-dir` | `logs/` | SIP log 輸出目錄 |
 | `--verbose` | 關閉 | 顯示詳細 debug log |
 
@@ -561,6 +569,10 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_caller.sip.log`（民眾端）或 `YYYYMMDD_HHMMSS_agent.sip.log`（座席端），記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
 
 ---
+
+## 效能
+
+本機 loopback 量測（4 vCPU）：沒有 RTP 時 5000 通並發只用約 16%（民眾端）/ 1%（座席端）的單核 CPU；RTP 每路每秒 50 個封包，5000 路約需 3 個核心，建議每核心約 1500–2000 路。方法、完整數據與 `load_bench` 用法見 [`docs/performance.md`](docs/performance.md)。
 
 ## 建置說明
 

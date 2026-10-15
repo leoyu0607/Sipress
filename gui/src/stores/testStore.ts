@@ -172,8 +172,11 @@ export interface RustSnapshot {
   rtp_jitter_ms:     number | null
   rtp_sent_packets:  number | null
   rtp_recv_packets:  number | null
-  // 目前為止的平均 PDD（null = 尚無樣本）
+  // 目前為止的 PDD 平均 / 中位數（null = 尚無樣本）；畫面使用中位數，與最終報告的 p50 同口徑
   pdd_avg_ms:        number | null
+  pdd_p50_ms:        number | null
+  // 最近一秒的實際發起速率（引擎計算）
+  cps:               number
   // 座席端：註冊成功數 / 帳號總數（民眾端皆為 0）
   agents_registered: number
   agents_total:      number
@@ -350,6 +353,22 @@ function loadConfig(): TestConfig {
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
+/** DTMF 序列：逗號分隔，每段為單一按鍵（0-9 * # A-D）或 wN（等待 N 毫秒）；與 core 的檢查一致 */
+export function isValidDtmf(seq: string): boolean {
+  const parts = seq.split(',').map(x => x.trim()).filter(Boolean)
+  return parts.length > 0 && parts.every(x => /^[0-9*#A-Da-d]$/.test(x) || /^[wW]\d+$/.test(x))
+}
+
+/** CLI 預覽的 CPS 參數（依 CPS 模式） */
+export function cpsFlag(pat: CpsPatternConfig, cps: number): string {
+  switch (pat.type) {
+    case 'ramp':  return `--cps-ramp ${pat.rampStart}-${pat.rampEnd}`
+    case 'step':  return `--cps-steps ${pat.steps.map(st => `${st.cps}:${st.duration_secs}`).join(',')}`
+    case 'spike': return `--cps-spike ${pat.spikeBase},${pat.spikePeak},${pat.spikeAtPct},${pat.spikeDurationSecs}`
+    default:      return `--cps ${cps}`
+  }
+}
+
 export const useTestStore = defineStore('test', () => {
 
   const config = ref<TestConfig>(loadConfig())
@@ -381,12 +400,11 @@ export const useTestStore = defineStore('test', () => {
   const runtime: Record<CallMode, {
     pollTimer:     ReturnType<typeof setInterval> | null
     clockTimer:    ReturnType<typeof setInterval> | null
-    prevInitiated: number
     prevFailed:    number    // 上一筆 snapshot 的失敗 + 逾時累計（只在增加時寫 WARN）
     rtpLoggedOnce: boolean   // 防止重複寫 RTP session 啟動 log
   }> = {
-    caller: { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
-    agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
+    caller: { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
+    agent:  { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
   }
   let logSeq = 0
   /** 雙端啟動中等待座席註冊的輪詢；取消時 resolve('cancelled')，startBoth 不再啟動民眾端 */
@@ -429,6 +447,8 @@ export const useTestStore = defineStore('test', () => {
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
       if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
+      if (p.dtmfSequence.trim() && !isValidDtmf(p.dtmfSequence))
+        errs.push('DTMF 序列格式錯誤：每段為單一按鍵（0-9 * # A-D）或 wN（等待毫秒），以逗號分隔')
     } else {
       if (c.agent.accounts.length === 0) errs.push('座席模式需要至少一個帳號')
       const b = c.agent.behavior
@@ -447,16 +467,6 @@ export const useTestStore = defineStore('test', () => {
   const validationErrors = computed(() => validate(config.value.mode))
   /** 雙端啟動的驗證（兩端錯誤合併，去除重複的共用欄位錯誤） */
   const bothValidationErrors = computed(() => [...new Set([...validate('agent'), ...validate('caller')])])
-
-  /** 目前設定中 CLI 不支援、因此不會出現在 CLI 預覽中的項目 */
-  const cliUnsupported = computed(() => {
-    const c = config.value
-    const out: string[] = []
-    if (c.mode === 'caller' && c.caller.cpsPattern.type !== 'flat') out.push('CPS 模式')
-    if (c.caller.enableAudio && c.caller.codec !== 'pcma') out.push('Codec')
-    if (c.mode === 'caller' && c.caller.dtmfSequence) out.push('DTMF')
-    return out
-  })
 
   const cliCommand = computed(() => {
     const c = config.value
@@ -484,12 +494,17 @@ export const useTestStore = defineStore('test', () => {
       // 密碼不顯示在預覽（畫面截圖、複製貼上時外洩），只放佔位字
       if (p.authPass) parts.push(...(p.authUser.trim() ? [`--auth-user ${p.authUser.trim()}`] : []), '--auth-pass "<密碼>"')
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
-      parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
+      parts.push(`-c ${p.concurrency}`, cpsFlag(p.cpsPattern, p.cps), `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
     }
-    if (p.enableAudio && p.audioFile) parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
+    if (p.codec !== 'pcma') parts.push(`--codec ${p.codec}`)
+    if (p.enableAudio && p.audioFile) {
+      parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
+      // DTMF 經 RTP 送出，沒有 RTP 時 GUI 也不會送
+      if (c.mode === 'caller' && p.dtmfSequence.trim()) parts.push(`--dtmf "${p.dtmfSequence.trim()}"`)
+    }
     parts.push(c.cliFormat === 'tui' ? '--tui' : `--format ${c.cliFormat}`)
     if (c.cliVerbose) parts.push('--verbose')
     return parts.join(' ')
@@ -587,8 +602,8 @@ export const useTestStore = defineStore('test', () => {
   function applySnapshot(mode: CallMode, snap: RustSnapshot) {
     const r   = sessions.value[mode]
     const rt  = runtime[mode]
-    const cps = Math.max(0, snap.calls_initiated - rt.prevInitiated)
-    rt.prevInitiated = snap.calls_initiated
+    // CPS 由引擎每秒計算，不用前端輪詢差值（兩個計時器不同步會出現 0 與兩倍交替）
+    const cps = snap.cps
     const failed = snap.calls_failed + snap.calls_timeout
 
     r.metrics = {
@@ -602,7 +617,7 @@ export const useTestStore = defineStore('test', () => {
         ? snap.calls_completed / snap.calls_initiated * 100
         : 0,
       errorRate:   snap.error_rate,
-      pdd:         snap.pdd_avg_ms ?? 0,
+      pdd:         snap.pdd_p50_ms ?? 0,
       acd:         0,
     }
 
@@ -619,7 +634,7 @@ export const useTestStore = defineStore('test', () => {
     pushSeries(r, 'asr',  snap.asr)
     pushSeries(r, 'ccr',  r.metrics.ccr)
     pushSeries(r, 'fail', failed)
-    if (snap.pdd_avg_ms != null) pushSeries(r, 'pdd', snap.pdd_avg_ms)
+    if (snap.pdd_p50_ms != null) pushSeries(r, 'pdd', snap.pdd_p50_ms)
 
     r.agents = { registered: snap.agents_registered ?? 0, total: snap.agents_total ?? 0 }
 
@@ -730,7 +745,6 @@ export const useTestStore = defineStore('test', () => {
       return false
     }
     sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
-    rt.prevInitiated = 0
     rt.prevFailed = 0
     rt.rtpLoggedOnce = false
     const cur = sessions.value[mode]
@@ -1079,7 +1093,7 @@ export const useTestStore = defineStore('test', () => {
     callStates, respCodes, logs, agents,
     rtpMetrics, mosRating, codecLabel,
     accountImportError, registeredCount,
-    validationErrors, bothValidationErrors, cliUnsupported, cliCommand, progressPct,
+    validationErrors, bothValidationErrors, cliCommand, progressPct,
     addLog, clearLog,
     generateAccounts, removeAccount, clearAccounts, updateAccount,
     importAccountText, parseAccountText,

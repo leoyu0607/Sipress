@@ -17,17 +17,17 @@ use crate::rtp::session::{RtpSession, RtpSessionConfig};
 use crate::rtp::stats::{aggregate_snapshots, RtpStats, RtpStatsSnapshot};
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
-    sdp, SipMessage, SipParser, SipResponse,
+    sdp, SipMessage, SipParser, SipResponse, SipSocket,
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats};
+use crate::timeline::TimelineRecorder;
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::UdpSocket;
 use tokio::sync::{watch, Mutex};
 use tokio::time;
 
@@ -109,10 +109,14 @@ impl AgentEngine {
             let detail2 = Arc::clone(&detail);
             let finished = Arc::clone(&engine_finished);
             let duration = cfg.duration_secs as f64;
+            // 時間到後引擎還會收尾（CANCEL / BYE / 解除註冊），期間繼續回報，直到引擎結束；
+            // 寬限時間只是保險，避免引擎異常結束時 task 不會停
+            let drain_grace = 5.0;
             let unlimited = cfg.duration_secs == 0;
             let registry = Arc::clone(&rtp_registry);
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(1));
+                let mut cps_meter = crate::stats::RateMeter::new(start);
                 loop {
                     interval.tick().await;
                     let elapsed = start.elapsed().as_secs_f64();
@@ -126,7 +130,8 @@ impl AgentEngine {
                     let rtp_agg = registry.lock().await.live_aggregate();
 
                     let mut snap = live2.snapshot();
-                    snap.pdd_avg_ms = detail2.pdd_mean_ms();
+                    detail2.fill_live(&mut snap);
+                    snap.cps = cps_meter.rate(std::time::Instant::now(), snap.calls_initiated);
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
                     if let Some(agg) = &rtp_agg {
                         snap.rtp_mos = Some(agg.mos);
@@ -137,7 +142,7 @@ impl AgentEngine {
                     }
                     let done = snap.finished;
                     cb(snap, progress);
-                    if !unlimited && elapsed >= duration {
+                    if !unlimited && elapsed >= duration + drain_grace {
                         break;
                     }
                     if done {
@@ -147,11 +152,38 @@ impl AgentEngine {
             });
         }
 
+        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
+        let timeline = Arc::new(std::sync::Mutex::new(Some(TimelineRecorder::new(
+            cfg.stats_interval_secs,
+        ))));
+        if cfg.stats_interval_secs > 0 {
+            let tl = Arc::clone(&timeline);
+            let live = Arc::clone(&live);
+            let detail = Arc::clone(&detail);
+            let src = Arc::clone(&rtp_registry);
+            tokio::spawn(async move {
+                let mut interval = time::interval(Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let mos = src.lock().await.live_aggregate().map(|a| a.mos);
+                    let mut guard = tl.lock().unwrap();
+                    let Some(rec) = guard.as_mut() else { break };
+                    rec.tick(start.elapsed().as_secs_f64(), &live, &detail, mos);
+                }
+            });
+        }
+
         // ── 為每個帳號 spawn 一個 runner ──
+        // 所有 runner 共用一份設定；不含帳號清單（每個 runner 各複製一份完整清單時，
+        // 記憶體與啟動時間會隨帳號數平方成長：5000 個帳號約 5 GB）
+        let shared_cfg = Arc::new(Config {
+            agent_accounts: Vec::new(),
+            ..cfg.clone()
+        });
         let mut handles = Vec::new();
         for acc in &cfg.agent_accounts {
             let acc = acc.clone();
-            let cfg = cfg.clone();
+            let cfg = Arc::clone(&shared_cfg);
             let live = Arc::clone(&live);
             let detail_r = Arc::clone(&detail);
             let log = Arc::clone(&sip_log);
@@ -209,12 +241,15 @@ impl AgentEngine {
             elapsed,
         ));
 
-        Ok(FinalReport::build(
-            &snap,
-            &detail,
-            elapsed,
-            rtp_final.as_ref(),
-        ))
+        let timeline = timeline
+            .lock()
+            .unwrap()
+            .take()
+            .map(|r| r.finish(elapsed, &live, &detail))
+            .unwrap_or_default();
+        let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_final.as_ref());
+        report.timeline = timeline;
+        Ok(report)
     }
 }
 
@@ -362,7 +397,7 @@ struct PendingInvite {
 async fn account_runner(
     account: AgentAccount,
     server: SocketAddr,
-    cfg: Config,
+    cfg: Arc<Config>,
     live: Arc<LiveStats>,
     detail: Arc<DetailedStats>,
     log: Arc<SipLogger>,
@@ -371,9 +406,9 @@ async fn account_runner(
     rtp_registry: SharedRtpRegistry,
     traces: Arc<TraceLog>,
 ) -> Result<()> {
-    let sock = UdpSocket::bind(crate::net::unspecified_for(&server)).await?;
-    sock.connect(server).await?;
-    let local_addr = sock.local_addr()?.to_string();
+    let sock =
+        SipSocket::connect(cfg.transport, server, crate::net::unspecified_for(&server)).await?;
+    let local_addr = sock.local_addr.clone();
     let local_ip = crate::net::host(&local_addr);
 
     let domain = if !account.domain.is_empty() {
@@ -384,19 +419,12 @@ async fn account_runner(
 
     let reg_from_tag = SipMessage::new_tag();
     let reg_call_id = SipMessage::new_call_id(&domain);
-    let reg_state = Arc::new(Mutex::new(RegState {
-        cseq: 0,
-        challenge: None,
-        auth_retries: 0,
-    }));
+    let reg_state = Arc::new(Mutex::new(RegState::new()));
 
     let initial_expires = 240u32;
     let mut current_expires = initial_expires;
     let server_addr_str = cfg.server_addr.clone();
-    let transport_str = match cfg.transport {
-        crate::config::Transport::Udp => "UDP",
-        crate::config::Transport::Tcp => "TCP",
-    };
+    let transport_str = cfg.transport_str();
 
     let dialogs: Arc<Mutex<HashMap<String, DialogCtx>>> = Arc::new(Mutex::new(HashMap::new()));
     // 響鈴中（尚未接聽 / 拒接）的來電
@@ -431,7 +459,6 @@ async fn account_runner(
         return Err(e);
     }
 
-    let mut buf = vec![0u8; 65536];
     let mut last_register_at = Instant::now();
 
     loop {
@@ -448,13 +475,19 @@ async fn account_runner(
                 .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600))
         };
 
+        let reg_retx_at = reg_state
+            .lock()
+            .await
+            .retx_at()
+            .map(tokio::time::Instant::from_std)
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600));
+
         tokio::select! {
-            res = sock.recv(&mut buf) => {
-                let n = match res {
-                    Ok(n) => n,
-                    Err(e) => { log.log_event(&account.extension, &format!("recv 失敗: {}", e)); break; }
+            res = sock.recv() => {
+                let raw = match res {
+                    Ok(raw) => raw,
+                    Err(e) => { log.log_event(&account.extension, &format!("recv 失敗: {:#}", e)); break; }
                 };
-                let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
                 log.log_message(Direction::Recv, &raw, &server.to_string());
 
                 if raw.starts_with("SIP/2.0") {
@@ -506,7 +539,22 @@ async fn account_runner(
                     transport_str, current_expires, auth.as_deref(),
                 );
                 log.log_message(Direction::Send, &req, &server.to_string());
-                let _ = sock.send(req.as_bytes()).await;
+                let _ = sock.send(&req).await;
+                reg_state.lock().await.arm(&req, sock.is_reliable());
+            }
+
+            // REGISTER 沒有收到最終回應 → 重傳（UDP）
+            _ = time::sleep_until(reg_retx_at) => {
+                let due = reg_state.lock().await.due(Instant::now());
+                match due {
+                    Ok(Some(req)) => {
+                        log.log_event(&account.extension, "RETRANSMIT REGISTER");
+                        log.log_message(Direction::Send, &req, &server.to_string());
+                        let _ = sock.send(&req).await;
+                    }
+                    Ok(None) => {}
+                    Err(()) => log.log_event(&account.extension, "REGISTER 無回應，停止重傳（等下次刷新再試）"),
+                }
             }
 
             // 響鈴結束（接聽 / 拒接 / 不接逾時）；通話 timeout（ACK / BYE）或主動掛斷 → 座席主動 BYE
@@ -561,7 +609,7 @@ async fn account_runner(
                             &local_addr, &account,
                         );
                         log.log_message(Direction::Send, &bye, &server.to_string());
-                        let _ = sock.send(bye.as_bytes()).await;
+                        let _ = sock.send(&bye).await;
                         stop_call_rtp(&call_id, &mut ctx, &rtp_registry, &live, &traces, &account.extension).await;
                         detail.record_duration(ctx.answered_at.elapsed().as_secs_f64());
                         live.on_completed();
@@ -608,8 +656,8 @@ async fn account_runner(
                     transport_str, 0, auth.as_deref(),
                 );
                 log.log_message(Direction::Send, &req, &server.to_string());
-                let _ = sock.send(req.as_bytes()).await;
-                let _ = time::timeout(Duration::from_millis(300), sock.recv(&mut buf)).await;
+                let _ = sock.send(&req).await;
+                let _ = time::timeout(Duration::from_millis(300), sock.recv()).await;
                 break;
             }
         }
@@ -672,11 +720,76 @@ struct RegState {
     challenge: Option<DigestChallenge>,
     /// 自上次 200 OK 以來連續帶認證重送的次數
     auth_retries: u32,
+    /// UDP 時尚未收到最終回應的 REGISTER（重傳用）
+    retx: Option<RegRetx>,
+}
+
+/// REGISTER 重傳（RFC 3261 Timer E / F：T1 起每次加倍、上限 T2，64×T1 後放棄）
+struct RegRetx {
+    msg: String,
+    cseq: u32,
+    interval: Duration,
+    next_at: Instant,
+    give_up_at: Instant,
+}
+
+const REG_T1: Duration = Duration::from_millis(500);
+const REG_T2: Duration = Duration::from_secs(4);
+
+impl RegState {
+    fn new() -> Self {
+        Self {
+            cseq: 0,
+            challenge: None,
+            auth_retries: 0,
+            retx: None,
+        }
+    }
+
+    /// 送出 REGISTER 後呼叫：UDP 時排定重傳（TCP 由傳輸層保證送達）
+    fn arm(&mut self, msg: &str, reliable: bool) {
+        let now = Instant::now();
+        self.retx = (!reliable).then(|| RegRetx {
+            msg: msg.to_string(),
+            cseq: self.cseq,
+            interval: REG_T1,
+            next_at: now + REG_T1,
+            give_up_at: now + REG_T1 * 64,
+        });
+    }
+
+    /// 收到 REGISTER 的最終回應：停止該 CSeq 的重傳
+    fn on_final(&mut self, cseq: Option<u32>) {
+        if self.retx.as_ref().is_some_and(|r| Some(r.cseq) == cseq) {
+            self.retx = None;
+        }
+    }
+
+    fn retx_at(&self) -> Option<Instant> {
+        self.retx.as_ref().map(|r| r.next_at.min(r.give_up_at))
+    }
+
+    /// 重傳時間到：回傳要重送的訊息；超過放棄時間時回傳 Err（停止重傳）
+    fn due(&mut self, now: Instant) -> Result<Option<String>, ()> {
+        let Some(r) = self.retx.as_mut() else {
+            return Ok(None);
+        };
+        if now >= r.give_up_at {
+            self.retx = None;
+            return Err(());
+        }
+        if now < r.next_at {
+            return Ok(None);
+        }
+        r.interval = (r.interval * 2).min(REG_T2);
+        r.next_at = now + r.interval;
+        Ok(Some(r.msg.clone()))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn send_register(
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     server_addr: &str,
     local_addr: &str,
@@ -702,14 +815,15 @@ async fn send_register(
         auth,
     );
     log.log_message(Direction::Send, &req, server_addr);
-    sock.send(req.as_bytes()).await?;
+    sock.send(&req).await?;
+    state.arm(&req, sock.is_reliable());
     Ok(())
 }
 
 /// 通話結束後立即 re-REGISTER（`agent_reregister_after_call` 開啟時）
 #[allow(clippy::too_many_arguments)]
 async fn trigger_re_register(
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     server_addr: &str,
     local_addr: &str,
@@ -746,7 +860,8 @@ async fn trigger_re_register(
         auth.as_deref(),
     );
     log.log_message(Direction::Send, &req, server_addr);
-    let _ = sock.send(req.as_bytes()).await;
+    let _ = sock.send(&req).await;
+    reg_state.lock().await.arm(&req, sock.is_reliable());
     log.log_event(&account.extension, "通話結束 → re-REGISTER");
 }
 
@@ -755,7 +870,7 @@ async fn trigger_re_register(
 #[allow(clippy::too_many_arguments)]
 async fn handle_response(
     raw: &str,
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     _cfg: &Config,
     server_addr_str: &str,
@@ -774,6 +889,9 @@ async fn handle_response(
 
     if method.as_deref() != Some("REGISTER") {
         return;
+    }
+    if code >= 200 {
+        reg_state.lock().await.on_final(SipParser::cseq_number(raw));
     }
 
     match code {
@@ -848,7 +966,7 @@ async fn handle_response(
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     raw: &str,
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     local_addr: &str,
     local_ip: &str,
@@ -895,7 +1013,7 @@ async fn handle_request(
                     ctx.codec_pt,
                 );
                 log.log_message(Direction::Send, &ok, "server");
-                let _ = sock.send(ok.as_bytes()).await;
+                let _ = sock.send(&ok).await;
                 // 更新 RTP 目標地址（對端可能換 port）
                 if cfg.enable_rtp {
                     let sip_ip = crate::net::host(&cfg.server_addr);
@@ -926,7 +1044,7 @@ async fn handle_request(
                 // 響鈴中收到重傳的 INVITE → 重送 180
                 let ringing = SipMessage::response_with_to_tag(raw, "180 Ringing", &p.local_to_tag);
                 log.log_message(Direction::Send, &ringing, "server");
-                let _ = sock.send(ringing.as_bytes()).await;
+                let _ = sock.send(&ringing).await;
             } else {
                 // ── 新通話：100 Trying → 180 Ringing →（響鈴延遲）→ 200 OK + SDP / 486 / 不接 ──
                 // PDD / 建立時間只會量到本機處理時間（或刻意的響鈴延遲），故不記錄
@@ -1003,12 +1121,12 @@ async fn handle_request(
                 // 100 Trying
                 let trying = SipMessage::response_with_to_tag(raw, "100 Trying", "");
                 log.log_message(Direction::Send, &trying, "server");
-                let _ = sock.send(trying.as_bytes()).await;
+                let _ = sock.send(&trying).await;
 
                 // 180 Ringing
                 let ringing = SipMessage::response_with_to_tag(raw, "180 Ringing", &local_to_tag);
                 log.log_message(Direction::Send, &ringing, "server");
-                let _ = sock.send(ringing.as_bytes()).await;
+                let _ = sock.send(&ringing).await;
 
                 let outcome = RingOutcome::decide(behavior, rand::random::<f64>() * 100.0);
                 let ring = match outcome {
@@ -1071,7 +1189,7 @@ async fn handle_request(
         "BYE" => {
             let ok = SipMessage::ok_for_server_bye(raw);
             log.log_message(Direction::Send, &ok, "server");
-            let _ = sock.send(ok.as_bytes()).await;
+            let _ = sock.send(&ok).await;
 
             let mut dlgs = dialogs.lock().await;
             if let Some(mut ctx) = dlgs.remove(&call_id) {
@@ -1101,7 +1219,7 @@ async fn handle_request(
             let p = pending.remove(&call_id).unwrap();
             let resp = SipMessage::response_for_request(raw, "200 OK");
             log.log_message(Direction::Send, &resp, "server");
-            let _ = sock.send(resp.as_bytes()).await;
+            let _ = sock.send(&resp).await;
             log.log_event(
                 &account.extension,
                 &format!("[{}] 響鈴中被取消 → 487", short(&call_id)),
@@ -1132,7 +1250,7 @@ async fn handle_request(
             };
             let resp = SipMessage::response_for_request(raw, status);
             log.log_message(Direction::Send, &resp, "server");
-            let _ = sock.send(resp.as_bytes()).await;
+            let _ = sock.send(&resp).await;
             if known {
                 log.log_event(
                     &account.extension,
@@ -1146,7 +1264,7 @@ async fn handle_request(
         "OPTIONS" => {
             let ok = SipMessage::response_with_to_tag(raw, "200 OK", "");
             log.log_message(Direction::Send, &ok, "server");
-            let _ = sock.send(ok.as_bytes()).await;
+            let _ = sock.send(&ok).await;
         }
         _ => {
             log.log_event(&account.extension, &format!("忽略未知請求: {}", method));
@@ -1162,7 +1280,7 @@ async fn answer_call(
     call_id: &str,
     local_to_tag: String,
     remote_from_tag: String,
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     local_addr: &str,
     local_ip: &str,
@@ -1206,7 +1324,7 @@ async fn answer_call(
         &sdp::answer_payloads(codec_pt, &offer),
     );
     log.log_message(Direction::Send, &ok, "server");
-    let _ = sock.send(ok.as_bytes()).await;
+    let _ = sock.send(&ok).await;
 
     let answered_at = Instant::now();
     live.on_answered();
@@ -1298,7 +1416,7 @@ async fn fail_invite(
     local_to_tag: &str,
     status_line: &str,
     code: u16,
-    sock: &UdpSocket,
+    sock: &SipSocket,
     log: &SipLogger,
     live: &LiveStats,
     detail: &DetailedStats,
@@ -1314,7 +1432,7 @@ async fn fail_invite(
         });
     }
     log.log_message(Direction::Send, &resp, "server");
-    let _ = sock.send(resp.as_bytes()).await;
+    let _ = sock.send(&resp).await;
     live.on_failed();
     detail.record_fail_code(code);
 }
@@ -1344,12 +1462,13 @@ fn build_response_with_sdp(
          {to}\r\n\
          {call_id}\r\n\
          {cseq}\r\n\
-         Contact: <sip:{user}@{local};transport=udp>\r\n\
+         Contact: <sip:{user}@{local};transport={tp}>\r\n\
          Content-Type: application/sdp\r\n\
          Content-Length: {sdp_len}\r\n\
          \r\n\
          {sdp}",
         status = status_line,
+        tp = SipParser::via_transport(raw_request).to_ascii_lowercase(),
         via = via,
         from = from,
         to = to_with_tag,
@@ -1383,7 +1502,7 @@ fn build_bye_from_dialog(
     // BYE Request-URI = 對方 Contact URI（簡化為 From URI）
     format!(
         "BYE {remote_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/UDP {local};branch={branch}\r\n\
+         Via: SIP/2.0/{tp} {local};branch={branch}\r\n\
          Max-Forwards: 70\r\n\
          From: <{my_uri}>;tag={my_tag}\r\n\
          To: <{remote_uri}>;tag={remote_tag}\r\n\
@@ -1392,6 +1511,7 @@ fn build_bye_from_dialog(
          Content-Length: 0\r\n\
          \r\n",
         remote_uri = remote_uri,
+        tp = SipParser::via_transport(invite_raw),
         local = local_addr,
         branch = branch,
         my_uri = my_uri,
@@ -1424,6 +1544,38 @@ fn short(call_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_retransmission_timer() {
+        let mut st = RegState::new();
+        st.cseq = 3;
+        st.arm("REGISTER x", true);
+        assert!(st.retx_at().is_none(), "TCP 不重傳");
+
+        st.arm("REGISTER x", false);
+        let t0 = Instant::now();
+        assert_eq!(st.due(t0), Ok(None), "還沒到 T1");
+        let mut t = t0 + REG_T1;
+        let mut gaps = Vec::new();
+        for _ in 0..5 {
+            assert_eq!(st.due(t), Ok(Some("REGISTER x".into())));
+            let next = st.retx_at().unwrap();
+            gaps.push(next.duration_since(t).as_millis());
+            t = next;
+        }
+        assert_eq!(gaps, vec![1000, 2000, 4000, 4000, 4000], "加倍、上限 T2");
+
+        // 舊 CSeq 的最終回應不停止重傳；同 CSeq 的才停止
+        st.on_final(Some(2));
+        assert!(st.retx_at().is_some());
+        st.on_final(Some(3));
+        assert!(st.retx_at().is_none());
+
+        // 64 × T1 後放棄
+        st.arm("REGISTER y", false);
+        assert_eq!(st.due(Instant::now() + REG_T1 * 64), Err(()));
+        assert!(st.retx_at().is_none());
+    }
     use std::sync::atomic::Ordering;
 
     fn registered(live: &LiveStats) -> u64 {

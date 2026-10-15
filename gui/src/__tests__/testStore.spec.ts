@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, mosGrade, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
+import { useTestStore, mosGrade, isValidDtmf, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -167,8 +167,8 @@ describe('測試執行流程', () => {
 
   it('每秒的 snapshot 轉成指標與圖表序列', async () => {
     const { s } = await startWith([
-      snap({ calls_initiated: 10, calls_answered: 6, calls_completed: 2, calls_failed: 1, calls_timeout: 1, pdd_avg_ms: null, rtp_mos: null }),
-      snap({ calls_initiated: 25, calls_answered: 20, calls_completed: 10, calls_failed: 2, calls_timeout: 1 }),
+      snap({ calls_initiated: 10, calls_answered: 6, calls_completed: 2, calls_failed: 1, calls_timeout: 1, cps: 10, pdd_avg_ms: null, pdd_p50_ms: null, rtp_mos: null }),
+      snap({ calls_initiated: 25, calls_answered: 20, calls_completed: 10, calls_failed: 2, calls_timeout: 1, cps: 7.5 }),
     ])
     expect(s.status).toBe('running')
 
@@ -181,12 +181,12 @@ describe('測試執行流程', () => {
     expect(s.rtpMetrics.enabled).toBe(false)
 
     await tick()
-    expect(s.metrics.cps).toBe(15)            // 與上一筆的差值，不是累計
+    expect(s.metrics.cps).toBe(7.5)           // 直接採用引擎算的速率，不用輪詢差值（25 − 10）
     expect(s.metrics.initiated).toBe(25)
     expect(s.metrics.ccr).toBe(40)
     expect(s.metrics.asr).toBe(baseSnap.asr)  // ASR 直接採用 Rust 的值
-    expect(s.metrics.pdd).toBe(baseSnap.pdd_avg_ms)
-    expect(s.series.cps).toEqual([10, 15])
+    expect(s.metrics.pdd).toBe(baseSnap.pdd_p50_ms) // 測試中也用 p50，與最終報告同口徑
+    expect(s.series.cps).toEqual([10, 7.5])
     expect(s.series.fail).toEqual([2, 3])
     expect(s.callStates).toEqual({ initiated: 25, answered: 20, completed: 10, failed: 2, timeout: 1 })
     expect(s.rtpMetrics).toMatchObject({
@@ -486,24 +486,56 @@ describe('設定保存', () => {
 
 // ── CLI 預覽 ───────────────────────────────────────────────────────
 describe('CLI 預覽', () => {
-  it('座席模式產生 --mode agent 指令，民眾端專屬設定不列為不支援', () => {
+  it('座席模式產生 --mode agent 指令，不帶民眾端專屬參數', () => {
     const s = useTestStore()
     s.config.mode = 'agent'
     s.config.caller.cpsPattern.type = 'step'
-    s.config.caller.dtmfSequence = '12#'
-    expect(s.cliCommand).toContain('--mode agent --accounts sipress_accounts.csv')
-    expect(s.cliCommand).not.toContain('--cps')
-    expect(s.cliUnsupported).toEqual([])
-  })
-
-  it('列出 CLI 不支援的 GUI 設定', () => {
-    const s = useTestStore()
-    s.config.caller.cpsPattern.type = 'step'
     s.config.caller.enableAudio = true
     s.config.caller.audioFile = 'a.wav'
+    s.config.caller.dtmfSequence = '1,#'
+    expect(s.cliCommand).toContain('--mode agent --accounts sipress_accounts.csv')
+    expect(s.cliCommand).not.toContain('--cps')
+    expect(s.cliCommand).not.toContain('--dtmf')
+  })
+
+  it('CPS 模式、codec、DTMF 都轉成 CLI 參數', () => {
+    const s = useTestStore()
+    const pat = s.config.caller.cpsPattern
+    expect(s.cliCommand).toContain(`--cps ${s.config.caller.cps} `)
+    expect(s.cliCommand).not.toContain('--codec')
+
+    pat.type = 'ramp'; pat.rampStart = 1; pat.rampEnd = 50
+    expect(s.cliCommand).toContain('--cps-ramp 1-50')
+    expect(s.cliCommand).not.toContain('--cps ')
+    pat.type = 'step'; pat.steps = [{ cps: 10, duration_secs: 30 }, { cps: 50, duration_secs: 60 }]
+    expect(s.cliCommand).toContain('--cps-steps 10:30,50:60')
+    pat.type = 'spike'; pat.spikeBase = 10; pat.spikePeak = 100; pat.spikeAtPct = 50; pat.spikeDurationSecs = 10
+    expect(s.cliCommand).toContain('--cps-spike 10,100,50,10')
+
     s.config.caller.codec = 'pcmu'
+    expect(s.cliCommand).toContain('--codec pcmu')
+
+    s.config.caller.dtmfSequence = '1,w2000,#'
+    expect(s.cliCommand).not.toContain('--dtmf')   // 沒有 RTP 時不會送 DTMF
+    s.config.caller.enableAudio = true
+    s.config.caller.audioFile = 'a.wav'
+    expect(s.cliCommand).toContain('--rtp --rtp-port 16000 --audio "a.wav" --dtmf "1,w2000,#"')
+  })
+})
+
+describe('DTMF 驗證', () => {
+  it('格式與 core 相同', () => {
+    expect(isValidDtmf('1,w2000,2,w500,#')).toBe(true)
+    expect(isValidDtmf('*, d ,W100')).toBe(true)
+    for (const bad of ['', ',', '12', 'x', 'w', 'wabc', '1;2']) expect(isValidDtmf(bad)).toBe(false)
+  })
+
+  it('格式錯誤時無法開始民眾端', () => {
+    const s = useTestStore()
     s.config.caller.dtmfSequence = '12#'
-    expect(s.cliUnsupported).toEqual(['CPS 模式', 'Codec', 'DTMF'])
+    expect(s.validationErrors.some(e => e.startsWith('DTMF 序列格式錯誤'))).toBe(true)
+    s.config.caller.dtmfSequence = '1,2,#'
+    expect(s.validationErrors).toEqual([])
   })
 })
 

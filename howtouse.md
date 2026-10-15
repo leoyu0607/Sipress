@@ -114,7 +114,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 | 欄位 | 範例 | 說明 |
 |------|------|------|
 | SIP 伺服器 | `192.168.1.100:5060` | 目標 SIP Proxy 的 IP 與 Port |
-| 傳輸層 | `UDP` / `TCP` / `TLS` | 須與伺服器設定一致 |
+| 傳輸層 | `UDP` / `TCP` | 須與伺服器設定一致。TCP 時每個民眾端 / 每個座席帳號各用一條連線，伺服器送來的請求（例如打給座席的 INVITE）也必須走同一條連線 |
 | 本機 Port | `5070` | 民眾端 SIP 綁定的本機 port；**0 = 自動分配**。port 被其他程式佔用時無法啟動。座席端不使用此設定（每個帳號各自隨機 port） |
 | 持續時間（秒）| 民眾端 `60`、座席端 `0` | **每端各自設定**，欄位跟著目前的模式分頁切換。**設為 0 = 不限時間**，需搭配總通數或手動停止 |
 
@@ -362,16 +362,22 @@ extension,username,password,domain
 
 ```
 --server / -s <位址>       SIP 伺服器 host:port
---transport <協定>          udp | tcp | tls（預設：udp）
+--transport <協定>          udp | tcp（預設：udp）
 --number <號碼>             主叫號碼（From 標頭）
 --concurrent / -c <N>      最大同時通話數（預設：100）
 --cps <N>                  每秒通話數（預設：10）
+--cps-ramp <起-迄>          CPS 漸增，例如 5-50（需 -d > 0）
+--cps-steps <CPS:秒,...>    CPS 階梯，例如 10:30,50:60
+--cps-spike <基準,尖峰,%,秒> CPS 尖峰，例如 10,100,50,10（需 -d > 0）
 --duration / -d <秒>        測試時長，0 = 不限（預設：60）
 --max-calls <N>            總通話上限，0 = 不限
 --call-duration <秒>        單通通話持續時間（預設：30）
 --invite-timeout <秒>       INVITE 逾時（預設：8）
---audio <檔案>              WAV/PCM 音檔（啟用 RTP）
---rtp-base-port <Port>     RTP 起始 Port（預設：10000）
+--rtp                      啟用 RTP 音訊
+--audio <檔案>              音檔（.wav / .ul / .al 等，需搭配 --rtp）
+--rtp-port <Port>          RTP 起始 Port（預設：10000）
+--codec <codec>            pcma（預設）| pcmu
+--dtmf <序列>               接通後送出的 DTMF，例如 1,w2000,#（需搭配 --rtp）
 --format <格式>             table | json | csv（預設：table）
 --logs-dir <目錄>           Log 輸出目錄（預設：logs）
 --tui                      啟用即時儀表板介面
@@ -384,6 +390,8 @@ extension,username,password,domain
 --auth-user <帳號>          撥號認證帳號（預設：主叫號碼）
 --auth-pass <密碼>          撥號認證密碼；INVITE 收到 401 / 407 時帶認證重送
 --trace-file <檔案>         結束後寫出每通的追蹤紀錄（端到端對照用）
+--interval <時長>           分時段統計的時段長度，例如 5m、1h（預設：5m，0 = 不分段）
+--timeline-csv <檔案>       結束後把分時段統計寫成 CSV
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
 --ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）

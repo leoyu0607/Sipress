@@ -64,7 +64,7 @@ describe('雙端：狀態隔離', () => {
   afterEach(() => { vi.useRealTimers() })
   const tick = () => vi.advanceTimersByTimeAsync(1000)
 
-  /** 每個模式有自己的累計 initiated 序列 */
+  /** 每個模式有自己的累計 initiated 序列；cps 模擬引擎每秒算出的增量 */
   function routeSeq(seq: Record<CallMode, number[]>, extra: Record<string, (a?: Args) => unknown> = {}) {
     const idx = { caller: 0, agent: 0 }
     return routeInvoke({
@@ -73,7 +73,8 @@ describe('雙端：狀態隔離', () => {
       get_snapshot: a => {
         const m = modeOf(a)
         const arr = seq[m]
-        return snap({ calls_initiated: arr[Math.min(idx[m]++, arr.length - 1)] })
+        const i = Math.min(idx[m]++, arr.length - 1)
+        return snap({ calls_initiated: arr[i], cps: i === 0 ? arr[0] : arr[i] - arr[i - 1] })
       },
       get_report:   () => baseReport,
       ...extra,
@@ -185,7 +186,7 @@ describe('雙端：狀態隔離', () => {
     expect(s.progressPct).toBe(20)
   })
 
-  it('D17：兩端輪詢同時進行，CPS 差值互不污染', async () => {
+  it('D17：兩端輪詢同時進行，各自採用自己那端的 CPS', async () => {
     routeSeq({ caller: [100, 110, 130], agent: [5, 8, 8] })
     const s = useTestStore()
     withAccount(s)

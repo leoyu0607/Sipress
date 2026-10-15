@@ -34,7 +34,7 @@ const CHART_LABELS: Record<SeriesKey, string> = {
   conc: '併發 — 進行中通話',
   asr:  'ASR — 接通率 %',
   ccr:  'CCR — 完成率 %',
-  pdd:  'PDD — 平均撥號延遲 ms',
+  pdd:  'PDD — 撥號延遲中位數（p50）ms',
   fail: '失敗 — 累計失敗 + 逾時',
   mos:  'MOS — 通話品質 (1~5)',
 }

@@ -26,7 +26,7 @@
   "audio_file": "C:/audio/prompt 1.wav",
   "codec": "pcmu",
   "enable_rtp": true,
-  "dtmf_sequence": "123#",
+  "dtmf_sequence": "1,2,3,#",
   "mode": "caller",
   "agent_accounts": [],
   "agent_ack_timeout_secs": 10,

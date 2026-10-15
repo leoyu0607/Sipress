@@ -86,7 +86,7 @@ const errClass = computed(() => {
     <div class="cell" v-else>
       <div class="name">PDD</div>
       <div class="val c-warn">{{ isReady && store.metrics.pdd > 0 ? store.metrics.pdd.toFixed(0) + 'ms' : '—' }}</div>
-      <div class="unit">{{ store.status === 'done' ? '撥號延遲 p50' : '撥號延遲 平均' }}</div>
+      <div class="unit">撥號延遲 p50</div>
     </div>
 
   </div>

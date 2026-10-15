@@ -131,29 +131,47 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 
 確認 sipress 民眾端直接撥入時，SIPX 入口是否產生 `P-CIN-CallId` 並回在 18x / 200（報告的「民眾端 CIN %」）。拿不到時改用 `--from-seq` 配對，並把結果補進第 3 項的紀錄。
 
-### [ ] 16. TCP 傳輸（功能）
+### [x] 16. TCP 傳輸（功能）
 
-GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。要嘛實作（連線管理、訊息分框、`Content-Length` 解析），要嘛在介面上先移除這個選項。TLS / SRTP 視需求另列。
+原本 GUI 與 CLI 都能選 TCP，但一執行就報「尚未實作」。
+已實作：`core/src/sip/transport.rs` 的 `SipSocket` 把 UDP / TCP 包成同一個介面，民眾端、座席端與 GUI 的「測試註冊」都改用它：
+- TCP 時民眾端整個測試、每個座席帳號各用一條連線；依 `Content-Length`（含 compact `l:`）分框，略過 keep-alive CRLF，單則訊息上限 64 KB。
+- Via 為 `SIP/2.0/TCP`、Contact 帶 `;transport=tcp`（REGISTER 也帶，否則伺服器會用 UDP 找座席）；座席的回應與主動 BYE 依來電 Via 的協定。
+- TCP 不做 SIP 層重傳（INVITE / BYE），由傳輸層保證送達。
+- 連線失敗或伺服器斷線會直接回報錯誤。CLI `--transport` 只接受 udp / tcp（原本 `tls` 會被默默當成 UDP）。
+- 限制：伺服器送給座席的請求必須走座席註冊的那條連線（SIPX 等 proxy 的一般做法）；sipress 不另外監聽 TCP port。RTP 仍為 UDP。TLS / SRTP 視需求另列。
+測試：`take_frame` 分框與 `via_transport` 單元測試、`SipSocket` TCP 收送；`core/tests/tcp_transport.rs`（民眾端單一連線完成兩通、回應延遲超過 T1 也不重傳、兩則回應黏在同一次寫入；座席端 TCP 註冊與接聽；連線被拒立即失敗）。
 
-### [ ] 17. CLI 補上 GUI 才有的設定（功能）
+### [x] 17. CLI 補上 GUI 才有的設定（功能）
 
-CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 目前只有 GUI 能設定，CLI 預覽會標示「不支援」（`testStore.ts` 的 `cliUnsupported`）。補齊後 GUI 的 CLI 預覽即可完整重現設定。
+原本 CPS 模式（漸增 / 階梯 / 尖峰）、DTMF、codec 只有 GUI 能設定，CLI 預覽標示「不支援」。
+已完成：CLI 新增 `--cps-ramp START-END`、`--cps-steps CPS:秒,...`、`--cps-spike 基準,尖峰,開始%,秒數`（三者擇一）、`--codec pcma|pcmu`、`--dtmf 序列`（需 `--rtp`）。GUI 的 CLI 預覽改為輸出這些參數，移除「CLI 不支援」提示。
+- core 的 `Config::validate` 新增 CPS 模式與 DTMF 格式檢查（CLI、GUI 共用）；GUI 啟動前也檢查 DTMF 格式。原本 `123#` 這種不加逗號的寫法只會送出第一個按鍵，現在會直接提示格式錯誤。
+- 測試：CLI 參數解析與錯誤值、`CpsPattern::validate`、DTMF 格式；`gui_cli_preview_reproduces_gui_config` 把 `gui/contract/cli-*.txt` 交給 CLI 解析後，逐欄比對 GUI 實際送出的 `config-*.json`（帳號檔、密碼佔位字、未使用的欄位除外）。以 mock SIPX 實跑：階梯 2:3,8:3 → 每秒 INVITE `2,2,2,8,8,8`；漸增 1-9 → `1,3,4,6,7,8`；尖峰 2,10,50,2 → `2,2,2,10,10,2`；`--codec pcmu` offer `0 8 101`；`--dtmf` 送出 PT 101。
 
-### [ ] 18. 即時指標的準確度（指標）
+### [x] 18. 即時指標的準確度（指標）
 
-`METRICS.md` 第 11 節列的已知限制：
-- 即時 CPS 由 GUI 輪詢差值計算，與引擎計時器不同步，會出現 0 與兩倍交替 → 改由引擎每秒統計並放進快照。
-- 即時 ASR 的分母包含仍在響鈴的通話，數值偏低。
-- PDD 測試中顯示平均、結束改為 P50，數字會跳動 → 統一口徑。
+原本 `METRICS.md` 第 11 節列的已知限制，已修正：
+- 即時 CPS：改由引擎的進度 task 每秒計算（`RateMeter`：計數增加量 ÷ 實際經過秒數）放進快照的 `cps`，GUI 直接使用，不再用輪詢差值（不會出現 0 與兩倍交替）。
+- 即時 ASR / ERR%：分母改為「已有結果」的通話（接通 + 失敗 + 逾時），不含還在響鈴的通話；最終報告仍以全部發起為分母（民眾端兩者一致）。
+- PDD：快照新增 `pdd_p50_ms`，GUI 測試中與結束後都顯示 p50。
+- 同時修正：時間到後引擎收尾（CANCEL / BYE、座席解除註冊）期間，進度回報原本就停了，GUI 停在最後一筆；現在持續回報到引擎結束（保留寬限時間避免引擎異常時 task 不停）。
+測試：`stats` 單元測試（即時 / 最終 ASR、`RateMeter`、PDD p50 與報告一致）、`core/tests/live_metrics.rs`（20 CPS 實跑，每秒 CPS 15–25、響鈴中的通話不拉低 ASR、最後一筆快照為已結束）、GUI vitest 改為採用引擎的 `cps` 與 `pdd_p50_ms`。
 
-### [ ] 19. 長時間耐久測試的分時段統計（功能）
+### [x] 19. 長時間耐久測試的分時段統計（功能）
 
-報告只有整體結果，看不出第幾小時開始變差。加上每 N 分鐘一段的 ASR、PDD、MOS、失敗碼統計，HTML 報告畫成時序圖，CLI 可輸出 CSV。
+原本報告只有整體結果，看不出第幾小時開始變差。
+已完成：`core/src/timeline.rs` 的 `TimelineRecorder`，兩端引擎每秒取樣，每 `stats_interval_secs`（CLI `--interval`，預設 5 分鐘）結算一段：發起 / 接通 / 完成 / 失敗 / 逾時、CPS、ASR、PDD p50 / p95、MOS、失敗碼（計算方式見 `METRICS.md` 第 13 節）。
+- 最終報告新增 `timeline`（JSON 報告直接帶出）；HTML 報告兩段以上時顯示 CPS / ASR / PDD / MOS 趨勢圖（inline SVG）與每段明細表；CLI 表格輸出後附分段表，`--timeline-csv` 輸出 CSV。
+- GUI 匯出的 HTML 報告同樣有分段統計（使用預設 5 分鐘）；GUI 目前沒有調整時段長度的欄位。
+- 測試：`timeline` 單元測試（分段差值、PDD 只含本段樣本、跳過的取樣、收尾尾段併入、CSV）；`core/tests/live_metrics.rs` 實跑 4 秒 / 每段 1 秒，各段加總等於最終報告、503 失敗碼、時段連續、`--interval 0` 不分段。實跑 CLI（階梯 3→10 CPS、每段 2 秒）並以 Chromium 截圖確認 HTML 圖表。
 
-### [ ] 20. 大量並發的效能基準（效能）
+### [x] 20. 大量並發的效能基準（效能）
 
-座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器。上千並發時 CPU 負擔未知。
-要做：先加 1,000 / 5,000 並發的基準測試（本機 mock），量出瓶頸再優化，避免盲目重寫。
+原本座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器，上千並發時 CPU 負擔未知。
+已完成：`core/examples/load_bench.rs`（mock 在子行程，量引擎 CPU / RSS / 排程延遲 / RTP 實收；含只有計時器 + send_to 的對照組），結果與方法見 `docs/performance.md`。
+- SIP 信令不是瓶頸（5000 並發無 RTP：民眾端 16%、座席端 1% 單核）；RTP 每路一個 socket 的設計接近下限（引擎只比對照組多約 13–25%），5000 路約 3 核，暫不改架構。
+- 量測中找到並修正：座席 runner 各複製完整帳號清單（5000 帳號 RSS 4950 MB → 42 MB）、UDP 等待時各握 64 KB 緩衝區、座席 REGISTER 遺失不重傳（新增 Timer E 重傳，`core/tests/register_retransmit.rs` 與單元測試）。
 
 ### [ ] 21. 拆分 `agent_engine.rs`（維護）
 

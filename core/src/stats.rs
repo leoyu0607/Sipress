@@ -89,16 +89,11 @@ impl LiveStats {
         let active = self.calls_active.load(Ordering::Relaxed).max(0) as u64;
         let rtp = self.rtp_sessions.load(Ordering::Relaxed);
 
-        let asr = if initiated > 0 {
-            answered as f64 / initiated as f64 * 100.0
-        } else {
-            0.0
-        };
-        let error_rate = if initiated > 0 {
-            (failed + timeout) as f64 / initiated as f64 * 100.0
-        } else {
-            0.0
-        };
+        // 即時比率只看「已有結果」的通話（接通 / 失敗 / 逾時互斥）：還在等回應或響鈴的通話
+        // 不算進分母，否則測試初期與高 CPS 時會偏低。全部通話都有結果後與最終報告一致。
+        let decided = answered + failed + timeout;
+        let asr = pct(answered, decided);
+        let error_rate = pct(failed + timeout, decided);
 
         StatsSnapshot {
             calls_initiated: initiated,
@@ -116,10 +111,47 @@ impl LiveStats {
             rtp_sent_packets: None,
             rtp_recv_packets: None,
             pdd_avg_ms: None,
+            pdd_p50_ms: None,
+            cps: 0.0,
             agents_registered: self.agents_registered.load(Ordering::Relaxed),
             agents_total: self.agents_total.load(Ordering::Relaxed),
             finished: false,
         }
+    }
+}
+
+fn pct(n: u64, d: u64) -> f64 {
+    if d > 0 {
+        n as f64 / d as f64 * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// 實際速率：兩次快照之間計數增加量 ÷ 經過秒數（由引擎的進度 task 計算，與前端輪詢時機無關）
+pub struct RateMeter {
+    last_at: std::time::Instant,
+    last_count: u64,
+}
+
+impl RateMeter {
+    pub fn new(start: std::time::Instant) -> Self {
+        Self {
+            last_at: start,
+            last_count: 0,
+        }
+    }
+
+    /// 自上次呼叫以來的每秒速率；間隔太短（< 0.1 秒）時回傳 0 且不更新基準
+    pub fn rate(&mut self, now: std::time::Instant, count: u64) -> f64 {
+        let dt = now.saturating_duration_since(self.last_at).as_secs_f64();
+        if dt < 0.1 {
+            return 0.0;
+        }
+        let r = count.saturating_sub(self.last_count) as f64 / dt;
+        self.last_at = now;
+        self.last_count = count;
+        r
     }
 }
 
@@ -149,6 +181,12 @@ pub struct StatsSnapshot {
     /// 目前為止的平均 PDD（ms；None = 尚無樣本）
     #[serde(default)]
     pub pdd_avg_ms: Option<f64>,
+    /// 目前為止的 PDD 中位數（ms；None = 尚無樣本），與最終報告的 `pdd_p50_ms` 同口徑
+    #[serde(default)]
+    pub pdd_p50_ms: Option<f64>,
+    /// 最近一秒的實際發起速率（引擎每秒計算；座席端為收到的 INVITE）
+    #[serde(default)]
+    pub cps: f64,
     /// 座席端：目前註冊成功的帳號數（民眾端為 0）
     #[serde(default)]
     pub agents_registered: u64,
@@ -207,6 +245,18 @@ impl DetailedStats {
     pub fn pdd_mean_ms(&self) -> Option<f64> {
         let h = self.pdd_hist.lock().ok()?;
         (!h.is_empty()).then(|| h.mean() / 1000.0)
+    }
+
+    /// PDD 中位數（ms）；尚無樣本時為 None
+    pub fn pdd_p50_ms(&self) -> Option<f64> {
+        let h = self.pdd_hist.lock().ok()?;
+        (!h.is_empty()).then(|| h.value_at_quantile(0.5) as f64 / 1000.0)
+    }
+
+    /// 進度快照共用的即時指標：PDD 平均 / 中位數
+    pub fn fill_live(&self, snap: &mut StatsSnapshot) {
+        snap.pdd_avg_ms = self.pdd_mean_ms();
+        snap.pdd_p50_ms = self.pdd_p50_ms();
     }
 
     /// 記錄通話建立時間（ms → µs）
@@ -303,6 +353,10 @@ pub struct FinalReport {
 
     // ── 具體失敗回應碼（key = SIP 狀態碼，value = 次數）──
     pub fail_codes: HashMap<u16, u64>,
+
+    /// 分時段統計（`stats_interval_secs` 一段；0 = 不分段時為空）
+    #[serde(default)]
+    pub timeline: Vec<crate::timeline::TimelineBucket>,
 }
 
 impl FinalReport {
@@ -326,7 +380,8 @@ impl FinalReport {
             calls_failed: snap.calls_failed,
             calls_timeout: snap.calls_timeout,
             duration_secs: elapsed_secs,
-            asr: snap.asr,
+            // 最終 ASR 以全部發起的通話為分母（收尾時未接通的通話都已計入逾時）
+            asr: pct(snap.calls_answered, snap.calls_initiated),
             ccr: if snap.calls_initiated > 0 {
                 snap.calls_completed as f64 / snap.calls_initiated as f64 * 100.0
             } else {
@@ -357,6 +412,7 @@ impl FinalReport {
             rtp_sent: rtp.map(|r| r.sent_packets),
             rtp_recv: rtp.map(|r| r.recv_packets),
             rtp_out_of_order: rtp.map(|r| r.out_of_order),
+            timeline: Vec::new(),
         }
     }
 
@@ -424,6 +480,77 @@ impl CdrCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_ratios_ignore_calls_still_pending() {
+        let live = LiveStats::default();
+        for _ in 0..10 {
+            live.on_invite();
+        }
+        // 4 通接通、1 通失敗、5 通還在響鈴
+        for _ in 0..4 {
+            live.on_answered();
+        }
+        live.on_failed();
+        let snap = live.snapshot();
+        assert!(
+            (snap.asr - 80.0).abs() < 1e-9,
+            "4 / (4 + 1)，不是 4 / 10：{}",
+            snap.asr
+        );
+        assert!((snap.error_rate - 20.0).abs() < 1e-9);
+
+        // 剩下的都逾時後，即時值與最終報告一致（以全部發起為分母）
+        for _ in 0..5 {
+            live.on_timeout();
+        }
+        let snap = live.snapshot();
+        let report = FinalReport::build(&snap, &DetailedStats::default(), 10.0, None);
+        assert!((snap.asr - 40.0).abs() < 1e-9);
+        assert!((report.asr - snap.asr).abs() < 1e-9);
+        assert_eq!(LiveStats::default().snapshot().asr, 0.0, "沒有通話時為 0");
+    }
+
+    #[test]
+    fn final_asr_counts_every_initiated_call() {
+        let live = LiveStats::default();
+        for _ in 0..4 {
+            live.on_invite();
+        }
+        live.on_answered();
+        // 另外 3 通沒有結果（例如座席端結束時仍在響鈴）
+        let report = FinalReport::build(&live.snapshot(), &DetailedStats::default(), 1.0, None);
+        assert!((report.asr - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rate_meter_measures_per_second_rate() {
+        let t0 = std::time::Instant::now();
+        let mut m = RateMeter::new(t0);
+        assert_eq!(m.rate(t0, 0), 0.0);
+        assert!((m.rate(t0 + std::time::Duration::from_secs(1), 10) - 10.0).abs() < 1e-9);
+        // 計時器晚了半秒：以實際經過時間換算，不會出現兩倍
+        assert!((m.rate(t0 + std::time::Duration::from_millis(2500), 25) - 10.0).abs() < 1e-9);
+        // 間隔太短不更新基準
+        assert_eq!(m.rate(t0 + std::time::Duration::from_millis(2550), 30), 0.0);
+        assert!((m.rate(t0 + std::time::Duration::from_millis(3500), 35) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_pdd_uses_same_p50_as_report() {
+        let d = DetailedStats::default();
+        let mut snap = StatsSnapshot::default();
+        d.fill_live(&mut snap);
+        assert_eq!(snap.pdd_p50_ms, None);
+        for ms in [100.0, 110.0, 120.0, 130.0, 5000.0] {
+            d.record_pdd(ms);
+        }
+        d.fill_live(&mut snap);
+        let report = FinalReport::build(&snap, &d, 1.0, None);
+        assert_eq!(snap.pdd_p50_ms, Some(report.pdd_p50_ms));
+        assert!((report.pdd_p50_ms - 120.0).abs() < 1.0);
+        assert!(snap.pdd_avg_ms.unwrap() > 1000.0, "平均受長尾影響");
+    }
 
     #[test]
     fn acd_includes_calls_longer_than_60s() {
