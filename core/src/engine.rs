@@ -344,9 +344,13 @@ impl Engine {
             let detail = Arc::clone(&detail);
             let finished = Arc::clone(&engine_finished);
             let duration = cfg.duration_secs as f64;
+            // 時間到後引擎還會收尾（CANCEL / BYE / 解除註冊），期間繼續回報，直到引擎結束；
+            // 寬限時間只是保險，避免引擎異常結束時 task 不會停
+            let drain_grace = cfg.invite_timeout_secs as f64 + 2.0;
             let unlimited = cfg.duration_secs == 0;
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(1));
+                let mut cps_meter = crate::stats::RateMeter::new(start);
                 loop {
                     interval.tick().await;
                     let elapsed = start.elapsed().as_secs_f64();
@@ -356,7 +360,8 @@ impl Engine {
                         (elapsed / duration).min(1.0)
                     };
                     let mut snap = live.snapshot();
-                    snap.pdd_avg_ms = detail.pdd_mean_ms();
+                    detail.fill_live(&mut snap);
+                    snap.cps = cps_meter.rate(std::time::Instant::now(), snap.calls_initiated);
 
                     {
                         let sessions = rtp_sess.lock().await;
@@ -372,7 +377,7 @@ impl Engine {
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
                     let done = snap.finished;
                     cb(snap, progress);
-                    if !unlimited && elapsed >= duration {
+                    if !unlimited && elapsed >= duration + drain_grace {
                         break;
                     }
                     if done {

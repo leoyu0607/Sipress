@@ -656,6 +656,8 @@ mod tests {
         snap.rtp_sent_packets = Some(5000);
         snap.rtp_recv_packets = Some(4975);
         snap.pdd_avg_ms = Some(150.0);
+        snap.pdd_p50_ms = Some(120.0);
+        snap.cps = 9.5;
         check_fixture("snapshot.json", serde_json::to_value(&snap).unwrap());
     }
 

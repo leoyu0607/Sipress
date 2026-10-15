@@ -149,12 +149,14 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - core 的 `Config::validate` 新增 CPS 模式與 DTMF 格式檢查（CLI、GUI 共用）；GUI 啟動前也檢查 DTMF 格式。原本 `123#` 這種不加逗號的寫法只會送出第一個按鍵，現在會直接提示格式錯誤。
 - 測試：CLI 參數解析與錯誤值、`CpsPattern::validate`、DTMF 格式；`gui_cli_preview_reproduces_gui_config` 把 `gui/contract/cli-*.txt` 交給 CLI 解析後，逐欄比對 GUI 實際送出的 `config-*.json`（帳號檔、密碼佔位字、未使用的欄位除外）。以 mock SIPX 實跑：階梯 2:3,8:3 → 每秒 INVITE `2,2,2,8,8,8`；漸增 1-9 → `1,3,4,6,7,8`；尖峰 2,10,50,2 → `2,2,2,10,10,2`；`--codec pcmu` offer `0 8 101`；`--dtmf` 送出 PT 101。
 
-### [ ] 18. 即時指標的準確度（指標）
+### [x] 18. 即時指標的準確度（指標）
 
-`METRICS.md` 第 11 節列的已知限制：
-- 即時 CPS 由 GUI 輪詢差值計算，與引擎計時器不同步，會出現 0 與兩倍交替 → 改由引擎每秒統計並放進快照。
-- 即時 ASR 的分母包含仍在響鈴的通話，數值偏低。
-- PDD 測試中顯示平均、結束改為 P50，數字會跳動 → 統一口徑。
+原本 `METRICS.md` 第 11 節列的已知限制，已修正：
+- 即時 CPS：改由引擎的進度 task 每秒計算（`RateMeter`：計數增加量 ÷ 實際經過秒數）放進快照的 `cps`，GUI 直接使用，不再用輪詢差值（不會出現 0 與兩倍交替）。
+- 即時 ASR / ERR%：分母改為「已有結果」的通話（接通 + 失敗 + 逾時），不含還在響鈴的通話；最終報告仍以全部發起為分母（民眾端兩者一致）。
+- PDD：快照新增 `pdd_p50_ms`，GUI 測試中與結束後都顯示 p50。
+- 同時修正：時間到後引擎收尾（CANCEL / BYE、座席解除註冊）期間，進度回報原本就停了，GUI 停在最後一筆；現在持續回報到引擎結束（保留寬限時間避免引擎異常時 task 不停）。
+測試：`stats` 單元測試（即時 / 最終 ASR、`RateMeter`、PDD p50 與報告一致）、`core/tests/live_metrics.rs`（20 CPS 實跑，每秒 CPS 15–25、響鈴中的通話不拉低 ASR、最後一筆快照為已結束）、GUI vitest 改為採用引擎的 `cps` 與 `pdd_p50_ms`。
 
 ### [ ] 19. 長時間耐久測試的分時段統計（功能）
 

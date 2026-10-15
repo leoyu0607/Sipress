@@ -73,17 +73,17 @@ calls_answered  ≈ calls_completed + （已接通、尚未結束的通話）
 
 ## 3. 比率指標：ASR / CCR / ERR%
 
-分母都是 `calls_initiated`；分母為 0 時回報 0。
+分母為 0 時回報 0。接通、失敗、逾時三者互斥，`已有結果 = calls_answered + calls_failed + calls_timeout`。
 
-| 指標 | 公式 | 計算位置 |
+| 指標 | 即時值（`LiveStats::snapshot()`） | 最終報告（`FinalReport::build()`） |
 |---|---|---|
-| **ASR**（Answer Seizure Ratio，接通率） | `calls_answered / calls_initiated × 100` | `LiveStats::snapshot()` |
-| **CCR**（Call Completion Rate，完成率） | `calls_completed / calls_initiated × 100` | `FinalReport::build()`；GUI 即時值在前端用同一公式計算 |
-| **ERR%**（Error Rate） | `(calls_failed + calls_timeout) / calls_initiated × 100` | `LiveStats::snapshot()` 的 `error_rate` |
+| **ASR**（Answer Seizure Ratio，接通率） | `calls_answered / 已有結果 × 100` | `calls_answered / calls_initiated × 100` |
+| **ERR%**（Error Rate） | `(calls_failed + calls_timeout) / 已有結果 × 100`（`error_rate`） | — |
+| **CCR**（Call Completion Rate，完成率） | `calls_completed / calls_initiated × 100`（GUI 在前端計算） | 同左 |
 
 注意：
 
-- 測試進行中，剛送出 INVITE、還沒回應的通話也算進分母，所以 **ASR / CCR 在測試初期與高 CPS 時會偏低**，結束後才是真實值。
+- 即時 ASR / ERR% 不把還在等回應或響鈴的通話算進分母，兩者合計 100%。民眾端結束時未接通的通話都以 CANCEL 計入逾時，所以全部通話都有結果，即時值與最終報告相同；座席端結束時若仍有響鈴中的來電，最終 ASR 會略低於最後的即時值。
 - CCR 只在通話「結束」時才計入，通話時長（`--call-duration`）越長，即時 CCR 落後 ASR 越多。
 
 ---
@@ -113,7 +113,7 @@ calls_answered  ≈ calls_completed + （已接通、尚未結束的通話）
 
 | 指標 | 公式 | 出處 |
 |---|---|---|
-| **即時 CPS**（GUI 指標列 / 圖表） | 本次 `calls_initiated` − 上次 `calls_initiated`（每 1 秒輪詢一次） | `testStore.ts` `applySnapshot()` |
+| **即時 CPS**（GUI 指標列 / 圖表） | 引擎每秒快照時計算：`calls_initiated` 增加量 ÷ 距上次快照的實際秒數（座席端為收到的 INVITE） | 快照的 `cps`（`RateMeter`，`core/src/stats.rs`） |
 | **實際 CPS**（最終報告） | `calls_initiated / 測試總時長（秒）` | `FinalReport::build()` |
 | **CONCUR / 並發** | `calls_active`（負值時以 0 顯示） | `LiveStats::snapshot()` |
 
@@ -149,7 +149,8 @@ invite_sent_at ──▶ ringing_at ──▶ answered_at ───────�
 
 | 輸出 | 計算 |
 |---|---|
-| PDD 即時平均（`pdd_avg_ms`） | PDD 直方圖目前所有樣本的平均值；尚無樣本時為 `None`（GUI 顯示「—」） |
+| PDD 即時中位數（`pdd_p50_ms`） | PDD 直方圖目前所有樣本的 p50；尚無樣本時為 `None`（GUI 顯示「—」）。GUI 測試中與結束後都顯示 p50 |
+| PDD 即時平均（`pdd_avg_ms`） | 目前所有樣本的平均值（快照仍提供，GUI 不使用） |
 | PDD / Setup p50、p95、p99 | 直方圖 `value_at_quantile(0.50 / 0.95 / 0.99)` |
 | PDD / Setup max | 直方圖最大值 |
 | **ACD**（Average Call Duration） | 通話時長直方圖的平均值；`calls_completed = 0` 時為 0 |
@@ -303,14 +304,14 @@ ACK 逾時預設 10 秒，BYE 逾時預設 150 秒；逾時後座席主動送 BY
 
 | 欄位 | 即時值來源 | 測試結束後 |
 |---|---|---|
-| CPS | 每秒 `calls_initiated` 差值 | 最終報告的實際 CPS |
+| CPS | 快照的 `cps`（引擎每秒計算） | 最終報告的實際 CPS |
 | CONCUR | `calls_active` | （保留最後的即時值） |
 | SUCCESS | `calls_answered` | 同左（最終值） |
 | FAILED | `calls_failed + calls_timeout` | 同左（最終值） |
 | TOTAL | `calls_initiated` | 同左（最終值） |
-| ASR | `asr` | 最終報告 ASR |
+| ASR | `asr`（分母為已有結果的通話） | 最終報告 ASR |
 | ERR% | `error_rate` | `(failed + timeout) / initiated × 100` |
-| PDD | `pdd_avg_ms`（**平均**） | 最終報告 PDD **p50** |
+| PDD | `pdd_p50_ms`（p50） | 最終報告 PDD p50 |
 | REG（僅座席端檢視，取代 PDD） | `agents_registered / agents_total` | （保留最後的即時值） |
 
 座席註冊數（`agents_registered`）：每個帳號收到 REGISTER 200 OK 時計為已註冊（`Expires: 0` 除外）；以下情況取消計數：認證重試用盡、3xx–6xx 最終回應、超過 Expires 秒都沒有再收到 200 OK、送出 `Expires=0` 取消註冊、帳號的 runner 結束。同一帳號重複刷新成功不會重複計數。
@@ -350,12 +351,11 @@ ACK 逾時預設 10 秒，BYE 逾時預設 150 秒；逾時後座席主動送 BY
 ## 11. 已知限制與解讀注意事項
 
 1. **停止測試會增加逾時數**：結束或手動停止時，所有尚未接通的通話都以 CANCEL 結束並計入 `calls_timeout`。高 CPS、短測試時長的 ERR% 會因此偏高。
-2. **GUI 的 PDD 在結束時換了算法**：測試中顯示平均值，結束後改為 p50。延遲分佈有長尾時，結束瞬間數字會往下跳。
-3. **即時 CPS 有輪詢誤差**：引擎每秒產生快照，GUI 也每秒輪詢，兩個計時器不同步。偶爾某一秒會顯示 0、下一秒顯示約兩倍；看趨勢時以平均為準。
-4. **ASR / CCR 的即時值偏低**：分母包含還在等待回應的通話（見第 3 節）。
-5. **MOS 是估算值**：只由掉包率與 Jitter 推算，沒有分析音訊內容，最高約 4.41；Jitter 低於 150 ms 時不影響分數（見 6.4）。
-6. **回應碼 408 不是伺服器的回應**：GUI 面板的 408 是本機逾時數（見第 8 節）。
-7. **超過 24 小時的通話不計入 ACD**：通話時長直方圖的上限是 24 小時（見第 1 節）。
+2. **即時 CCR 偏低**：分母包含還在通話中的通話（見第 3 節）；即時 ASR / ERR% 只看已有結果的通話，沒有這個問題。
+3. **GUI 圖表的時間軸**：GUI 每秒輪詢一次引擎的最新快照，兩個計時器不同步時，偶爾某一秒會重複上一秒的值或略過一秒；數值本身由引擎計算，不會出現 0 與兩倍交替。
+4. **MOS 是估算值**：只由掉包率與 Jitter 推算，沒有分析音訊內容，最高約 4.41；Jitter 低於 150 ms 時不影響分數（見 6.4）。
+5. **回應碼 408 不是伺服器的回應**：GUI 面板的 408 是本機逾時數（見第 8 節）。
+6. **超過 24 小時的通話不計入 ACD**：通話時長直方圖的上限是 24 小時（見第 1 節）。
 
 ---
 

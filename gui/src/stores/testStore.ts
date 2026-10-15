@@ -172,8 +172,11 @@ export interface RustSnapshot {
   rtp_jitter_ms:     number | null
   rtp_sent_packets:  number | null
   rtp_recv_packets:  number | null
-  // 目前為止的平均 PDD（null = 尚無樣本）
+  // 目前為止的 PDD 平均 / 中位數（null = 尚無樣本）；畫面使用中位數，與最終報告的 p50 同口徑
   pdd_avg_ms:        number | null
+  pdd_p50_ms:        number | null
+  // 最近一秒的實際發起速率（引擎計算）
+  cps:               number
   // 座席端：註冊成功數 / 帳號總數（民眾端皆為 0）
   agents_registered: number
   agents_total:      number
@@ -397,12 +400,11 @@ export const useTestStore = defineStore('test', () => {
   const runtime: Record<CallMode, {
     pollTimer:     ReturnType<typeof setInterval> | null
     clockTimer:    ReturnType<typeof setInterval> | null
-    prevInitiated: number
     prevFailed:    number    // 上一筆 snapshot 的失敗 + 逾時累計（只在增加時寫 WARN）
     rtpLoggedOnce: boolean   // 防止重複寫 RTP session 啟動 log
   }> = {
-    caller: { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
-    agent:  { pollTimer: null, clockTimer: null, prevInitiated: 0, prevFailed: 0, rtpLoggedOnce: false },
+    caller: { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
+    agent:  { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
   }
   let logSeq = 0
   /** 雙端啟動中等待座席註冊的輪詢；取消時 resolve('cancelled')，startBoth 不再啟動民眾端 */
@@ -600,8 +602,8 @@ export const useTestStore = defineStore('test', () => {
   function applySnapshot(mode: CallMode, snap: RustSnapshot) {
     const r   = sessions.value[mode]
     const rt  = runtime[mode]
-    const cps = Math.max(0, snap.calls_initiated - rt.prevInitiated)
-    rt.prevInitiated = snap.calls_initiated
+    // CPS 由引擎每秒計算，不用前端輪詢差值（兩個計時器不同步會出現 0 與兩倍交替）
+    const cps = snap.cps
     const failed = snap.calls_failed + snap.calls_timeout
 
     r.metrics = {
@@ -615,7 +617,7 @@ export const useTestStore = defineStore('test', () => {
         ? snap.calls_completed / snap.calls_initiated * 100
         : 0,
       errorRate:   snap.error_rate,
-      pdd:         snap.pdd_avg_ms ?? 0,
+      pdd:         snap.pdd_p50_ms ?? 0,
       acd:         0,
     }
 
@@ -632,7 +634,7 @@ export const useTestStore = defineStore('test', () => {
     pushSeries(r, 'asr',  snap.asr)
     pushSeries(r, 'ccr',  r.metrics.ccr)
     pushSeries(r, 'fail', failed)
-    if (snap.pdd_avg_ms != null) pushSeries(r, 'pdd', snap.pdd_avg_ms)
+    if (snap.pdd_p50_ms != null) pushSeries(r, 'pdd', snap.pdd_p50_ms)
 
     r.agents = { registered: snap.agents_registered ?? 0, total: snap.agents_total ?? 0 }
 
@@ -743,7 +745,6 @@ export const useTestStore = defineStore('test', () => {
       return false
     }
     sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
-    rt.prevInitiated = 0
     rt.prevFailed = 0
     rt.rtpLoggedOnce = false
     const cur = sessions.value[mode]

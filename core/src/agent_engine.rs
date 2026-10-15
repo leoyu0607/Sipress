@@ -108,10 +108,14 @@ impl AgentEngine {
             let detail2 = Arc::clone(&detail);
             let finished = Arc::clone(&engine_finished);
             let duration = cfg.duration_secs as f64;
+            // 時間到後引擎還會收尾（CANCEL / BYE / 解除註冊），期間繼續回報，直到引擎結束；
+            // 寬限時間只是保險，避免引擎異常結束時 task 不會停
+            let drain_grace = 5.0;
             let unlimited = cfg.duration_secs == 0;
             let registry = Arc::clone(&rtp_registry);
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(1));
+                let mut cps_meter = crate::stats::RateMeter::new(start);
                 loop {
                     interval.tick().await;
                     let elapsed = start.elapsed().as_secs_f64();
@@ -125,7 +129,8 @@ impl AgentEngine {
                     let rtp_agg = registry.lock().await.live_aggregate();
 
                     let mut snap = live2.snapshot();
-                    snap.pdd_avg_ms = detail2.pdd_mean_ms();
+                    detail2.fill_live(&mut snap);
+                    snap.cps = cps_meter.rate(std::time::Instant::now(), snap.calls_initiated);
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
                     if let Some(agg) = &rtp_agg {
                         snap.rtp_mos = Some(agg.mos);
@@ -136,7 +141,7 @@ impl AgentEngine {
                     }
                     let done = snap.finished;
                     cb(snap, progress);
-                    if !unlimited && elapsed >= duration {
+                    if !unlimited && elapsed >= duration + drain_grace {
                         break;
                     }
                     if done {

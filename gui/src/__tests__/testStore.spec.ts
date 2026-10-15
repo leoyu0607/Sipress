@@ -167,8 +167,8 @@ describe('測試執行流程', () => {
 
   it('每秒的 snapshot 轉成指標與圖表序列', async () => {
     const { s } = await startWith([
-      snap({ calls_initiated: 10, calls_answered: 6, calls_completed: 2, calls_failed: 1, calls_timeout: 1, pdd_avg_ms: null, rtp_mos: null }),
-      snap({ calls_initiated: 25, calls_answered: 20, calls_completed: 10, calls_failed: 2, calls_timeout: 1 }),
+      snap({ calls_initiated: 10, calls_answered: 6, calls_completed: 2, calls_failed: 1, calls_timeout: 1, cps: 10, pdd_avg_ms: null, pdd_p50_ms: null, rtp_mos: null }),
+      snap({ calls_initiated: 25, calls_answered: 20, calls_completed: 10, calls_failed: 2, calls_timeout: 1, cps: 7.5 }),
     ])
     expect(s.status).toBe('running')
 
@@ -181,12 +181,12 @@ describe('測試執行流程', () => {
     expect(s.rtpMetrics.enabled).toBe(false)
 
     await tick()
-    expect(s.metrics.cps).toBe(15)            // 與上一筆的差值，不是累計
+    expect(s.metrics.cps).toBe(7.5)           // 直接採用引擎算的速率，不用輪詢差值（25 − 10）
     expect(s.metrics.initiated).toBe(25)
     expect(s.metrics.ccr).toBe(40)
     expect(s.metrics.asr).toBe(baseSnap.asr)  // ASR 直接採用 Rust 的值
-    expect(s.metrics.pdd).toBe(baseSnap.pdd_avg_ms)
-    expect(s.series.cps).toEqual([10, 15])
+    expect(s.metrics.pdd).toBe(baseSnap.pdd_p50_ms) // 測試中也用 p50，與最終報告同口徑
+    expect(s.series.cps).toEqual([10, 7.5])
     expect(s.series.fail).toEqual([2, 3])
     expect(s.callStates).toEqual({ initiated: 25, answered: 20, completed: 10, failed: 2, timeout: 1 })
     expect(s.rtpMetrics).toMatchObject({
