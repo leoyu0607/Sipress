@@ -282,9 +282,10 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 </div>
 
 </main>
-<footer class="footer">sipress v0.1 &nbsp;·&nbsp; 報告產生時間 {ts} &nbsp;·&nbsp; 測試時長 {dur:.1}s</footer>
+<footer class="footer">sipress v{ver} &nbsp;·&nbsp; 報告產生時間 {ts} &nbsp;·&nbsp; 測試時長 {dur:.1}s</footer>
 </body></html>"#,
             ts = timestamp,
+            ver = env!("CARGO_PKG_VERSION"),
             server = server_addr,
             dur = r.duration_secs,
             cps = r.actual_cps,

@@ -757,8 +757,10 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .field input[type="text"],
 .field input[type="number"],
+.field input[type="password"],
 .field select {
   width: 100%;
+  min-width: 0;
   background: var(--bg0);
   border: 1px solid var(--border2);
   border-radius: var(--radius-sm);
@@ -788,7 +790,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   cursor: pointer;
 }
 
-.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
 
 /* Slider */
 .slider-row { display: flex; align-items: center; gap: 6px; }
@@ -807,8 +809,11 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .toggle-row {
   display: flex; align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 11px; color: var(--text1);
 }
+/* 參數標籤整個換到下一行，不在中間斷開 */
+.toggle-row .tag { white-space: nowrap; display: inline-block; }
 .toggle { position:relative; display:inline-block; width:30px; height:17px; cursor:pointer; }
 .toggle input { opacity:0; width:0; height:0; position:absolute; }
 .track { position:absolute; inset:0; background:var(--bg3); border:1px solid var(--border2); border-radius:9px; transition:all .2s; }

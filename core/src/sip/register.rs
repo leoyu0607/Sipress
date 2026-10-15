@@ -34,7 +34,7 @@ impl RegisterMessage {
              Max-Forwards: 70\r\n\
              Expires: {expires}\r\n\
              {auth_line}\
-             User-Agent: sipress/0.1\r\n\
+             User-Agent: {ua}\r\n\
              Allow: INVITE, INFO, PRACK, ACK, BYE, CANCEL, OPTIONS, NOTIFY, REGISTER, SUBSCRIBE, REFER, PUBLISH, UPDATE, MESSAGE\r\n\
              Allow-Events: talk,hold,conference,refer,check-sync\r\n\
              Content-Length: 0\r\n\
@@ -51,6 +51,7 @@ impl RegisterMessage {
             cseq      = cseq,
             expires   = expires,
             auth_line = auth_line,
+            ua        = super::USER_AGENT,
         )
     }
 }

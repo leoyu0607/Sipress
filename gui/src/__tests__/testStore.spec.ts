@@ -209,7 +209,9 @@ describe('測試執行流程', () => {
       pdd: baseReport.pdd_p50_ms,               // 結束後 PDD 改為 p50
       acd: baseReport.acd_secs,
       ccr: baseReport.ccr,
+      concurrency: 0,                           // 最後一筆快照的並發數（收尾前）不保留
     })
+    expect(baseSnap.calls_concurrent).toBeGreaterThan(0)
     expect(s.respCodes).toMatchObject({
       ...baseReport.fail_codes,
       '200': baseReport.calls_answered,

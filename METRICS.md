@@ -306,7 +306,7 @@ ACK 逾時預設 10 秒，BYE 逾時預設 150 秒；逾時後座席主動送 BY
 | 欄位 | 即時值來源 | 測試結束後 |
 |---|---|---|
 | CPS | 快照的 `cps`（引擎每秒計算） | 最終報告的實際 CPS |
-| CONCUR | `calls_active` | （保留最後的即時值） |
+| CONCUR | `calls_active` | 0（引擎結束時所有通話都已結束；最後一筆快照可能是收尾前取的，不沿用） |
 | SUCCESS | `calls_answered` | 同左（最終值） |
 | FAILED | `calls_failed + calls_timeout` | 同左（最終值） |
 | TOTAL | `calls_initiated` | 同左（最終值） |

@@ -676,6 +676,8 @@ export const useTestStore = defineStore('test', () => {
       if (!report) return true
       r.metrics = {
         ...r.metrics,
+        // 引擎結束時所有通話都已結束（最後一筆快照可能是收尾前取的）
+        concurrency: 0,
         cps:       report.actual_cps,
         succeeded: report.calls_answered,
         failed:    report.calls_failed + report.calls_timeout,
