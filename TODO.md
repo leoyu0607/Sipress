@@ -19,7 +19,7 @@
 | 前端測試 | `npm test`；Node 25+ 的內建 Web Storage 已在 `vitest.config.ts` 關掉（第 7 項）；CI 用 Node 22 |
 | Rust 測試 | 本機沒有 `cargo nextest` 時改用 `cargo test -p sipress-core -p sipress`；GUI 後端在 `gui/src-tauri` 下 `cargo test` |
 | Lint | `cargo clippy … -- -D warnings`（core/cli 與 gui 各跑一次），警告即失敗 |
-| `cargo fmt` | 目前沒有強制，既有檔案本來就不符合（見第 8 項），不要整檔重排 |
+| `cargo fmt` | CI 會檢查（`cargo fmt --all -- --check`），commit 前先跑 `cargo fmt --all` |
 | 契約 fixtures | 改了前端送出的設定或 Rust 的 snapshot/report 欄位時，依 TESTING.md 重新產生並一起 commit |
 | 發佈 | 改 7 個檔案的版本號（`Cargo.toml` ×3、`package.json`、`package-lock.json`、`tauri.conf.json`、`Cargo.lock`），commit `Release vX.Y.Z`，推 tag `vX.Y.Z` |
 
@@ -62,9 +62,9 @@
 
 Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `localStorage.clear()` 失敗。已在 `vitest.config.ts` 用 `test.execArgv` 對測試 worker 加 `--no-experimental-webstorage`（Node 22 與 26 都認得；不認得的舊版不加），Node 22 / 26 下 `npm test` 皆通過。
 
-### [ ] 8. 決定 `cargo fmt` 的政策
+### [x] 8. 決定 `cargo fmt` 的政策
 
-既有程式碼採對齊排版，不符合 rustfmt 預設。二選一：一次格式化全部並加進 CI；或加 `rustfmt.toml` / 文件說明不使用 rustfmt。
+採 rustfmt 預設設定：一次格式化整個 workspace（純格式化 commit 列在 `.git-blame-ignore-revs`），CI 的 Lint job 加上 `cargo fmt --all -- --check`。
 
 ### [ ] 9. 座席「通話中忙線」模擬
 

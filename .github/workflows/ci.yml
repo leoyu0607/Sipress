@@ -1,7 +1,7 @@
 name: CI
 
 # 關卡（ci-success 彙整，可設為 branch protection 的 required check）：
-#   lint      clippy（警告即失敗）+ workflow 語法檢查
+#   lint      rustfmt 格式檢查 + clippy（警告即失敗）+ workflow 語法檢查
 #   test      core / CLI 單元、流程、CLI 端到端測試（Linux / macOS / Windows）
 #   frontend  型別檢查 + vitest（store 邏輯、前端 ↔ Rust 契約 fixtures）+ 建置
 #   gui       Tauri 後端 clippy + 測試（含契約 fixtures 驗證）
@@ -47,7 +47,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.LINT_TOOLCHAIN }}
-          components: clippy
+          components: clippy, rustfmt
+
+      # 只檢查格式、不需編譯，涵蓋整個 workspace（含 gui/src-tauri）
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
 
       - uses: Swatinem/rust-cache@v2
 

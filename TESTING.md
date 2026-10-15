@@ -39,6 +39,9 @@ CI 不會改寫 fixtures，內容與程式不一致時直接失敗。
 # Rust：core + CLI（含流程與端到端測試）
 cargo test -p sipress-core -p sipress
 
+# 格式（CI 會檢查；commit 前先跑 cargo fmt --all）
+cargo fmt --all -- --check
+
 # 與 CI 相同的 lint（警告即失敗）
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -59,7 +62,7 @@ CI 使用 [cargo-nextest](https://nexte.st/) 執行 Rust 測試（設定在 `.co
 
 | Job | 必要 | 內容 |
 |---|---|---|
-| Lint | ✓ | clippy `-D warnings`（版本固定在 `LINT_TOOLCHAIN`）、actionlint 檢查 workflow 語法 |
+| Lint | ✓ | `cargo fmt --check`、clippy `-D warnings`（版本固定在 `LINT_TOOLCHAIN`）、actionlint 檢查 workflow 語法 |
 | Test | ✓ | Linux / macOS / Windows 跑 core + CLI 全部測試、doctest、範例編譯；上傳 JUnit 報告 |
 | Frontend | ✓ | vue-tsc 型別檢查、vitest（含契約）、vite 建置 |
 | GUI backend | ✓ | Tauri 後端 clippy + 測試（含契約驗證） |
