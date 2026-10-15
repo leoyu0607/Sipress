@@ -170,12 +170,12 @@ impl RtpSession {
                         frame.iter_mut().for_each(|b| *b = alaw_to_ulaw(*b));
                     }
 
-                    let pkt = RtpPacket::new(payload_type, seq, ts, ssrc, frame.clone());
-                    let bytes = pkt.encode();
+                    let frame_len = frame.len();
+                    let bytes = RtpPacket::new(payload_type, seq, ts, ssrc, frame).encode();
 
                     let target = remote.lock().unwrap().addr;
                     match socket.send_to(&bytes, target).await {
-                        Ok(_) => stats.on_send(frame.len()),
+                        Ok(_) => stats.on_send(frame_len),
                         // 暫時性錯誤（例如對端 port 尚未開啟）只略過這個 frame，不中止傳送
                         Err(e) => debug!("RTP 傳送失敗: {}", e),
                     }

@@ -174,10 +174,16 @@ impl AgentEngine {
         }
 
         // ── 為每個帳號 spawn 一個 runner ──
+        // 所有 runner 共用一份設定；不含帳號清單（每個 runner 各複製一份完整清單時，
+        // 記憶體與啟動時間會隨帳號數平方成長：5000 個帳號約 5 GB）
+        let shared_cfg = Arc::new(Config {
+            agent_accounts: Vec::new(),
+            ..cfg.clone()
+        });
         let mut handles = Vec::new();
         for acc in &cfg.agent_accounts {
             let acc = acc.clone();
-            let cfg = cfg.clone();
+            let cfg = Arc::clone(&shared_cfg);
             let live = Arc::clone(&live);
             let detail_r = Arc::clone(&detail);
             let log = Arc::clone(&sip_log);
@@ -391,7 +397,7 @@ struct PendingInvite {
 async fn account_runner(
     account: AgentAccount,
     server: SocketAddr,
-    cfg: Config,
+    cfg: Arc<Config>,
     live: Arc<LiveStats>,
     detail: Arc<DetailedStats>,
     log: Arc<SipLogger>,
@@ -413,11 +419,7 @@ async fn account_runner(
 
     let reg_from_tag = SipMessage::new_tag();
     let reg_call_id = SipMessage::new_call_id(&domain);
-    let reg_state = Arc::new(Mutex::new(RegState {
-        cseq: 0,
-        challenge: None,
-        auth_retries: 0,
-    }));
+    let reg_state = Arc::new(Mutex::new(RegState::new()));
 
     let initial_expires = 240u32;
     let mut current_expires = initial_expires;
@@ -472,6 +474,13 @@ async fn account_runner(
                 .min()
                 .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600))
         };
+
+        let reg_retx_at = reg_state
+            .lock()
+            .await
+            .retx_at()
+            .map(tokio::time::Instant::from_std)
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600));
 
         tokio::select! {
             res = sock.recv() => {
@@ -531,6 +540,21 @@ async fn account_runner(
                 );
                 log.log_message(Direction::Send, &req, &server.to_string());
                 let _ = sock.send(&req).await;
+                reg_state.lock().await.arm(&req, sock.is_reliable());
+            }
+
+            // REGISTER 沒有收到最終回應 → 重傳（UDP）
+            _ = time::sleep_until(reg_retx_at) => {
+                let due = reg_state.lock().await.due(Instant::now());
+                match due {
+                    Ok(Some(req)) => {
+                        log.log_event(&account.extension, "RETRANSMIT REGISTER");
+                        log.log_message(Direction::Send, &req, &server.to_string());
+                        let _ = sock.send(&req).await;
+                    }
+                    Ok(None) => {}
+                    Err(()) => log.log_event(&account.extension, "REGISTER 無回應，停止重傳（等下次刷新再試）"),
+                }
             }
 
             // 響鈴結束（接聽 / 拒接 / 不接逾時）；通話 timeout（ACK / BYE）或主動掛斷 → 座席主動 BYE
@@ -696,6 +720,71 @@ struct RegState {
     challenge: Option<DigestChallenge>,
     /// 自上次 200 OK 以來連續帶認證重送的次數
     auth_retries: u32,
+    /// UDP 時尚未收到最終回應的 REGISTER（重傳用）
+    retx: Option<RegRetx>,
+}
+
+/// REGISTER 重傳（RFC 3261 Timer E / F：T1 起每次加倍、上限 T2，64×T1 後放棄）
+struct RegRetx {
+    msg: String,
+    cseq: u32,
+    interval: Duration,
+    next_at: Instant,
+    give_up_at: Instant,
+}
+
+const REG_T1: Duration = Duration::from_millis(500);
+const REG_T2: Duration = Duration::from_secs(4);
+
+impl RegState {
+    fn new() -> Self {
+        Self {
+            cseq: 0,
+            challenge: None,
+            auth_retries: 0,
+            retx: None,
+        }
+    }
+
+    /// 送出 REGISTER 後呼叫：UDP 時排定重傳（TCP 由傳輸層保證送達）
+    fn arm(&mut self, msg: &str, reliable: bool) {
+        let now = Instant::now();
+        self.retx = (!reliable).then(|| RegRetx {
+            msg: msg.to_string(),
+            cseq: self.cseq,
+            interval: REG_T1,
+            next_at: now + REG_T1,
+            give_up_at: now + REG_T1 * 64,
+        });
+    }
+
+    /// 收到 REGISTER 的最終回應：停止該 CSeq 的重傳
+    fn on_final(&mut self, cseq: Option<u32>) {
+        if self.retx.as_ref().is_some_and(|r| Some(r.cseq) == cseq) {
+            self.retx = None;
+        }
+    }
+
+    fn retx_at(&self) -> Option<Instant> {
+        self.retx.as_ref().map(|r| r.next_at.min(r.give_up_at))
+    }
+
+    /// 重傳時間到：回傳要重送的訊息；超過放棄時間時回傳 Err（停止重傳）
+    fn due(&mut self, now: Instant) -> Result<Option<String>, ()> {
+        let Some(r) = self.retx.as_mut() else {
+            return Ok(None);
+        };
+        if now >= r.give_up_at {
+            self.retx = None;
+            return Err(());
+        }
+        if now < r.next_at {
+            return Ok(None);
+        }
+        r.interval = (r.interval * 2).min(REG_T2);
+        r.next_at = now + r.interval;
+        Ok(Some(r.msg.clone()))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -727,6 +816,7 @@ async fn send_register(
     );
     log.log_message(Direction::Send, &req, server_addr);
     sock.send(&req).await?;
+    state.arm(&req, sock.is_reliable());
     Ok(())
 }
 
@@ -771,6 +861,7 @@ async fn trigger_re_register(
     );
     log.log_message(Direction::Send, &req, server_addr);
     let _ = sock.send(&req).await;
+    reg_state.lock().await.arm(&req, sock.is_reliable());
     log.log_event(&account.extension, "通話結束 → re-REGISTER");
 }
 
@@ -798,6 +889,9 @@ async fn handle_response(
 
     if method.as_deref() != Some("REGISTER") {
         return;
+    }
+    if code >= 200 {
+        reg_state.lock().await.on_final(SipParser::cseq_number(raw));
     }
 
     match code {
@@ -1450,6 +1544,38 @@ fn short(call_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_retransmission_timer() {
+        let mut st = RegState::new();
+        st.cseq = 3;
+        st.arm("REGISTER x", true);
+        assert!(st.retx_at().is_none(), "TCP 不重傳");
+
+        st.arm("REGISTER x", false);
+        let t0 = Instant::now();
+        assert_eq!(st.due(t0), Ok(None), "還沒到 T1");
+        let mut t = t0 + REG_T1;
+        let mut gaps = Vec::new();
+        for _ in 0..5 {
+            assert_eq!(st.due(t), Ok(Some("REGISTER x".into())));
+            let next = st.retx_at().unwrap();
+            gaps.push(next.duration_since(t).as_millis());
+            t = next;
+        }
+        assert_eq!(gaps, vec![1000, 2000, 4000, 4000, 4000], "加倍、上限 T2");
+
+        // 舊 CSeq 的最終回應不停止重傳；同 CSeq 的才停止
+        st.on_final(Some(2));
+        assert!(st.retx_at().is_some());
+        st.on_final(Some(3));
+        assert!(st.retx_at().is_none());
+
+        // 64 × T1 後放棄
+        st.arm("REGISTER y", false);
+        assert_eq!(st.due(Instant::now() + REG_T1 * 64), Err(()));
+        assert!(st.retx_at().is_none());
+    }
     use std::sync::atomic::Ordering;
 
     fn registered(live: &LiveStats) -> u64 {

@@ -20,6 +20,7 @@
 - [CLI 參數完整說明](#cli-參數完整說明)
 - [輸出格式](#輸出格式)
 - [SIP Log](#sip-log)
+- [效能](#效能)
 - [建置說明](#建置說明)
 - [模組說明](#模組說明)
 
@@ -568,6 +569,10 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_caller.sip.log`（民眾端）或 `YYYYMMDD_HHMMSS_agent.sip.log`（座席端），記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
 
 ---
+
+## 效能
+
+本機 loopback 量測（4 vCPU）：沒有 RTP 時 5000 通並發只用約 16%（民眾端）/ 1%（座席端）的單核 CPU；RTP 每路每秒 50 個封包，5000 路約需 3 個核心，建議每核心約 1500–2000 路。方法、完整數據與 `load_bench` 用法見 [`docs/performance.md`](docs/performance.md)。
 
 ## 建置說明
 

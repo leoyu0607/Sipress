@@ -11,6 +11,11 @@ use tracing::debug;
 /// 單一 SIP 訊息的上限（UDP datagram 與 TCP 分框都適用）
 const MAX_MESSAGE: usize = 65536;
 
+thread_local! {
+    /// UDP 接收用的緩衝區（每個執行緒一份，所有 socket 共用）
+    static RECV_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(vec![0u8; MAX_MESSAGE]);
+}
+
 /// 連往 SIP 伺服器的 socket（UDP 或 TCP），多 task 共享
 ///
 /// TCP 時整個生命週期只用一條連線：送出的請求、伺服器的回應與伺服器主動送來的請求
@@ -132,11 +137,19 @@ impl SipSocket {
     /// 可在 `select!` / `timeout` 中使用：取消時 TCP 已讀入的位元組會保留到下一次呼叫。
     pub async fn recv(&self) -> Result<String> {
         match &self.inner {
-            Inner::Udp(s) => {
-                let mut buf = vec![0u8; MAX_MESSAGE];
-                let n = s.recv(&mut buf).await.context("UDP 接收失敗")?;
-                Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
-            }
+            // 等到有資料才取緩衝區讀出：等待中不佔記憶體（座席端每個帳號各一個 socket，
+            // 上千個帳號時每個都握著 64 KB 緩衝區會佔掉數百 MB）
+            Inner::Udp(s) => loop {
+                s.readable().await.context("UDP 接收失敗")?;
+                let n = RECV_BUF.with_borrow_mut(|buf| match s.try_recv(buf) {
+                    Ok(n) => Ok(Some(String::from_utf8_lossy(&buf[..n]).into_owned())),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                    Err(e) => Err(e),
+                });
+                if let Some(msg) = n.context("UDP 接收失敗")? {
+                    return Ok(msg);
+                }
+            },
             Inner::Tcp { reader, .. } => {
                 let mut r = reader.lock().await;
                 loop {

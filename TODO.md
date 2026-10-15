@@ -166,10 +166,12 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - GUI 匯出的 HTML 報告同樣有分段統計（使用預設 5 分鐘）；GUI 目前沒有調整時段長度的欄位。
 - 測試：`timeline` 單元測試（分段差值、PDD 只含本段樣本、跳過的取樣、收尾尾段併入、CSV）；`core/tests/live_metrics.rs` 實跑 4 秒 / 每段 1 秒，各段加總等於最終報告、503 失敗碼、時段連續、`--interval 0` 不分段。實跑 CLI（階梯 3→10 CPS、每段 2 秒）並以 Chromium 截圖確認 HTML 圖表。
 
-### [ ] 20. 大量並發的效能基準（效能）
+### [x] 20. 大量並發的效能基準（效能）
 
-座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器。上千並發時 CPU 負擔未知。
-要做：先加 1,000 / 5,000 並發的基準測試（本機 mock），量出瓶頸再優化，避免盲目重寫。
+原本座席端每個帳號各有一個 socket 與 task、民眾端每 10ms 掃描全部通話、每通 RTP 各自一個 20ms 計時器，上千並發時 CPU 負擔未知。
+已完成：`core/examples/load_bench.rs`（mock 在子行程，量引擎 CPU / RSS / 排程延遲 / RTP 實收；含只有計時器 + send_to 的對照組），結果與方法見 `docs/performance.md`。
+- SIP 信令不是瓶頸（5000 並發無 RTP：民眾端 16%、座席端 1% 單核）；RTP 每路一個 socket 的設計接近下限（引擎只比對照組多約 13–25%），5000 路約 3 核，暫不改架構。
+- 量測中找到並修正：座席 runner 各複製完整帳號清單（5000 帳號 RSS 4950 MB → 42 MB）、UDP 等待時各握 64 KB 緩衝區、座席 REGISTER 遺失不重傳（新增 Timer E 重傳，`core/tests/register_retransmit.rs` 與單元測試）。
 
 ### [ ] 21. 拆分 `agent_engine.rs`（維護）
 
