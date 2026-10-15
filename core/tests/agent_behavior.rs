@@ -184,6 +184,15 @@ async fn run(
     behavior: AgentBehavior,
     duration_secs: u64,
 ) -> (FinalReport, Vec<(Instant, String)>) {
+    run_with(script, behavior, duration_secs, false).await
+}
+
+async fn run_with(
+    script: Script,
+    behavior: AgentBehavior,
+    duration_secs: u64,
+    reregister_after_call: bool,
+) -> (FinalReport, Vec<(Instant, String)>) {
     let (server, log) = spawn_server(script).await;
     let logs = std::env::temp_dir().join(format!("sipress-agentbhv-test-{}", std::process::id()));
     let cfg = Config {
@@ -198,6 +207,7 @@ async fn run(
             domain: String::new(),
         }],
         agent_behavior: behavior,
+        agent_reregister_after_call: reregister_after_call,
         ..Default::default()
     };
     let report = tokio::time::timeout(Duration::from_secs(20), AgentEngine::new(cfg).run(None))
@@ -386,4 +396,58 @@ async fn busy_in_call_also_rejects_while_ringing() {
         .collect();
     assert_eq!(codes2, vec![486], "第一通響鈴中，新來電應忙線");
     assert_eq!((report.calls_answered, report.calls_failed), (1, 1));
+}
+
+/// 座席送出的 REGISTER（不含結束時的 Expires: 0 解除註冊）
+fn registrations(msgs: &[(Instant, String)]) -> usize {
+    msgs.iter()
+        .filter(|(_, m)| m.starts_with("REGISTER") && !m.to_lowercase().contains("expires: 0"))
+        .count()
+}
+
+#[tokio::test]
+async fn call_end_does_not_reregister_by_default() {
+    // 對方 BYE 結束（handle_request 路徑）
+    let (report, msgs) = run(Script::SecondCallWhileTalking, AgentBehavior::default(), 3).await;
+    assert_eq!(report.calls_completed, 1);
+    assert_eq!(
+        registrations(&msgs),
+        1,
+        "只有開始時的 REGISTER，通話結束不應重新註冊"
+    );
+
+    // 座席主動掛斷（逾時 / 掛斷路徑）
+    let behavior = AgentBehavior {
+        talk_min_secs: 0.5,
+        talk_max_secs: 0.5,
+        ..Default::default()
+    };
+    let (report, msgs) = run(Script::AnswerHangupThenSecondCall, behavior, 3).await;
+    assert!(report.calls_completed >= 1);
+    assert_eq!(registrations(&msgs), 1);
+}
+
+#[tokio::test]
+async fn reregister_after_call_is_opt_in() {
+    let (report, msgs) = run_with(
+        Script::SecondCallWhileTalking,
+        AgentBehavior::default(),
+        3,
+        true,
+    )
+    .await;
+    assert_eq!(report.calls_completed, 1);
+    assert_eq!(
+        registrations(&msgs),
+        2,
+        "開啟選項時，通話結束後重新註冊一次"
+    );
+
+    let behavior = AgentBehavior {
+        talk_min_secs: 0.5,
+        talk_max_secs: 0.5,
+        ..Default::default()
+    };
+    let (report, msgs) = run_with(Script::AnswerHangupThenSecondCall, behavior, 3, true).await;
+    assert_eq!(registrations(&msgs) as u64, 1 + report.calls_completed);
 }

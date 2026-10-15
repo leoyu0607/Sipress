@@ -416,6 +416,13 @@ function statusTitle(s: string) {
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
+        <div class="toggle-row field">
+          <span title="每通結束後立即重新 REGISTER。預設只在註冊到期前刷新；只有交換機要求通話後重新註冊才會繼續派話時才需要開啟，高話務下會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag">--reregister-after-call</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.agent.reregisterAfterCall">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+        </div>
 
         <!-- Upload -->
         <div

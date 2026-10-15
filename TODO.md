@@ -106,10 +106,10 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - GUI 選檔視窗改為實際支援的副檔名；兩端引擎與 GUI 的 `start_test` 在開始前先載入音檔，失敗就回報原因。
 - 測試：`core/tests/codec_negotiation.rs`（PCMU offer / answer、保留偏好、488、音檔不支援），`sip::sdp` 與 `alaw_to_ulaw` 的單元測試。
 
-### [ ] 12. 座席每通結束都重新註冊（正確性）
+### [x] 12. 座席每通結束都重新註冊（正確性）
 
-每通掛斷後立即送一次 REGISTER（`trigger_re_register`）。高話務時會對 SIPX 多送大量 REGISTER，壓測工具本身干擾了測試結果。
-要做：只在接近 Expires 時刷新；若實際環境確實需要通話後重新註冊，改成選項（預設關閉）。
+原本每通掛斷後立即送一次 REGISTER（`trigger_re_register`），原 commit 沒有說明原因；高話務時會對 SIPX 多送大量 REGISTER，干擾測試結果。
+已修正：預設只在 Expires 到期前刷新；保留原行為為選項 `Config.agent_reregister_after_call`（CLI `--reregister-after-call`、GUI 座席區塊「通話後重新註冊」，預設關閉），供交換機確實要求通話後重新註冊的環境使用。測試：`core/tests/agent_behavior.rs` 的 `call_end_does_not_reregister_by_default` / `reregister_after_call_is_opt_in`（對方 BYE 與座席主動掛斷兩條路徑）。
 
 ### [ ] 13. 民眾端 INVITE 不支援 401 / 407 認證（正確性，視環境）
 

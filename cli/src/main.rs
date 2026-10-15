@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
         agent_accounts,
         agent_ack_timeout_secs: args.ack_timeout,
         agent_bye_timeout_secs: args.bye_timeout,
+        agent_reregister_after_call: args.reregister_after_call,
         agent_behavior: AgentBehavior {
             ring_min_secs: args.ring.0,
             ring_max_secs: args.ring.1,

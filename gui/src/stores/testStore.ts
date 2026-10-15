@@ -72,6 +72,7 @@ export interface AgentProfile {
   ackTimeout: number
   byeTimeout: number
   behavior:   AgentBehaviorConfig
+  reregisterAfterCall: boolean   // 每通結束後立即重新 REGISTER（預設只在到期前刷新）
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
@@ -302,6 +303,7 @@ function defaultConfig(): TestConfig {
       ackTimeout: 10,
       byeTimeout: 150,
       behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
+      reregisterAfterCall: false,
       duration: 0,
     },
   }
@@ -469,6 +471,7 @@ export const useTestStore = defineStore('test', () => {
       if (b.talkMax > 0)     parts.push(`--talk ${range(b.talkMin, b.talkMax)}`)
       if (b.wrapUp > 0)      parts.push(`--wrap-up ${b.wrapUp}`)
       if (b.busyInCall)      parts.push('--busy-in-call')
+      if (a.reregisterAfterCall) parts.push('--reregister-after-call')
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
@@ -556,6 +559,7 @@ export const useTestStore = defineStore('test', () => {
           }))
         : [],
       agent_ack_timeout_secs: c.agent.ackTimeout,
+      agent_reregister_after_call: c.agent.reregisterAfterCall,
       agent_bye_timeout_secs: c.agent.byeTimeout,
       agent_behavior: {
         ring_min_secs: c.agent.behavior.ringMin,

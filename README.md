@@ -215,8 +215,8 @@ UAC (sipress)              UAS (軟交換機)
        │       4. 啟動真實 RTP 收發（若 enable_rtp）
        │       5. 處理 RE-INVITE（更新 RTP 目標）/ BYE / CANCEL / OPTIONS
        │       6. BYE timeout（150s → 主動 BYE）
-       │       7. 通話結束後自動 re-REGISTER 維持在線
-       │       8. 在 Expires/2 計時器到期時 re-REGISTER
+       │       7. 在 Expires/2 計時器到期時 re-REGISTER（最少每 60 秒）
+       │       8. （選項 --reregister-after-call）通話結束後立即 re-REGISTER
        │
        └── 測試時間到 → 通知所有 task 發 REGISTER Expires=0 → 結束
 ```
@@ -261,8 +261,8 @@ extension,username,password,domain
 | `INVITE` 新通話 | `100 Trying` → `180 Ringing` →（響鈴延遲）→ `200 OK` + SDP（PCMA）；啟動真實 RTP（若 enable_rtp）。依行為模擬也可能回 `486`（拒接 / 休息中）或一直響鈴不接 |
 | `INVITE` （已建立 dialog） | RE-INVITE 視為保活，回 `200 OK` + SDP；更新 RTP 目標地址 |
 | `ACK` | 標記通話已建立（10s 未收到 → 座席主動 BYE） |
-| `BYE` | `200 OK`，停止 RTP，計入 calls_completed，**自動 re-REGISTER 維持在線** |
-| （BYE timeout） | 通話 150s 未收到 BYE → 座席主動送 BYE 掛斷，re-REGISTER |
+| `BYE` | `200 OK`，停止 RTP，計入 calls_completed |
+| （BYE timeout） | 通話 150s 未收到 BYE → 座席主動送 BYE 掛斷 |
 | `CANCEL` | 響鈴中：`200 OK`（CANCEL）+ `487 Request Terminated`（INVITE）；已接聽：`200 OK` 且不影響通話（等 BYE） |
 | （主動掛斷） | 設定 `--talk` 時，接聽後隨機秒數由座席送 BYE |
 | `OPTIONS` | `200 OK`（健康檢查） |
@@ -273,7 +273,7 @@ extension,username,password,domain
 - 當 `enable_rtp = true` 時，接聽來電時分配真實 RTP port、啟動 G.711A 音訊傳送與品質統計
 - 進度 task 每秒聚合所有活躍 session 的 MOS / 掉包率 / Jitter，前端即時顯示
 - RE-INVITE 時自動更新 RTP 目標地址
-- 通話結束後自動 re-REGISTER 維持在線，確保交換機持續分配來電
+- 註冊只在 Expires 到期前刷新；交換機要求通話後重新註冊才會繼續派話時，開啟 `--reregister-after-call`（GUI「通話後重新註冊」）
 
 ### 注意事項
 
@@ -306,7 +306,7 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
      │◀─── BYE ─────────────────────────────────────────│  對方掛斷（或 150s timeout → 主動 BYE）
      │──── 200 OK ─────────────────────────────────────▶│  停止 RTP
      │                                                  │
-     │──── REGISTER (re-register) ─────────────────────▶│  通話結束後自動 re-REGISTER 維持在線
+     │──── REGISTER (re-register) ─────────────────────▶│  Expires/2 到期時刷新（開啟選項時通話後也會送）
      │◀─── 200 OK ──────────────────────────────────────│
      │                                                  │
      │           （測試結束）                           │
@@ -478,6 +478,7 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--no-answer-pct` | `0` | 不接比例 %（一直響鈴，等 SIPX 逾時 CANCEL 改派；120 秒未取消回 480） |
 | `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
 | `--busy-in-call` | 關閉 | 通話中忙線：已有通話（含響鈴中）時新來電回 486，讓 ACD 改派；關閉時同一帳號可同時接多通 |
+| `--reregister-after-call` | 關閉 | 每通結束後立即重新 REGISTER；預設只在 Expires 到期前刷新，高話務下開啟會對交換機多送大量 REGISTER |
 
 ### 端到端對照
 
@@ -729,8 +730,8 @@ RTP 品質統計，所有計算均符合 RFC 3550 標準：
 4. **等待 ACK**：10s 未收到 ACK → 座席主動 BYE
 5. **真實 RTP**：啟動 `RtpSession` 收發 G.711A 音訊（若 `enable_rtp`），收集 MOS / 掉包 / Jitter
 6. **保活**：收到 RE-INVITE（Session-Expires）→ 200 OK + SDP + 更新 RTP 目標地址
-7. **掛斷**：收到 BYE → 200 OK → 停止 RTP → **自動 re-REGISTER**；150s timeout → 主動 BYE → re-REGISTER
-8. **通話後 re-REGISTER**：每次通話結束（無論伺服器 BYE 或座席 timeout BYE）都自動 re-REGISTER 維持在線，確保交換機持續分配來電
+7. **掛斷**：收到 BYE → 200 OK → 停止 RTP；150s timeout → 主動 BYE
+8. **通話後 re-REGISTER（選項）**：`agent_reregister_after_call` 開啟時，每次通話結束（伺服器 BYE、座席主動掛斷或逾時）都立即 re-REGISTER；預設關閉，只靠第 2 點的定期刷新
 9. **CANCEL / OPTIONS**：自動處理（487 / 200 OK）
 10. **結束**：收到外部停止訊號 → REGISTER Expires=0 → exit
 11. **完成通知**：主迴圈結束後設定 `engine_finished` → `StatsSnapshot.finished = true`，前端自動停止

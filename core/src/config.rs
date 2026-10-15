@@ -376,6 +376,11 @@ pub struct Config {
     /// Agent 模式：座席行為模擬（響鈴延遲、拒接 / 不接、主動掛斷、休息時間）
     #[serde(default)]
     pub agent_behavior: AgentBehavior,
+
+    /// Agent 模式：每通結束後立即重新 REGISTER（預設關閉，只在接近 Expires 時刷新）。
+    /// 只有交換機要求通話後重新註冊才會繼續派話時才需要開啟；高話務下會對交換機多送大量 REGISTER
+    #[serde(default)]
+    pub agent_reregister_after_call: bool,
 }
 
 fn default_ack_timeout() -> u64 {
@@ -415,6 +420,7 @@ impl Default for Config {
             agent_ack_timeout_secs: default_ack_timeout(),
             agent_bye_timeout_secs: default_bye_timeout(),
             agent_behavior: AgentBehavior::default(),
+            agent_reregister_after_call: false,
         }
     }
 }

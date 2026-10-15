@@ -98,6 +98,11 @@ pub struct Args {
     #[arg(long = "talk", value_parser = parse_secs_range, default_value = "0")]
     pub talk: (f64, f64),
 
+    /// 座席端：每通結束後立即重新 REGISTER（預設只在 Expires 到期前刷新）。
+    /// 只有交換機要求通話後重新註冊才會繼續派話時才需要
+    #[arg(long = "reregister-after-call")]
+    pub reregister_after_call: bool,
+
     /// 座席端：通話中忙線——已有通話（含響鈴中）時新來電回 486，讓 ACD 改派
     #[arg(long = "busy-in-call")]
     pub busy_in_call: bool,

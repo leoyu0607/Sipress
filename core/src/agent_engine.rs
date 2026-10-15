@@ -7,7 +7,7 @@
 ///   4. 等待 ACK（10s timeout → 主動 BYE）
 ///   5. 啟動真實 RTP 收發（若 enable_rtp）
 ///   6. 等待 BYE（150s timeout → 主動 BYE）
-///   7. 通話結束後自動 re-REGISTER 維持在線
+///   7. （選項）通話結束後立即 re-REGISTER；預設只在 Expires 到期前刷新
 ///   8. 結束時送 REGISTER Expires=0 解除註冊
 ///
 /// 設計原則：簡單、可觀察。用單一 socket 收發，避免多 socket 同步問題。
@@ -469,19 +469,21 @@ async fn account_runner(
                         Arc::clone(&reg_state), &mut registered,
                     ).await;
                 } else {
-                    let needs_reregister = handle_request(
+                    let call_ended = handle_request(
                         &raw, &sock, &log, &local_addr, &local_ip,
                         &account, &cfg, &live, &detail, Arc::clone(&dialogs),
                         &port_counter, &rtp_registry, &mut pending, wrap_until, &traces,
                     ).await;
-                    if needs_reregister {
+                    if call_ended {
                         wrap_until = Some(Instant::now() + wrap_up);
-                        trigger_re_register(
-                            &sock, &log, &server_addr_str, &local_addr,
-                            &account, &reg_from_tag, &reg_call_id, transport_str,
-                            current_expires, Arc::clone(&reg_state),
-                        ).await;
-                        last_register_at = Instant::now();
+                        if cfg.agent_reregister_after_call {
+                            trigger_re_register(
+                                &sock, &log, &server_addr_str, &local_addr,
+                                &account, &reg_from_tag, &reg_call_id, transport_str,
+                                current_expires, Arc::clone(&reg_state),
+                            ).await;
+                            last_register_at = Instant::now();
+                        }
                     }
                 }
             }
@@ -569,13 +571,14 @@ async fn account_runner(
                         live.on_completed();
                         traces.update(&trace_key(&account.extension, &call_id), |t| t.ended_at_ms = Some(now_ms()));
                         wrap_until = Some(Instant::now() + wrap_up);
-                        // 通話結束後 re-REGISTER 維持在線
-                        trigger_re_register(
-                            &sock, &log, &server_addr_str, &local_addr,
-                            &account, &reg_from_tag, &reg_call_id, transport_str,
-                            current_expires, Arc::clone(&reg_state),
-                        ).await;
-                        last_register_at = Instant::now();
+                        if cfg.agent_reregister_after_call {
+                            trigger_re_register(
+                                &sock, &log, &server_addr_str, &local_addr,
+                                &account, &reg_from_tag, &reg_call_id, transport_str,
+                                current_expires, Arc::clone(&reg_state),
+                            ).await;
+                            last_register_at = Instant::now();
+                        }
                     }
                 }
             }
@@ -707,7 +710,7 @@ async fn send_register(
     Ok(())
 }
 
-/// 通話結束後立即 re-REGISTER 維持在線
+/// 通話結束後立即 re-REGISTER（`agent_reregister_after_call` 開啟時）
 #[allow(clippy::too_many_arguments)]
 async fn trigger_re_register(
     sock: &UdpSocket,
@@ -748,7 +751,7 @@ async fn trigger_re_register(
     );
     log.log_message(Direction::Send, &req, server_addr);
     let _ = sock.send(req.as_bytes()).await;
-    log.log_event(&account.extension, "通話結束 → re-REGISTER 維持在線");
+    log.log_event(&account.extension, "通話結束 → re-REGISTER");
 }
 
 // ─── 收到 SIP 回應的處理 ──────────────────────────────────────────
@@ -844,7 +847,7 @@ async fn handle_response(
     }
 }
 
-// ─── 收到 SIP 請求的處理（INVITE / BYE / ACK / RE-INVITE）──────────
+// ─── 收到 SIP 請求的處理（INVITE / BYE / ACK / RE-INVITE）；回傳是否有通話結束 ──────────
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
@@ -1092,7 +1095,7 @@ async fn handle_request(
                 });
                 log.log_event(
                     &account.extension,
-                    &format!("[{}] 通話結束 → re-REGISTER", short(&call_id)),
+                    &format!("[{}] 通話結束", short(&call_id)),
                 );
                 return true;
             }
