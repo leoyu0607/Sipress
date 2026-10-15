@@ -36,7 +36,7 @@ impl SipMessage {
              Contact: <sip:{from}@{local};transport={transport_lower}>\r\n\
              Content-Type: application/sdp\r\n\
              Content-Length: {sdp_len}\r\n\
-             User-Agent: sipress/0.1\r\n\
+             User-Agent: {ua}\r\n\
              Allow: INVITE,ACK,BYE,CANCEL,OPTIONS\r\n\
              \r\n\
              {sdp}",
@@ -53,6 +53,7 @@ impl SipMessage {
             cseq = cseq,
             sdp_len = sdp_len,
             sdp = sdp,
+            ua = super::USER_AGENT,
         )
     }
 
@@ -492,6 +493,39 @@ mod tests {
             "SDP 不可把 IPv6 截斷成 \"2001\"：\n{}",
             msg
         );
+    }
+
+    #[test]
+    fn user_agent_carries_package_version() {
+        let ua = format!("User-Agent: sipress/{}\r\n", env!("CARGO_PKG_VERSION"));
+        let invite = SipMessage::invite(
+            "c@x",
+            "1000",
+            "10.0.0.2",
+            "2001",
+            "10.0.0.1:5060",
+            "10.0.0.2:5070",
+            1,
+            "b",
+            "t",
+            "UDP",
+            16000,
+            8,
+        );
+        assert!(invite.contains(&ua), "{}", invite);
+        let reg = crate::sip::register::RegisterMessage::build(
+            "1001",
+            "10.0.0.1:5060",
+            "10.0.0.2:5070",
+            1,
+            "b",
+            "t",
+            "c",
+            "UDP",
+            60,
+            None,
+        );
+        assert!(reg.contains(&ua), "{}", reg);
     }
 
     #[test]
