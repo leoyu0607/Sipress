@@ -173,9 +173,15 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - SIP 信令不是瓶頸（5000 並發無 RTP：民眾端 16%、座席端 1% 單核）；RTP 每路一個 socket 的設計接近下限（引擎只比對照組多約 13–25%），5000 路約 3 核，暫不改架構。
 - 量測中找到並修正：座席 runner 各複製完整帳號清單（5000 帳號 RSS 4950 MB → 42 MB）、UDP 等待時各握 64 KB 緩衝區、座席 REGISTER 遺失不重傳（新增 Timer E 重傳，`core/tests/register_retransmit.rs` 與單元測試）。
 
-### [ ] 21. 拆分 `agent_engine.rs`（維護）
+### [x] 21. 拆分 `agent_engine.rs`（維護）
 
-約 1,500 行；`handle_request` 有 15 個參數，建構 REGISTER 的程式碼重複 4 處。整理成每個帳號一個狀態結構（socket、註冊狀態、dialog、響鈴中來電、追蹤紀錄），方法各自處理一種事件。
+原本約 1,700 行；`handle_request` 有 15 個參數，建構 REGISTER 的程式碼重複 4 處。
+已完成：改為 `core/src/agent_engine/` 目錄——
+- `mod.rs`：`AgentEngine`（對外介面不變）與所有帳號共用的資源 `Shared`（設定、統計、log、RTP port 與登記表、追蹤紀錄）。
+- `runner.rs`：每個帳號一個 `AccountRunner`（socket、註冊、通話、響鈴中來電、wrap-up），主迴圈的每種事件一個方法（`on_response` / `on_request` / `on_new_invite` / `on_reinvite` / `on_cancel` / `on_call_timers` / `refresh_registration` / `retransmit_register` / `shutdown`）。狀態只由自己的 task 存取，拿掉原本的 `Arc<Mutex<…>>`。
+- `register.rs`：`Registration`（CSeq、challenge、重傳、已註冊計數）；所有 REGISTER 改由單一的 `send_register(expires)` 送出。
+- `call.rs`：`DialogCtx`、`PendingInvite`、響鈴結果、SIP 訊息組裝。
+- 行為不變：既有的座席整合測試（註冊、行為模擬、codec、TCP、IPv6、重傳、端到端對照、CLI e2e）全部通過；`load_bench agent 5000` 結果與拆分前相同（CPU 1%、40 MB）。唯一可見差異是 SIP log 中回應訊息的對端標示由 `server` 改為實際的 server 位址。
 
 ### [ ] 22. 清理專案（整理）
 

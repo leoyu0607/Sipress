@@ -20,7 +20,7 @@
 14. [core — SIP 日誌 sip_logger.rs](#14-core--sip-日誌-sip_loggerrs)
 15. [core — REGISTER / Digest auth sip/register.rs](#15-core--register--digest-auth-sipregisterrs)
 16. [core — 一次性註冊器 registrar.rs](#16-core--一次性註冊器-registrarrs)
-17. [core — 座席引擎 agent_engine.rs](#17-core--座席引擎-agent_enginers)
+17. [core — 座席引擎 agent_engine/](#17-core--座席引擎-agent_engine)
 18. [cli — 命令列介面](#18-cli--命令列介面)
 19. [gui — Tauri 後端 commands.rs & lib.rs](#19-gui--tauri-後端-commandsrs--librs)
 20. [gui — 前端狀態管理 testStore.ts](#20-gui--前端狀態管理-teststorets)
@@ -1119,7 +1119,9 @@ async fn recv_with_timeout(sock, dur) -> Result<String> {
 
 ---
 
-## 17. core — 座席引擎 agent_engine.rs
+## 17. core — 座席引擎 agent_engine/
+
+程式分成四個檔案：`mod.rs`（AgentEngine）、`runner.rs`（單一帳號的 `AccountRunner`）、`register.rs`（註冊狀態與重傳）、`call.rs`（通話狀態與 SIP 訊息組裝）。
 
 座席模式的核心，每個 `AgentAccount` 一個獨立 tokio task + 自帶 UDP socket。
 
@@ -1131,16 +1133,17 @@ AgentEngine::run()
    ├── 建立共享 rtp_port_counter + rtp_sessions 列表
    ├── 啟動進度回報 task（聚合即時 RTP 品質）
    │
-   ├── 為每個 account spawn task：account_runner()
+   ├── 為每個 account spawn task：AccountRunner::connect() → run()
    │         │
-   │         ├── 開 UdpSocket + connect(server)
+   │         ├── 開 socket（UDP 或 TCP）連往 server
    │         ├── 第一次 REGISTER（無認證）
    │         │
-   │         └── tokio::select! 主迴圈：
-   │               ├── sock.recv() ─→ handle_response() / handle_request()
-   │               ├── re-register 計時器 ─→ 沿用快取 challenge 重送 REGISTER
-   │               ├── 通話 timeout ─→ ACK(10s)/BYE(150s) 未收到 → 主動 BYE
-   │               └── stop.changed() ─→ REGISTER Expires=0 → break
+   │         └── tokio::select! 主迴圈（每個事件一個方法）：
+   │               ├── sock.recv() ─→ on_message() → on_response() / on_request()
+   │               ├── 刷新計時器 ─→ refresh_registration()（沿用快取 challenge）
+   │               ├── 重傳計時器 ─→ retransmit_register()（UDP 遺失時）
+   │               ├── 響鈴 / 通話計時器 ─→ on_call_timers()（接聽 / 拒接 / 逾時或主動掛斷 → BYE）
+   │               └── stop.changed() ─→ shutdown()：REGISTER Expires=0 → break
    │
    ├── time::sleep(duration) 或 stop.changed()
    ├── stop_tx.send(true)     // 通知所有 runner 解除註冊
@@ -1148,31 +1151,35 @@ AgentEngine::run()
    └── 全部 abort + 收集 RTP 統計 + 產生 FinalReport
 ```
 
-### RegState（per-account）
+### Registration（per-account，`register.rs`）
 
 ```rust
-struct RegState {
-    cseq: u32,                          // REGISTER CSeq 累加
-    challenge: Option<DigestChallenge>, // 401 後快取，re-REGISTER 直接用不需再被 challenge
+struct Registration {
+    from_tag, call_id: String,          // 整個測試期間同一個註冊 dialog
+    cseq: u32,                          // 每次 REGISTER +1
+    challenge: Option<DigestChallenge>, // 401 後快取，之後的 REGISTER 都帶它的認證
+    expires: u32, last_register_at: Instant,
+    retx: Option<RegRetx>,              // UDP 未收到最終回應時的重傳（Timer E）
+    gauge: RegisteredGauge,             // 已註冊計數（drop 時自動取消）
 }
 ```
 
-`Arc<Mutex<RegState>>` 在主迴圈與計時 branch 共享。每次 REGISTER 都 `cseq += 1`。
+所有 REGISTER（第一次、刷新、認證重送、通話後重新註冊、解除註冊）都經過 `AccountRunner::send_register(expires)` 送出。
 
-### handle_response：只關心 REGISTER 回應
+### on_response：只關心 REGISTER 回應
 
 ```rust
 match cseq_method {
     Some("REGISTER") => match code {
-        200 => { registered = true; last_register_at = now; current_expires = parse_expires(...); }
-        401 | 407 => { 解析 challenge 並重送 REGISTER }
-        _ => { registered = false; log }
+        200 => { gauge.on_ok(); last_register_at = now; expires = parse_expires(...); }
+        401 | 407 => { 快取 challenge 並重送 REGISTER（最多 2 次） }
+        _ => { 3xx–6xx → 未註冊; log }
     }
-    _ => return,  // BYE/INVITE 的回應在 caller 模式才需要，這裡是 UAS 不會主動發那些 dialog
+    _ => return,  // 座席是 UAS，不會主動發 INVITE / BYE dialog
 }
 ```
 
-### handle_request：所有伺服器主動的請求
+### on_request：所有伺服器主動的請求
 
 | 方法 | 處理 |
 |------|------|
@@ -1718,7 +1725,7 @@ sipress 也支援 TCP（`--transport tcp`）：每個民眾端 / 座席帳號只
 從 v0.2 起，**座席模式**完整實作 RFC 2617 Digest 認證（含 qop=auth 與 RFC 2069 fallback），因為座席必須帶帳密註冊到交換機。實作位於：
 - `core/src/sip/register.rs` — challenge 解析 + response 計算
 - `core/src/registrar.rs` — 一次性 REGISTER（GUI 新增帳號用）
-- `core/src/agent_engine.rs` — 持續性 REGISTER（壓測時每帳號一個 task）
+- `core/src/agent_engine/` — 持續性 REGISTER（壓測時每帳號一個 task）
 
 **民眾模式（Caller）依然不帶 INVITE 認證**。原因：壓測場景下，測試 SIP 伺服器端通常會將測試來源 IP 加入白名單；INVITE 帶 Digest 會大幅增加每通通話的訊息往返（每通要多 2 條訊息），影響最高 CPS。需要時可在 engine.rs 加入「收到 401/407 自動重送 INVITE 帶 Authorization」的邏輯，沿用 `register.rs` 中的 `DigestChallenge`。
 
