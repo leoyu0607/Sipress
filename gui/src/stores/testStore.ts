@@ -36,6 +36,8 @@ export interface CpsPatternConfig {
 
 export interface CallerProfile {
   accessNumber:  string
+  /** 每通使用不同主叫號碼（從 accessNumber 遞增），端到端對照拿不到 P-CIN-CallId 時靠它配對 */
+  numberSeq:     boolean
   calleeFixed:   string   // '' = 用 prefix+range 隨機產生
   calleePrefix:  string
   calleeRange:   number
@@ -268,6 +270,7 @@ function defaultConfig(): TestConfig {
     mode: 'caller',
     caller: {
       accessNumber: '0938530031',
+      numberSeq:    false,
       calleeFixed:  '',
       calleePrefix: '2',
       calleeRange:  9999,
@@ -466,6 +469,7 @@ export const useTestStore = defineStore('test', () => {
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
+      if (p.numberSeq) parts.push('--from-seq')
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
       parts.push(`-c ${p.concurrency}`, `--cps ${p.cps}`, `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
@@ -521,6 +525,7 @@ export const useTestStore = defineStore('test', () => {
       local_addr:           mode === 'caller' && c.localPort ? `0.0.0.0:${c.localPort}` : null,
       local_domain:         null,
       caller_number:        c.caller.accessNumber,
+      caller_number_seq:    c.caller.numberSeq,
       callee_prefix:        c.caller.calleePrefix || '2',
       callee_range:         c.caller.calleeRange  || 9999,
       callee_fixed:         c.caller.calleeFixed ? c.caller.calleeFixed : null,
@@ -1028,6 +1033,18 @@ export const useTestStore = defineStore('test', () => {
     })
   }
 
+  /** 端到端對照：民眾端完成、座席端執行過（可仍在執行）時可匯出 */
+  const canExportE2e = computed(() =>
+    sessions.value.caller.status === 'done' && sessions.value.agent.status !== 'idle')
+
+  function exportE2eHtml() {
+    return exportWith('端到端對照報告', async () => {
+      const ts   = fileTs()
+      const html = await invoke<string>('get_correlation_html', { serverAddr: config.value.server, timestamp: ts })
+      return saveTextFile(`sipress_e2e_${ts}.html`, 'html', 'HTML', html)
+    })
+  }
+
   function exportHtml() {
     return exportWith('HTML 報告', async () => {
       const ts   = fileTs()
@@ -1048,6 +1065,6 @@ export const useTestStore = defineStore('test', () => {
     importAccountText, parseAccountText,
     registerAccount, registerAll,
     startTest, stopTest, startBoth, stopAll,
-    exportJson, exportCsv, exportHtml, exportAccountsCsv,
+    exportJson, exportCsv, exportHtml, exportAccountsCsv, exportE2eHtml, canExportE2e,
   }
 })

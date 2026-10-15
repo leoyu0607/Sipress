@@ -3,6 +3,7 @@
   "local_addr": "0.0.0.0:5070",
   "local_domain": null,
   "caller_number": "0938530031",
+  "caller_number_seq": false,
   "callee_prefix": "2",
   "callee_range": 9999,
   "callee_fixed": null,

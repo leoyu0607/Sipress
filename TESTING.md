@@ -5,7 +5,7 @@
 | 層級 | 位置 | 內容 |
 |---|---|---|
 | Rust 單元測試 | `core/src/**`（`#[cfg(test)]`） | SIP 解析 / 組裝、Dialog 狀態機、RTP 統計（掉包、Jitter、MOS、聚合）、CPS 模式、設定驗證、指標計算 |
-| 引擎流程測試 | `core/tests/*.rs` | loopback mock SIP server：INVITE / 重傳 / CANCEL / BYE / 認證 / 座席註冊與接聽、RTP latching 與 port 釋放 |
+| 引擎流程測試 | `core/tests/*.rs` | loopback mock SIP server：INVITE / 重傳 / CANCEL / BYE / 認證 / 座席註冊與接聽、座席行為模擬、端到端對照（mock SIPX 當 B2BUA 轉送給座席，驗證 `P-CIN-CallId` 與主叫號碼配對）、RTP latching 與 port 釋放 |
 | CLI 端到端測試 | `cli/tests/cli_e2e.rs` | 執行編譯好的 `sipress` 執行檔對 mock UAS 壓測，驗證參數解析 → 引擎 → JSON / CSV / HTML 報告 |
 | 前端單元測試 | `gui/src/__tests__/testStore.spec.ts` | store 的驗證、輪詢 snapshot → 指標 / 圖表、最終報告、停止流程、帳號匯入 / 生成、設定保存、匯出 |
 | 前端 ↔ Rust 契約 | `gui/contract/` | 前端與後端交換的 JSON 格式，雙向驗證（見下節） |

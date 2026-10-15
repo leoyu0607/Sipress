@@ -1,1 +1,1 @@
-./sipress -s 192.168.166.60:5066 --from 0938530031 --to 0912345678 -c 100 --cps 10 -d 120 --call-duration 0 --max-calls 500 --transport tcp --rtp --rtp-port 16000 --audio "C:/audio/prompt 1.wav" --format json --verbose
+./sipress -s 192.168.166.60:5066 --from 0938530031 --from-seq --to 0912345678 -c 100 --cps 10 -d 120 --call-duration 0 --max-calls 500 --transport tcp --rtp --rtp-port 16000 --audio "C:/audio/prompt 1.wav" --format json --verbose

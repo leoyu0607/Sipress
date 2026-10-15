@@ -36,7 +36,7 @@
 快照新增 `agents_registered` / `agents_total`（每帳號由 `RegisteredGauge` 追蹤，drop 時自動取消）。座席端檢視的指標列以 REG n/總數 取代 PDD；雙端啟動改為等座席全部註冊才撥號（最多 10 秒，部分成功繼續並警告，全部失敗不撥號）。
 「超過 Expires 未刷新 → 取消」只有單元測試（刷新間隔最少 60 秒）。
 
-### [ ] 3. 端到端對照報告（前置的第 2 項已完成）
+### [x] 3. 端到端對照報告
 
 用 Call-ID 或主叫號碼把民眾端每通電話和座席端接到的配對，算出：
 - 漏接率：民眾端接通、但沒有座席接到的通數
@@ -55,6 +55,9 @@
 - 座席段的 `From` 保留主叫號碼（`"15900000002" <sip:15900000002@…>`）✔，Call-ID 照例全部不同。
 - 剩下的不確定：這次的主叫是上游 CINcc 節點（203.65.98.171），INVITE 進來時已經帶 `P-CIN-CallId`（ID 內的節點碼也是上游的）。像 sipress 這種不帶此 header 的外部主叫，入口節點應該會自己產生，但 log 中沒有直接證據 → 實作時必須有主叫號碼備案。
 - 實作方向：兩端各自記錄每通的 `P-CIN-CallId`（民眾端取自 18x/200，座席端取自 INVITE）、主叫號碼與時間戳；合併時先用 `P-CIN-CallId` 配對，配不到的再用「主叫號碼 + 時間窗」。民眾端可選擇每通使用不同主叫號碼（尾數遞增），讓備案也能一對一配對。
+
+**已完成：** 兩端引擎記錄每通的 `CallTrace`（`core/src/trace.rs`），`core/src/correlate.rs` 先以 `P-CIN-CallId`、再以主叫號碼 + 時間窗配對，算出漏接率、分配 / 接起延遲、ACD 改派、雙向 MOS；`core/src/correlation_html.rs` 產生合併的 HTML 報告。民眾端新增「每通不同主叫號碼」（`caller_number_seq` / `--from-seq`）。CLI：`--trace-file` 寫出一端的紀錄、`--correlate A B` 合併。GUI：TitleBar 的 `↓ 對照`。流程測試 `core/tests/correlation_flow.rs` 以 mock B2BUA 驗證兩種配對。
+仍待實測確認：sipress 民眾端直接撥 SIPX 時，入口節點是否會自行產生 `P-CIN-CallId` 並回在 18x / 200（報告的「民眾端 CIN %」會顯示）。
 
 ### [x] 4. 座席行為模擬
 

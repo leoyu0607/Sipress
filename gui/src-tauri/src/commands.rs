@@ -2,10 +2,13 @@
 use sipress_core::{
     agent_engine::AgentEngine,
     config::{Config, Mode},
+    correlate::{correlate, CorrelateOptions, CorrelationReport},
+    correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     registrar::{register_once, RegisterResult},
     stats::{FinalReport, StatsSnapshot},
+    trace::TraceLog,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -26,6 +29,8 @@ pub struct Session {
     pub stop_tx: Mutex<Option<mpsc::Sender<()>>>,
     /// 此模式是否有壓測正在執行（含停止後的收尾階段），防止重複啟動
     pub running: AtomicBool,
+    /// 最近一次執行的每通追蹤紀錄（端到端對照用；執行中即時更新，下次啟動時換新）
+    pub traces: Mutex<Option<Arc<TraceLog>>>,
 }
 
 impl Session {
@@ -101,6 +106,7 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
     *state.snapshot.lock().unwrap() = None;
     *state.report.lock().unwrap() = None;
     *state.error.lock().unwrap() = None;
+    *state.traces.lock().unwrap() = None;
 
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
@@ -111,11 +117,13 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
     });
 
     let mode = config.mode.clone();
+    let state_t = Arc::clone(&state);
     // 引擎放在獨立 task 執行：即使 panic 也能由 JoinError 接住並釋放執行權
     let run = tokio::spawn(async move {
         match mode {
             Mode::Caller => {
                 let engine = Engine::new(config);
+                *state_t.traces.lock().unwrap() = Some(engine.trace_log());
                 let stop_handle = engine.stop_handle();
                 let forward = tokio::spawn(async move {
                     if stop_rx.recv().await.is_some() {
@@ -129,6 +137,7 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
             }
             Mode::Agent => {
                 let engine = AgentEngine::new(config);
+                *state_t.traces.lock().unwrap() = Some(engine.trace_log());
                 let stop_handle = engine.stop_handle();
                 // 將前端的 stop 訊號轉發成 watch::Sender(true)
                 // 讓 AgentEngine 可以走完 graceful stop（REGISTER Expires=0 + drain）
@@ -230,6 +239,30 @@ pub fn get_html_report(
 }
 
 /// 將文字內容寫入使用者在「另存新檔」對話框選定的路徑
+/// 用兩端最近一次執行的追蹤紀錄做端到端對照
+fn correlation_report(app: &AppState) -> Result<CorrelationReport, String> {
+    let traces = |s: &Session| s.traces.lock().unwrap().clone();
+    let (Some(caller), Some(agent)) = (traces(&app.caller), traces(&app.agent)) else {
+        return Err("需要民眾端與座席端都執行過（例如雙端啟動）才能產生端到端對照報告".into());
+    };
+    Ok(correlate(
+        &caller.snapshot(),
+        &agent.snapshot(),
+        CorrelateOptions::default(),
+    ))
+}
+
+/// 端到端對照的 HTML 報告
+#[tauri::command]
+pub fn get_correlation_html(
+    state: State<'_, Arc<AppState>>,
+    server_addr: String,
+    timestamp: String,
+) -> Result<String, String> {
+    let report = correlation_report(&state)?;
+    Ok(CorrelationHtml::render(&report, &timestamp, &server_addr))
+}
+
 #[tauri::command]
 pub fn save_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("寫入 {} 失敗: {}", path, e))
@@ -324,6 +357,37 @@ mod tests {
     }
 
     // ── 雙端並行（民眾端 / 座席端各自獨立的 Session）─────────────────
+
+    #[test]
+    fn correlation_needs_both_sides_and_pairs_by_cin() {
+        use sipress_core::trace::{CallOutcome, CallTrace};
+        let app = AppState::default();
+        assert!(correlation_report(&app)
+            .unwrap_err()
+            .contains("民眾端與座席端"));
+
+        let trace = |id: &str, agent: Option<&str>, at: u64| CallTrace {
+            sip_call_id: id.into(),
+            cin_call_id: Some("C1".into()),
+            caller_number: "0912".into(),
+            agent: agent.map(Into::into),
+            invite_at_ms: at,
+            answered_at_ms: Some(at + 100),
+            outcome: CallOutcome::Answered,
+            ..Default::default()
+        };
+        let caller = Arc::new(TraceLog::default());
+        caller.start("c1", trace("c1", None, 1_000));
+        *app.caller.traces.lock().unwrap() = Some(caller);
+        assert!(correlation_report(&app).is_err(), "只有一端時不可產生");
+
+        let agent = Arc::new(TraceLog::default());
+        agent.start("a1", trace("a1", Some("1001"), 1_250));
+        *app.agent.traces.lock().unwrap() = Some(agent);
+        let r = correlation_report(&app).unwrap();
+        assert_eq!((r.caller_calls, r.matched_by_cin, r.missed), (1, 1, 0));
+        assert_eq!(r.distribution.max_ms, 250.0);
+    }
 
     #[test]
     fn mode_deserializes_from_lowercase_json_only() {

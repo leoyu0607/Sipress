@@ -594,3 +594,52 @@ describe('持續時間兩端分開設定', () => {
     }
   })
 })
+
+describe('端到端對照報告', () => {
+  it('民眾端完成、座席端執行過才可匯出，送出 get_correlation_html 並存檔', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(save).mockResolvedValue('/tmp/e2e.html')
+      const calls = routeInvoke({
+        start_test:           () => 'started',
+        get_snapshot:         a => modeOf(a) === 'caller' ? snap({ finished: true }) : snap({}),
+        get_report:           () => baseReport,
+        get_correlation_html: () => '<html>e2e</html>',
+        save_text_file:       () => null,
+      })
+      const s = useTestStore()
+      withAccount(s)
+      expect(s.canExportE2e).toBe(false)
+      await s.startTest('caller')
+      expect(s.canExportE2e).toBe(false)          // 民眾端執行中、座席端沒跑過
+      await vi.advanceTimersByTimeAsync(1000)
+      await vi.waitFor(() => expect(s.sessions.caller.status).toBe('done'))
+      expect(s.canExportE2e).toBe(false)          // 座席端沒跑過
+      await s.startTest('agent')
+      expect(s.canExportE2e).toBe(true)           // 座席端仍在執行也可匯出
+
+      await s.exportE2eHtml()
+      const req = calls.find(c => c.cmd === 'get_correlation_html')
+      expect(req?.args).toMatchObject({ serverAddr: s.config.server })
+      expect(req?.args?.timestamp).toMatch(/^\d{8}_\d{6}$/)
+      const saved = calls.find(c => c.cmd === 'save_text_file')
+      expect(saved?.args).toEqual({ path: '/tmp/e2e.html', contents: '<html>e2e</html>' })
+      const saveCalls = vi.mocked(save).mock.calls
+      expect(saveCalls[saveCalls.length - 1]?.[0]?.defaultPath).toMatch(/^sipress_e2e_\d{8}_\d{6}\.html$/)
+      expect(s.logs.some(l => l.level === 'ok' && l.msg.includes('端到端對照報告 已匯出'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('每通不同主叫號碼：送出 caller_number_seq，CLI 預覽加 --from-seq', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    expect(s.cliCommand).not.toContain('--from-seq')
+    s.config.caller.numberSeq = true
+    expect(s.cliCommand).toContain('--from-seq')
+    await s.startTest('caller')
+    const sent = calls.find(c => c.cmd === 'start_test')?.args?.config as { caller_number_seq: boolean }
+    expect(sent.caller_number_seq).toBe(true)
+  })
+})

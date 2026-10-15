@@ -176,6 +176,13 @@ function statusTitle(s: string) {
           <input v-model="store.config.caller.accessNumber" type="text" placeholder="例：4008001234" :class="{ invalid: !store.config.caller.accessNumber.trim() }">
           <div class="field-hint">From 標頭中的號碼，告訴交換機「這通是誰打的」</div>
         </div>
+        <div class="toggle-row field">
+          <span title="第 n 通使用「主叫號碼 + n」（保留位數）。端到端對照拿不到 P-CIN-CallId 時，靠不同號碼一對一配對座席端來電">每通不同主叫號碼 <span class="tag">--from-seq</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.caller.numberSeq">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+        </div>
 
         <div class="field">
           <label>被叫號碼 <span class="tag">--to</span></label>
