@@ -4,7 +4,7 @@ use crate::rtp::{
     session::{RtpSession, RtpSessionConfig},
     stats::{aggregate_snapshots, RtpStatsSnapshot},
 };
-use crate::sip::{Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser, SipResponse};
+use crate::sip::{sdp, Dialog, DialogState, SharedUdpSocket, SipMessage, SipParser, SipResponse};
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats, StatsSnapshot};
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
@@ -46,6 +46,8 @@ enum SipEvent {
         contact_uri: Option<String>,
         /// SIPX 全域通話 ID（端到端對照用）
         cin_call_id: Option<String>,
+        /// 200 OK SDP answer 的 payload type（其餘回應為空）
+        answer_payloads: Vec<u8>,
     },
     /// 收到伺服器主動發來的 SIP 請求（RE-INVITE 刷新 session / 伺服器 BYE 掛斷）
     IncomingRequest {
@@ -83,6 +85,10 @@ impl Engine {
         let start = Instant::now();
 
         cfg.validate()?;
+        // 音檔有問題時在開始前就失敗，而不是每通電話改送靜音
+        if let (true, Some(path)) = (cfg.enable_rtp, cfg.audio_file.as_deref()) {
+            crate::rtp::audio::AudioSource::preload(path).await?;
+        }
 
         // ── TCP transport 目前尚未實作 ──
         if cfg.transport == Transport::Tcp {
@@ -240,6 +246,12 @@ impl Engine {
                         None
                     };
                     let cin_call_id = SipParser::cin_call_id(&raw);
+                    let answer_payloads =
+                        if code == Some(200) && method.as_deref() == Some("INVITE") {
+                            sdp::audio_payloads(&raw)
+                        } else {
+                            Vec::new()
+                        };
 
                     // INVITE 的非 2xx 最終回應（含重傳、CANCEL 後的 487）一律在此回 ACK：
                     // 屬於 transaction 層行為，不依賴 dialog 是否仍存在
@@ -258,6 +270,7 @@ impl Engine {
                             remote_rtp_addr,
                             contact_uri,
                             cin_call_id,
+                            answer_payloads,
                         });
                     }
                 } else {
@@ -374,6 +387,7 @@ impl Engine {
                         remote_rtp_addr,
                         contact_uri,
                         cin_call_id,
+                        answer_payloads,
                     } => {
                         if code >= 200 && method.as_deref() == Some("INVITE") {
                             awaiting_invite_final.remove(&call_id);
@@ -417,6 +431,9 @@ impl Engine {
                                         continue;
                                     }
                                     dialog.on_ok(to_tag.unwrap_or_default());
+                                    // 依 answer 決定送出的 codec（沒有 SDP 時沿用 offer 的偏好）
+                                    dialog.codec_pt =
+                                        sdp::answered(&answer_payloads, dialog.codec_pt);
                                     // 儲存對端 Contact URI（BYE/ACK Request-URI 使用）
                                     dialog.remote_contact = contact_uri.clone();
                                     live.on_answered();
@@ -471,7 +488,7 @@ impl Engine {
                                             } else {
                                                 None
                                             },
-                                            codec_pt: cfg.codec.payload_type(),
+                                            codec_pt: dialog.codec_pt,
                                         };
                                         // 同步啟動並登記：確保之後處理的 BYE 一定找得到這個 session
                                         let pc = Arc::clone(&rtp_port_counter);
@@ -574,6 +591,7 @@ impl Engine {
                                         &local_addr,
                                         local_port,
                                         &cfg.caller_number,
+                                        dialog.codec_pt,
                                     );
                                     send_sip(&udp, &sip_log, &cfg.server_addr, &ok).await;
 
@@ -851,10 +869,12 @@ impl Engine {
                         &from_tag,
                         "UDP",
                         if rtp_port > 0 { rtp_port } else { 9 },
+                        cfg.codec.payload_type(),
                     );
 
                     let mut dialog =
                         Dialog::new(call_id.clone(), from_tag, branch, callee, rtp_port);
+                    dialog.codec_pt = cfg.codec.payload_type();
                     dialog.arm_retransmit(invite.clone(), now);
                     traces.start(
                         &call_id,

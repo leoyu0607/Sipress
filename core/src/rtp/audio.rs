@@ -38,7 +38,7 @@ pub struct AudioSource {
     cursor: usize,
     /// 是否循環播放
     pub looping: bool,
-    /// RTP Payload Type：0 = PCMU，8 = PCMA
+    /// frames 的編碼（固定 8 = A-law）；送出時依協商結果由 RTP session 轉碼
     pub payload_type: u8,
 }
 
@@ -67,7 +67,7 @@ impl AudioSource {
                 fs::read(path).with_context(|| format!("無法讀取音檔: {}", path.display()))?
             }
             other => bail!(
-                "不支援的音檔格式: .{}（支援 .wav / .ul / .ulaw / .al / .alaw / .raw）",
+                "不支援的音檔格式: .{}（支援 .wav / .al / .alaw / .pcma / .ul / .ulaw / .pcmu / .raw）",
                 other
             ),
         };
@@ -113,6 +113,15 @@ impl AudioSource {
             looping: true,
             payload_type: 8,
         })
+    }
+
+    /// 預先載入並驗證音檔（同時填入快取）：壓測開始前呼叫，
+    /// 格式不支援或檔案壞掉時直接回報錯誤，而不是每通電話默默改送靜音
+    pub async fn preload(path: &Path) -> Result<()> {
+        Self::from_file_cached(path)
+            .await
+            .map(|_| ())
+            .with_context(|| format!("音檔無法使用：{}", path.display()))
     }
 
     /// 產生靜音來源（G.711A PCMA 靜音，PT=8）
@@ -370,6 +379,18 @@ impl AudioSource {
 // ── G.711 A-law 編解碼（ITU-T G.711）────────────────────────────
 
 /// G.711 A-law → 16-bit linear PCM
+/// G.711 A-law → μ-law（經 16-bit linear，查表）。音檔快取一律是 A-law，協商出 PCMU 時用它轉碼
+pub fn alaw_to_ulaw(a: u8) -> u8 {
+    static TABLE: OnceLock<[u8; 256]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = [0u8; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = linear_to_ulaw(alaw_to_linear(i as u8));
+        }
+        t
+    })[a as usize]
+}
+
 /// 遵循 ITU-T G.711 / sox alaw2linear 實作
 pub fn alaw_to_linear(a: u8) -> i16 {
     let a = a ^ 0x55;
@@ -486,6 +507,15 @@ static ULAW_EXP_TABLE: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alaw_to_ulaw_matches_linear_round_trip() {
+        for a in 0..=255u8 {
+            assert_eq!(alaw_to_ulaw(a), linear_to_ulaw(alaw_to_linear(a)));
+        }
+        // 靜音：A-law 0xD5 → μ-law 零電平（0xFF）
+        assert_eq!(alaw_to_ulaw(0xD5), 0xFF);
+    }
 
     fn temp_alaw(name: &str, frames: usize) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("sipress-audio-test-{}", std::process::id()));

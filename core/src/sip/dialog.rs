@@ -33,6 +33,9 @@ pub struct Dialog {
     // 對端 Contact URI（從 200 OK 解析，用於 BYE/ACK Request-URI）
     pub remote_contact: Option<String>,
 
+    // 協商出的 codec（0 = PCMU、8 = PCMA）：建立時為偏好值，收到 200 OK 後依 answer 更新
+    pub codec_pt: u8,
+
     // UDP 重傳（INVITE：Timer A；BYE：Timer E）
     /// 等待回應中的請求原文（重傳時原樣送出）
     retx_msg: Option<String>,
@@ -85,6 +88,7 @@ impl Dialog {
             callee,
             local_rtp_port,
             remote_contact: None,
+            codec_pt: crate::sip::sdp::PT_PCMA,
             retx_msg: None,
             retx_interval: T1,
             next_retx_at: None,

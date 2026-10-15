@@ -330,11 +330,14 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
    │  raw .al / .alaw       → 直接讀取                  │
    │  raw .ul / .ulaw       → μ-law → A-law             │
    │  → 切成 160-byte frames（20ms @ 8kHz）             │
-   │  → 循環播放                                         │
+   │  → 循環播放（解碼結果快取，所有通話共用）           │
    └────────────────────────────────────────────────────┘
        │
        ▼
-   RtpPacket::encode()  PT=8 (PCMA)  seq++  ts+=160  SSRC=random
+   協商出 PCMU 時逐 frame 轉成 μ-law（alaw_to_ulaw 查表）
+       │
+       ▼
+   RtpPacket::encode()  PT=協商結果（8 / 0）  seq++  ts+=160  SSRC=random
        │
        ▼
    UdpSocket::send()    傳送至 SDP c= IP + m= port
@@ -357,7 +360,18 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
 | `.al` / `.alaw` / `.pcma` | 原始 G.711 A-law，8kHz mono |
 | `.ul` / `.ulaw` / `.pcmu` / `.raw` | 原始 G.711 μ-law，自動轉成 A-law |
 
-> **所有音檔最終都會轉換為 G.711A（PCMA, PT=8）傳送**。SDP offer 只宣告 `m=audio PORT RTP/AVP 8 / a=rtpmap:8 PCMA/8000`，避免伺服器選到 PCMU 而導致音訊不正確。
+音檔解碼後快取為 G.711A；實際送出的 codec 由 SDP 協商決定，選到 PCMU 時送出前轉成 μ-law，封包的 payload type 與內容一致。
+音檔格式不支援或檔案損壞時，壓測在開始前就會失敗並顯示原因（不會改送靜音）。
+
+### Codec 協商
+
+| 角色 | 行為 |
+|---|---|
+| 民眾端（offer） | `m=audio PORT RTP/AVP <偏好> <另一個 G.711> 101`，依 200 OK 的 answer 決定送 PT 8 或 0 |
+| 座席端（answer） | offer 有偏好的 codec 就用它，否則用 offer 中第一個 G.711；answer 只宣告選中的 codec（offer 有 101 時一併接受）；offer 完全沒有 G.711 → `488 Not Acceptable Here` |
+| RE-INVITE | 帶 SDP 時只回目前的 codec；不帶 SDP 時 200 OK 以 offer 格式列出所有 codec |
+
+偏好的 codec 即 GUI 的 Codec 設定（CLI 預設 PCMA）。
 
 ---
 

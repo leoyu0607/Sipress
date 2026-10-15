@@ -17,7 +17,7 @@ use crate::rtp::session::{RtpSession, RtpSessionConfig};
 use crate::rtp::stats::{aggregate_snapshots, RtpStats, RtpStatsSnapshot};
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
-    SipMessage, SipParser, SipResponse,
+    sdp, SipMessage, SipParser, SipResponse,
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats};
@@ -68,6 +68,10 @@ impl AgentEngine {
         let start = Instant::now();
 
         cfg.validate()?;
+        // 音檔有問題時在開始前就失敗，而不是每通電話改送靜音
+        if let (true, Some(path)) = (cfg.enable_rtp, cfg.audio_file.as_deref()) {
+            crate::rtp::audio::AudioSource::preload(path).await?;
+        }
         live.agents_total.store(
             cfg.agent_accounts.len() as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -277,6 +281,8 @@ struct DialogCtx {
     bye_timeout_secs: u64,
     /// 座席主動掛斷的時間（行為模擬；None = 等對方 BYE）
     hangup_at: Option<Instant>,
+    /// 協商出的 codec（RTP 與 RE-INVITE 的 answer 都用它）
+    codec_pt: u8,
 }
 
 impl DialogCtx {
@@ -882,8 +888,13 @@ async fn handle_request(
                     .as_ref()
                     .map(|r| r.local_port())
                     .unwrap_or_else(|| pick_dummy_rtp_port(local_ip));
-                let ok =
-                    SipMessage::ok_for_server_reinvite(raw, local_addr, port, &account.extension);
+                let ok = SipMessage::ok_for_server_reinvite(
+                    raw,
+                    local_addr,
+                    port,
+                    &account.extension,
+                    ctx.codec_pt,
+                );
                 log.log_message(Direction::Send, &ok, "server");
                 let _ = sock.send(ok.as_bytes()).await;
                 // 更新 RTP 目標地址（對端可能換 port）
@@ -954,6 +965,28 @@ async fn handle_request(
                         &local_to_tag,
                         "486 Busy Here",
                         486,
+                        sock,
+                        log,
+                        live,
+                        detail,
+                        traces,
+                        &account.extension,
+                    )
+                    .await;
+                    return false;
+                }
+
+                // offer 沒有任何 G.711 → 488（真實話機也會在響鈴前拒絕）
+                if sdp::negotiate(&sdp::audio_payloads(raw), cfg.codec.payload_type()).is_none() {
+                    log.log_event(
+                        &account.extension,
+                        &format!("[{}] offer 沒有 PCMA / PCMU → 488", short(&call_id)),
+                    );
+                    fail_invite(
+                        raw,
+                        &local_to_tag,
+                        "488 Not Acceptable Here",
+                        488,
                         sock,
                         log,
                         live,
@@ -1159,8 +1192,20 @@ async fn answer_call(
     let sip_ip = cfg.server_addr.split(':').next().unwrap_or("127.0.0.1");
     let remote_rtp_addr = SipResponse::sdp_rtp_addr(raw, sip_ip);
 
+    // 依 offer 選 codec（響鈴前已排除沒有 G.711 的 offer），answer 只宣告選中的那一個
+    let offer = sdp::audio_payloads(raw);
+    let preferred = cfg.codec.payload_type();
+    let codec_pt = sdp::negotiate(&offer, preferred).unwrap_or(preferred);
+
     // 200 OK + SDP
-    let ok = build_response_with_sdp(raw, "200 OK", &local_to_tag, local_addr, rtp_port);
+    let ok = build_response_with_sdp(
+        raw,
+        "200 OK",
+        &local_to_tag,
+        local_addr,
+        rtp_port,
+        &sdp::answer_payloads(codec_pt, &offer),
+    );
     log.log_message(Direction::Send, &ok, "server");
     let _ = sock.send(ok.as_bytes()).await;
 
@@ -1182,7 +1227,7 @@ async fn answer_call(
                 audio_file: cfg.audio_file.clone(),
                 ssrc: None,
                 local_port: Some(rtp_port),
-                codec_pt: cfg.codec.payload_type(),
+                codec_pt,
             };
             match RtpSession::start(rtp_cfg, Arc::clone(port_counter), pre_bound).await {
                 Ok(session) => {
@@ -1238,6 +1283,7 @@ async fn answer_call(
         ack_timeout_secs: cfg.agent_ack_timeout_secs,
         bye_timeout_secs: cfg.agent_bye_timeout_secs,
         hangup_at,
+        codec_pt,
     };
     log.log_event(
         &account.extension,
@@ -1282,23 +1328,12 @@ fn build_response_with_sdp(
     to_tag: &str,
     local_addr: &str,
     rtp_port: u16,
+    payloads: &[u8],
 ) -> String {
     let (via, from, to, call_id, cseq) = SipMessage::extract_request_headers(raw_request);
     let to_with_tag = crate::sip::message::inject_to_tag_if_missing(&to, to_tag);
     let ip = local_addr.split(':').next().unwrap_or(local_addr);
-    let sdp = format!(
-        "v=0\r\n\
-         o=sipress 2000 2000 IN IP4 {ip}\r\n\
-         s=sipress\r\n\
-         c=IN IP4 {ip}\r\n\
-         t=0 0\r\n\
-         m=audio {port} RTP/AVP 8\r\n\
-         a=rtpmap:8 PCMA/8000\r\n\
-         a=ptime:20\r\n\
-         a=sendrecv\r\n",
-        ip = ip,
-        port = rtp_port,
-    );
+    let sdp = sdp::body(ip, rtp_port, payloads);
     let sdp_len = sdp.len();
     let user_part = from
         .split_once("sip:")
@@ -1440,6 +1475,7 @@ mod tests {
             ack_timeout_secs: 10,
             bye_timeout_secs: 150,
             hangup_at: Some(now + Duration::from_secs(3)),
+            codec_pt: sdp::PT_PCMA,
         };
         assert_eq!(
             ctx.deadline(),

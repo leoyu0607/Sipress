@@ -1,5 +1,6 @@
 /// SIP 訊息建構器
 /// 手刻 SIP RFC 3261 格式，不依賴外部複雜 crate，靜態編譯友好
+use super::sdp;
 use uuid::Uuid;
 
 pub struct SipMessage;
@@ -19,8 +20,9 @@ impl SipMessage {
         tag: &str,
         transport: &str, // "UDP" or "TCP"
         rtp_port: u16,   // 本機 RTP port（寫入 SDP m= 行）
+        codec_pt: u8,    // 偏好的 codec（放在 offer 第一個）
     ) -> String {
-        let sdp = Self::minimal_sdp(local_addr, rtp_port);
+        let sdp = Self::local_sdp(local_addr, rtp_port, &sdp::offer_payloads(codec_pt));
         let sdp_len = sdp.len();
 
         format!(
@@ -185,27 +187,10 @@ impl SipMessage {
         )
     }
 
-    /// 最小 SDP
-    /// 固定使用 G.711A（PCMA，PT=8）作為媒體 codec，
-    /// 伺服器通常以 offer 中第一個 codec 為主，明確指定避免協商錯誤。
-    fn minimal_sdp(local_ip: &str, rtp_port: u16) -> String {
-        let ip = local_ip.split(':').next().unwrap_or(local_ip);
-        format!(
-            "v=0\r\n\
-             o=sipress 1000 1000 IN IP4 {ip}\r\n\
-             s=sipress\r\n\
-             c=IN IP4 {ip}\r\n\
-             t=0 0\r\n\
-             m=audio {port} RTP/AVP 8 0 101\r\n\
-             a=rtpmap:8 PCMA/8000\r\n\
-             a=rtpmap:0 PCMU/8000\r\n\
-             a=rtpmap:101 telephone-event/8000\r\n\
-             a=fmtp:101 0-16\r\n\
-             a=ptime:20\r\n\
-             a=sendrecv\r\n",
-            ip = ip,
-            port = rtp_port,
-        )
+    /// 本機 SDP（`local` 可為 IP 或 IP:port）
+    fn local_sdp(local: &str, rtp_port: u16, payloads: &[u8]) -> String {
+        let ip = local.split(':').next().unwrap_or(local);
+        sdp::body(ip, rtp_port, payloads)
     }
 
     /// 產生 branch 參數（RFC 3261 要求以 z9hG4bK 開頭）
@@ -345,9 +330,17 @@ impl SipMessage {
         local_addr: &str,
         rtp_port: u16,
         contact_user: &str,
+        codec_pt: u8,
     ) -> String {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_request);
-        let sdp = Self::minimal_sdp(local_addr, rtp_port);
+        // RE-INVITE 帶 SDP → 這是 answer，只回目前的 codec；不帶 SDP → 200 OK 就是 offer
+        let offer = sdp::audio_payloads(raw_request);
+        let payloads = if offer.is_empty() {
+            sdp::offer_payloads(codec_pt)
+        } else {
+            sdp::answer_payloads(codec_pt, &offer)
+        };
+        let sdp = Self::local_sdp(local_addr, rtp_port, &payloads);
         let sdp_len = sdp.len();
         format!(
             "SIP/2.0 200 OK\r\n\
@@ -525,13 +518,17 @@ mod tests {
             "tag123",
             "UDP",
             16000,
+            0,
         );
         assert!(msg.starts_with("INVITE sip:2001@10.0.0.2:5060 SIP/2.0\r\n"));
+        assert!(
+            msg.contains("m=audio 16000 RTP/AVP 0 8 101\r\n"),
+            "偏好的 codec 放第一個"
+        );
         assert!(msg.contains("Call-ID: abc@test\r\n"));
         assert!(msg.contains("CSeq: 1 INVITE\r\n"));
         assert!(msg.contains("From: <sip:1000@10.0.0.1:5060>;tag=tag123\r\n"));
         assert!(msg.contains("To: <sip:2001@10.0.0.2:5060>\r\n"));
-        assert!(msg.contains("m=audio 16000 RTP/AVP 8 0 101\r\n"));
         assert!(msg.contains("Content-Type: application/sdp\r\n"));
     }
 
@@ -639,10 +636,26 @@ mod tests {
                         Call-ID: test123@10.0.0.2\r\n\
                         CSeq: 3 INVITE\r\n\
                         \r\n";
-        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000");
+        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000", 8);
         assert!(ok.starts_with("SIP/2.0 200 OK\r\n"));
         assert!(ok.contains("Content-Type: application/sdp\r\n"));
         assert!(ok.contains("m=audio 18000 RTP/AVP 8 0 101\r\n"));
+    }
+
+    #[test]
+    fn ok_for_reinvite_with_offer_answers_current_codec_only() {
+        let reinvite = "INVITE sip:1000@10.0.0.1:5070 SIP/2.0\r\n\
+                        Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-ri\r\n\
+                        From: <sip:2001@10.0.0.2>;tag=srv-tag\r\n\
+                        To: <sip:1000@10.0.0.1>;tag=my-tag\r\n\
+                        Call-ID: test123@10.0.0.2\r\n\
+                        CSeq: 3 INVITE\r\n\
+                        Content-Type: application/sdp\r\n\
+                        \r\n\
+                        v=0\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\nm=audio 30000 RTP/AVP 0 8 101\r\n";
+        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000", 0);
+        assert!(ok.contains("m=audio 18000 RTP/AVP 0 101\r\n"), "{}", ok);
+        assert!(!ok.contains("PCMA"));
     }
 
     #[test]
@@ -654,7 +667,7 @@ mod tests {
                         Call-ID: test123@10.0.0.2\r\n\
                         CSeq: 3 INVITE\r\n\
                         \r\n";
-        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000");
+        let ok = SipMessage::ok_for_server_reinvite(reinvite, "10.0.0.1:5070", 18000, "1000", 8);
         let headers = &ok[..ok.find("\r\n\r\n").unwrap()];
         assert!(
             headers.contains("\r\nContact: <sip:1000@10.0.0.1:5070;transport=udp>\r\n"),

@@ -7,6 +7,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     registrar::{register_once, RegisterResult},
+    rtp::audio::AudioSource,
     stats::{FinalReport, StatsSnapshot},
     trace::TraceLog,
 };
@@ -92,6 +93,12 @@ impl AppState {
 #[tauri::command]
 pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Result<String, String> {
     config.validate().map_err(|e| e.to_string())?;
+    // 音檔在開始前驗證：格式不支援時直接回報，而不是引擎改送靜音
+    if let (true, Some(path)) = (config.enable_rtp, config.audio_file.as_deref()) {
+        AudioSource::preload(path)
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+    }
     let state = state.session(&config.mode);
     if !state.try_begin() {
         let side = if config.mode == Mode::Agent {

@@ -97,10 +97,14 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 
 以下依重要程度排序：先修會讓測試結果失真或無法使用的正確性問題，再補功能、指標與效能，最後是整理。
 
-### [ ] 11. 座席端 codec 與 SDP 不一致（正確性）
+### [x] 11. 座席端 codec 與 SDP 不一致，以及音檔相關問題（正確性）
 
-座席回覆的 SDP 固定宣告 PCMA（`core/src/agent_engine.rs` 的 `build_response_with_sdp`），RTP 卻照 `cfg.codec` 送出（GUI 會把民眾端選的 codec 一起帶給座席端）。選 PCMU 時，座席宣告 PCMA、實際送 PCMU，對端可能無聲或 MOS 失真。兩端也都沒有依照對方的 SDP 協商：民眾端 offer `8 0 101`，但不論對方 answer 什麼都用 `cfg.codec` 送。
-要做：座席依 INVITE 的 offer 選 codec 並在 answer 宣告同一個；民眾端依 200 OK 的 answer 決定送哪個 payload type。
+原本座席回覆的 SDP 固定宣告 PCMA，RTP 卻照 `cfg.codec` 送；兩端也沒有依對方 SDP 協商。另外：選 PCMU 時音檔內容仍是 A-law、只把 PT 標成 0（對方聽到失真）；GUI 選檔視窗列出不支援的 `.mp3` / `.pcm`、卻沒列 `.ul` / `.al` 等；音檔載入失敗時默默改送靜音。
+已修正：
+- 新增 `core/src/sip/sdp.rs` 處理協商。民眾端 offer 把偏好的 codec 放第一個，依 200 OK 的 answer 決定送出的 PT；座席端依 offer 選 codec，answer 只宣告選中的那一個（offer 有 101 時一併接受），沒有 G.711 回 488；RE-INVITE 依是否帶 SDP 回 answer 或 offer。
+- 音檔快取維持 A-law，協商出 PCMU 時送出前逐 frame 轉成 μ-law（`alaw_to_ulaw` 查表）。
+- GUI 選檔視窗改為實際支援的副檔名；兩端引擎與 GUI 的 `start_test` 在開始前先載入音檔，失敗就回報原因。
+- 測試：`core/tests/codec_negotiation.rs`（PCMU offer / answer、保留偏好、488、音檔不支援），`sip::sdp` 與 `alaw_to_ulaw` 的單元測試。
 
 ### [ ] 12. 座席每通結束都重新註冊（正確性）
 

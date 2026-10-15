@@ -51,7 +51,7 @@ async function copyCli() {
 }
 
 async function pickAudioFile() {
-  const path = await open({ multiple: false, filters: [{ name: 'Audio', extensions: ['wav', 'pcm', 'raw', 'mp3'] }] })
+  const path = await open({ multiple: false, filters: [{ name: '音檔（WAV / G.711）', extensions: ['wav', 'al', 'alaw', 'pcma', 'ul', 'ulaw', 'pcmu', 'raw'] }] })
   if (path && typeof path === 'string') store.config.caller.audioFile = path
 }
 

@@ -149,9 +149,10 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 
 1. 點選「瀏覽」開啟系統檔案選擇器。
 2. 選擇音檔（支援 `.wav` PCM16/A-law/μ-law、`.al/.alaw`、`.ul/.ulaw/.pcmu`、`.raw`）。
-3. 程式會**自動轉換成 G.711A（PCMA）** 後傳送，無需先用 ffmpeg 處理。
-4. SDP offer 只宣告 `RTP/AVP 8`（PCMA），避免伺服器選到 PCMU。
+3. 程式會自動轉換成 G.711，無需先用 ffmpeg 處理。WAV 只支援 16-bit PCM、8-bit A-law / μ-law；MP3 等其他格式請先轉成 WAV。
+4. Codec 設定是「偏好」：SDP offer 會把它放在第一個，實際送出的 codec 依對方的 answer 決定（PCMA 或 PCMU），音訊會跟著轉碼。
 5. 每通接通的通話都會傳送 RTP 音訊封包並計算 MOS 聲音品質分數。
+6. 音檔格式不支援或檔案損壞時，按下開始就會顯示錯誤，測試不會開始。
 
 停用音訊為純 SIP 信令測試（速度較快、CPU 使用率較低）。
 
@@ -468,7 +469,7 @@ xattr -c sipress-gui-macos-*-portable
 
 1. 確認已啟用「播放音檔」並選擇有效的音檔。
 2. 確認伺服器接受 RTP 媒體流（有接通的通話才會計算 MOS）。
-3. 座席模式目前不收/送 RTP，因此 MOS 永遠是 N/A（這是預期行為）。
+3. 座席端使用與民眾端相同的音檔與 Codec 設定收送 RTP；沒有選音檔時送靜音，仍會量測 MOS。
 
 ### 接通後伺服器錄音檔很短只有幾秒
 
