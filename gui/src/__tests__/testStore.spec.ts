@@ -59,9 +59,39 @@ describe('validationErrors', () => {
     ])
   })
 
+  it('座席行為：秒數區間與比例', () => {
+    const s = useTestStore()
+    s.config.mode = 'agent'
+    s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'p', domain: '', status: 'idle' }]
+    const b = s.config.agent.behavior
+    expect(s.validationErrors).toEqual([])
+    Object.assign(b, { ringMin: 5, ringMax: 2 })
+    expect(s.validationErrors).toEqual(['響鈴秒數最小值不可大於最大值'])
+    Object.assign(b, { ringMin: 0, talkMin: -1 })
+    expect(s.validationErrors).toEqual(['座席行為的秒數需 ≥ 0'])
+    Object.assign(b, { talkMin: 0, rejectPct: 60, noAnswerPct: 50 })
+    expect(s.validationErrors).toEqual(['拒接 + 不接比例合計不可超過 100%'])
+    Object.assign(b, { rejectPct: 101, noAnswerPct: 0 })
+    expect(s.validationErrors).toEqual(['拒接 / 不接比例需介於 0–100%'])
+  })
+
+  it('座席行為：預設值不出現在 CLI 預覽，舊設定補上預設值', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ mode: 'agent', agent: { ackTimeout: 5 } }))
+    const s = useTestStore()
+    expect(s.config.agent.behavior.rejectPct).toBe(0)
+    expect(s.config.agent.ackTimeout).toBe(5)
+    expect(s.cliCommand).not.toMatch(/--ring|--talk|--reject-pct|--no-answer-pct|--wrap-up|--busy-in-call/)
+    expect(s.config.agent.behavior.busyInCall).toBe(false)
+    Object.assign(s.config.agent.behavior, { ringMin: 2, ringMax: 2, talkMin: 10, talkMax: 60 })
+    expect(s.cliCommand).toContain('--ring 2 ')
+    expect(s.cliCommand).toContain('--talk 10-60')
+    s.config.agent.behavior.busyInCall = true
+    expect(s.cliCommand).toContain('--busy-in-call')
+  })
+
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {
     const s = useTestStore()
-    s.config.duration = 0
+    s.config.caller.duration = 0
     s.config.caller.cpsPattern.type = 'ramp'
     expect(s.validationErrors).toContain('漸增模式需設定持續時間（> 0）')
     s.config.caller.cpsPattern.type = 'spike'
@@ -115,6 +145,21 @@ describe('測試執行流程', () => {
     return { s, calls }
   }
   const tick = () => vi.advanceTimersByTimeAsync(1000)
+
+  it('失敗數有增加時才寫 WARN，不會每秒重複', async () => {
+    const { s } = await startWith([
+      snap({ calls_initiated: 5, calls_failed: 0, calls_timeout: 0 }),
+      snap({ calls_initiated: 10, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 12, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 12, calls_failed: 1, calls_timeout: 1 }),
+      snap({ calls_initiated: 15, calls_failed: 1, calls_timeout: 4 }),
+    ])
+    for (let i = 0; i < 5; i++) await tick()
+    const warns = s.logs.filter(l => l.level === 'warn').map(l => l.msg)
+    expect(warns).toHaveLength(2)
+    expect(warns[0]).toMatch(/^新增失敗 2（失敗 1 逾時 1）\s+發起 10/)
+    expect(warns[1]).toMatch(/^新增失敗 3（失敗 1 逾時 4）\s+發起 15/)
+  })
 
   it('每秒的 snapshot 轉成指標與圖表序列', async () => {
     const { s } = await startWith([
@@ -437,11 +482,14 @@ describe('設定保存', () => {
 
 // ── CLI 預覽 ───────────────────────────────────────────────────────
 describe('CLI 預覽', () => {
-  it('座席模式沒有對應的 CLI 指令', () => {
+  it('座席模式產生 --mode agent 指令，民眾端專屬設定不列為不支援', () => {
     const s = useTestStore()
     s.config.mode = 'agent'
-    expect(s.cliCommand.startsWith('#')).toBe(true)
-    expect(s.cliUnsupported).toEqual(['座席模式'])
+    s.config.caller.cpsPattern.type = 'step'
+    s.config.caller.dtmfSequence = '12#'
+    expect(s.cliCommand).toContain('--mode agent --accounts sipress_accounts.csv')
+    expect(s.cliCommand).not.toContain('--cps')
+    expect(s.cliUnsupported).toEqual([])
   })
 
   it('列出 CLI 不支援的 GUI 設定', () => {

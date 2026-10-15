@@ -258,12 +258,13 @@ extension,username,password,domain
 
 | 收到的請求 | 自動回應 |
 |---|---|
-| `INVITE` 新通話 | `100 Trying` → `180 Ringing` → `200 OK` + SDP（PCMA）；啟動真實 RTP（若 enable_rtp） |
+| `INVITE` 新通話 | `100 Trying` → `180 Ringing` →（響鈴延遲）→ `200 OK` + SDP（PCMA）；啟動真實 RTP（若 enable_rtp）。依行為模擬也可能回 `486`（拒接 / 休息中）或一直響鈴不接 |
 | `INVITE` （已建立 dialog） | RE-INVITE 視為保活，回 `200 OK` + SDP；更新 RTP 目標地址 |
 | `ACK` | 標記通話已建立（10s 未收到 → 座席主動 BYE） |
 | `BYE` | `200 OK`，停止 RTP，計入 calls_completed，**自動 re-REGISTER 維持在線** |
 | （BYE timeout） | 通話 150s 未收到 BYE → 座席主動送 BYE 掛斷，re-REGISTER |
-| `CANCEL` | `200 OK`（CANCEL）+ `487 Request Terminated`（INVITE） |
+| `CANCEL` | 響鈴中：`200 OK`（CANCEL）+ `487 Request Terminated`（INVITE）；已接聽：`200 OK` 且不影響通話（等 BYE） |
+| （主動掛斷） | 設定 `--talk` 時，接聽後隨機秒數由座席送 BYE |
 | `OPTIONS` | `200 OK`（健康檢查） |
 
 ### 座席端 RTP
@@ -420,6 +421,9 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 
 # CSV 輸出（匯入試算表）
 ./sipress -s 192.168.1.100:5060 -c 100 --cps 10 -d 60 --format csv > result.csv
+
+# 座席端：用帳號檔註冊 N 支分機並自動接聽，-d 0 = 直到 Ctrl-C（結束時解除註冊）
+./sipress -s 192.168.1.100:5060 --mode agent --accounts accounts.csv -d 0 --tui
 ```
 
 ---
@@ -444,6 +448,35 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--max-calls` | — | 不限 | 總通話上限，達到且所有進行中通話結束後自動停止 |
 | `--call-duration` | — | `30` | 單通通話持續時間（秒，`0` = 不主動 BYE） |
 | `--invite-timeout` | — | `8` | INVITE 逾時秒數 |
+
+### 座席模式
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `--mode` | `caller` | `caller`（民眾端，主動撥出）/ `agent`（座席端，註冊後等待來電並自動接聽） |
+| `--accounts` | — | 座席帳號檔（agent 模式必填），一行一個帳號：`extension,username,password[,domain]`（可有標題列）、`extension:password[:domain]` 或空白分隔；GUI 帳號清單的「匯出 CSV」可直接使用 |
+| `--account-domain` | SIP server IP | 帳號未填 domain 時使用的預設值 |
+| `--ack-timeout` | `10` | 接聽後等待 ACK 的逾時秒數（逾時主動 BYE） |
+| `--bye-timeout` | `150` | 通話中等待對方 BYE 的逾時秒數（逾時主動 BYE） |
+| `--ring` | `0` | 響鈴幾秒後才接聽，`N` 或區間 `MIN-MAX`（隨機） |
+| `--talk` | `0` | 接聽幾秒後座席主動掛斷，`N` 或 `MIN-MAX`；0 = 等對方 BYE |
+| `--reject-pct` | `0` | 拒接比例 %（響鈴後回 486 Busy Here） |
+| `--no-answer-pct` | `0` | 不接比例 %（一直響鈴，等 SIPX 逾時 CANCEL 改派；120 秒未取消回 480） |
+| `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
+| `--busy-in-call` | 關閉 | 通話中忙線：已有通話（含響鈴中）時新來電回 486，讓 ACD 改派；關閉時同一帳號可同時接多通 |
+
+### 端到端對照
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `--from-seq` | 關閉 | 民眾端每通使用不同主叫號碼（從 `--from` 遞增、保留位數），讓主叫號碼配對能一對一 |
+| `--trace-file` | — | 結束後把每通的追蹤紀錄（`P-CIN-CallId`、主叫號碼、時間、MOS）寫成 JSON；兩端各存一份 |
+| `--correlate A B` | — | 讀兩端的追蹤紀錄（順序不拘）輸出合併報告，不執行壓測；搭配 `--format`、`--html`、`--report-dir` |
+| `--correlate-window` | `120` | 以主叫號碼配對時，座席收到來電最晚可在民眾端撥出後幾秒 |
+
+配對先用 SIPX 的 `P-CIN-CallId`（同一通電話的每一段都相同；SIP Call-ID 每段都不同），拿不到時改用主叫號碼 + 時間窗。報告包含漏接率、排隊與分配延遲、ACD 改派與雙向 MOS，GUI 的 `↓ 對照` 按鈕產生同一份報告。
+
+agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被忽略；Ctrl-C 或 TUI 按 `q` 會先送 `REGISTER Expires=0` 解除註冊再結束。
 
 ### 號碼設定
 
@@ -508,7 +541,7 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 
 ## SIP Log
 
-每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_agent.sip.log`，記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
+每次壓測自動在 `logs/` 目錄建立 `YYYYMMDD_HHMMSS_caller.sip.log`（民眾端）或 `YYYYMMDD_HHMMSS_agent.sip.log`（座席端），記錄完整 SIP 訊息（帶方向箭頭與毫秒時間戳記），壓測結束自動寫入統計摘要。
 
 ---
 

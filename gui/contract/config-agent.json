@@ -3,6 +3,7 @@
   "local_addr": null,
   "local_domain": null,
   "caller_number": "0938530031",
+  "caller_number_seq": false,
   "callee_prefix": "2",
   "callee_range": 9999,
   "callee_fixed": null,
@@ -38,5 +39,15 @@
     }
   ],
   "agent_ack_timeout_secs": 5,
-  "agent_bye_timeout_secs": 60
+  "agent_bye_timeout_secs": 60,
+  "agent_behavior": {
+    "ring_min_secs": 1,
+    "ring_max_secs": 3,
+    "reject_pct": 10,
+    "no_answer_pct": 5,
+    "talk_min_secs": 30,
+    "talk_max_secs": 30,
+    "wrap_up_secs": 2,
+    "busy_in_call": true
+  }
 }

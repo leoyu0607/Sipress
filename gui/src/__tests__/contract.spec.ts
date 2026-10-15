@@ -29,11 +29,11 @@ const SCENARIOS: Scenario[] = [
     apply: c => {
       c.transport = 'TCP'
       c.localPort = 0
-      c.duration = 120
+      c.caller.duration = 120
       c.cliFormat = 'json'
       c.cliVerbose = true
       Object.assign(c.caller, {
-        calleeFixed: '0912345678', totalCalls: 500, callDuration: 0,
+        calleeFixed: '0912345678', totalCalls: 500, callDuration: 0, numberSeq: true,
         enableAudio: true, audioFile: 'C:/audio/prompt 1.wav', codec: 'pcmu', dtmfSequence: '123#',
       })
       Object.assign(c.caller.cpsPattern, { type: 'ramp', rampStart: 2, rampEnd: 40 })
@@ -58,10 +58,11 @@ const SCENARIOS: Scenario[] = [
     name: 'agent',
     apply: c => {
       c.mode = 'agent'
-      c.duration = 0
+      c.agent.duration = 0
       c.agent.ackTimeout = 5
       c.agent.byeTimeout = 60
       c.agent.defaultDomain = 'pbx.example'
+      c.agent.behavior = { ringMin: 1, ringMax: 3, rejectPct: 10, noAnswerPct: 5, talkMin: 30, talkMax: 30, wrapUp: 2, busyInCall: true }
       c.agent.accounts = [
         { id: 'a', extension: '1001', username: 'u1001', password: 'p1', domain: '', status: 'idle' },
         { id: 'b', extension: '1002', username: 'u1002', password: 'p2', domain: 'other.example', status: 'registered' },
@@ -86,10 +87,6 @@ describe.each(SCENARIOS)('$name', ({ name, apply }) => {
   it('CLI 預覽指令（CLI e2e 驗證 gui/contract/cli-*.txt）', async () => {
     const s = useTestStore()
     apply(s.config)
-    if (s.config.mode === 'agent') {
-      expect(s.cliCommand.startsWith('#')).toBe(true)
-      return
-    }
     await expect(s.cliCommand + '\n').toMatchFileSnapshot(`../../contract/cli-${name}.txt`)
   })
 })

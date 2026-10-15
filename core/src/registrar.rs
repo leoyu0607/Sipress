@@ -27,13 +27,13 @@ pub enum RegisterStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterResult {
-    pub status:       RegisterStatus,
+    pub status: RegisterStatus,
     /// 給人看的訊息（含狀態碼或錯誤描述）
-    pub message:      String,
+    pub message: String,
     /// 伺服器同意的 Expires 秒數（成功時）
     pub expires_secs: Option<u32>,
     /// 觸發的 SIP 狀態碼（若有）
-    pub sip_code:     Option<u16>,
+    pub sip_code: Option<u16>,
 }
 
 /// 對單一帳號執行一次完整 REGISTER 握手（含 401 重送）
@@ -45,11 +45,11 @@ pub struct RegisterResult {
 /// - `transport`: 目前固定 "UDP"
 pub async fn register_once(
     server_addr: &str,
-    domain:      &str,
-    username:    &str,
-    password:    &str,
-    expires:     u32,
-    transport:   &str,
+    domain: &str,
+    username: &str,
+    password: &str,
+    expires: u32,
+    transport: &str,
 ) -> Result<RegisterResult> {
     let server: std::net::SocketAddr = server_addr
         .parse()
@@ -62,14 +62,22 @@ pub async fn register_once(
     sock.connect(server).await.context("無法連接 SIP 伺服器")?;
     let local_sock_str = sock.local_addr()?.to_string();
 
-    let call_id  = SipMessage::new_call_id(domain);
+    let call_id = SipMessage::new_call_id(domain);
     let from_tag = SipMessage::new_tag();
-    let branch1  = SipMessage::new_branch();
+    let branch1 = SipMessage::new_branch();
 
     // ── 第一次 REGISTER（不帶 Authorization）──
     let req1 = RegisterMessage::build(
-        username, server_addr, &local_sock_str,
-        1, &branch1, &from_tag, &call_id, transport, expires, None,
+        username,
+        server_addr,
+        &local_sock_str,
+        1,
+        &branch1,
+        &from_tag,
+        &call_id,
+        transport,
+        expires,
+        None,
     );
     if let Err(e) = sock.send(req1.as_bytes()).await {
         return Ok(RegisterResult {
@@ -84,10 +92,10 @@ pub async fn register_once(
         Ok(s) => s,
         Err(e) => {
             return Ok(RegisterResult {
-                status:       RegisterStatus::Timeout,
-                message:      format!("REGISTER 等待回應逾時: {}", e),
+                status: RegisterStatus::Timeout,
+                message: format!("REGISTER 等待回應逾時: {}", e),
                 expires_secs: None,
-                sip_code:     None,
+                sip_code: None,
             });
         }
     };
@@ -96,10 +104,10 @@ pub async fn register_once(
 
     match code1 {
         200 => Ok(RegisterResult {
-            status:       RegisterStatus::Registered,
-            message:      format!("註冊成功 ({})", username),
+            status: RegisterStatus::Registered,
+            message: format!("註冊成功 ({})", username),
             expires_secs: Some(SipParser::expires(&resp1).unwrap_or(expires)),
-            sip_code:     Some(200),
+            sip_code: Some(200),
         }),
 
         401 | 407 => {
@@ -112,16 +120,23 @@ pub async fn register_once(
 
             let branch2 = SipMessage::new_branch();
             let req2 = RegisterMessage::build(
-                username, server_addr, &local_sock_str,
-                2, &branch2, &from_tag, &call_id, transport, expires,
+                username,
+                server_addr,
+                &local_sock_str,
+                2,
+                &branch2,
+                &from_tag,
+                &call_id,
+                transport,
+                expires,
                 Some(&auth_line),
             );
             if let Err(e) = sock.send(req2.as_bytes()).await {
                 return Ok(RegisterResult {
-                    status:       RegisterStatus::NetworkError,
-                    message:      format!("認證重送失敗: {}", e),
+                    status: RegisterStatus::NetworkError,
+                    message: format!("認證重送失敗: {}", e),
                     expires_secs: None,
-                    sip_code:     None,
+                    sip_code: None,
                 });
             }
 
@@ -129,10 +144,10 @@ pub async fn register_once(
                 Ok(s) => s,
                 Err(_) => {
                     return Ok(RegisterResult {
-                        status:       RegisterStatus::Timeout,
-                        message:      "認證重送回應逾時".into(),
+                        status: RegisterStatus::Timeout,
+                        message: "認證重送回應逾時".into(),
                         expires_secs: None,
-                        sip_code:     None,
+                        sip_code: None,
                     });
                 }
             };
@@ -140,38 +155,38 @@ pub async fn register_once(
             let code2 = SipParser::status_code(&resp2).unwrap_or(0);
             match code2 {
                 200 => Ok(RegisterResult {
-                    status:       RegisterStatus::Registered,
-                    message:      format!("註冊成功 ({})", username),
+                    status: RegisterStatus::Registered,
+                    message: format!("註冊成功 ({})", username),
                     expires_secs: Some(SipParser::expires(&resp2).unwrap_or(expires)),
-                    sip_code:     Some(200),
+                    sip_code: Some(200),
                 }),
                 401 | 403 | 407 => Ok(RegisterResult {
-                    status:       RegisterStatus::AuthFailed,
-                    message:      format!("認證失敗 (SIP {})", code2),
+                    status: RegisterStatus::AuthFailed,
+                    message: format!("認證失敗 (SIP {})", code2),
                     expires_secs: None,
-                    sip_code:     Some(code2),
+                    sip_code: Some(code2),
                 }),
                 other => Ok(RegisterResult {
-                    status:       RegisterStatus::Rejected,
-                    message:      format!("註冊被拒 (SIP {})", other),
+                    status: RegisterStatus::Rejected,
+                    message: format!("註冊被拒 (SIP {})", other),
                     expires_secs: None,
-                    sip_code:     Some(other),
+                    sip_code: Some(other),
                 }),
             }
         }
 
         other if other > 0 => Ok(RegisterResult {
-            status:       RegisterStatus::Rejected,
-            message:      format!("意外回應 (SIP {})", other),
+            status: RegisterStatus::Rejected,
+            message: format!("意外回應 (SIP {})", other),
             expires_secs: None,
-            sip_code:     Some(other),
+            sip_code: Some(other),
         }),
 
         _ => Ok(RegisterResult {
-            status:       RegisterStatus::NetworkError,
-            message:      "無法解析回應".into(),
+            status: RegisterStatus::NetworkError,
+            message: "無法解析回應".into(),
             expires_secs: None,
-            sip_code:     None,
+            sip_code: None,
         }),
     }
 }

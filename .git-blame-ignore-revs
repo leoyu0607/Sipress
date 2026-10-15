@@ -1,0 +1,3 @@
+# 純格式化的 commit，git blame 時略過：git config blame.ignoreRevsFile .git-blame-ignore-revs
+# cargo fmt --all（TODO 第 8 項）
+063bce951766fa787618ddba1aaa2262e2036017

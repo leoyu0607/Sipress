@@ -20,6 +20,12 @@ const sec = ref({ target:true, caller:true, agent:true, cliOpts:false })
 
 const locked = computed(() => store.isRunning)
 const serverInvalid = computed(() => !/^[^\s:]+:\d{1,5}$/.test(store.config.server.trim()))
+const durationHint = computed(() => {
+  const mode = store.config.mode
+  const d    = store.config[mode].duration
+  if (d > 0) return `${d} 秒後自動停止`
+  return mode === 'agent' ? '0 = 不限時間（手動停止；雙端時建議比民眾端晚關）' : '0 = 不限時間（需搭配總通數或手動停止）'
+})
 const audioMissing  = computed(() => store.config.caller.enableAudio && !store.config.caller.audioFile.trim())
 
 // 清除全部帳號：兩段式確認
@@ -125,17 +131,20 @@ function statusTitle(s: string) {
           </div>
         </div>
         <div class="field">
-          <label>持續時間 (s) <span class="tag">--duration</span></label>
+          <label>{{ store.config.mode === 'agent' ? '座席端' : '民眾端' }}持續時間 (s) <span class="tag">--duration</span></label>
           <div class="slider-row">
-            <input type="range" min="0" max="3600" v-model.number="store.config.duration">
-            <input type="number" min="0" v-model.number="store.config.duration" class="num-input">
+            <input type="range" min="0" max="3600" v-model.number="store.config[store.config.mode].duration">
+            <input type="number" min="0" v-model.number="store.config[store.config.mode].duration" class="num-input">
           </div>
-          <div class="field-hint">{{ store.config.duration === 0 ? '0 = 不限時間（需搭配總通數或手動停止）' : `${store.config.duration} 秒後自動停止` }}</div>
+          <div class="field-hint">{{ durationHint }}</div>
         </div>
       </div>
     </div>
 
+    </fieldset>
+
     <!-- ── MODE TABS ──────────────────────────────────────── -->
+    <!-- 只切換檢視中的一端，不受執行鎖定影響：雙端執行時仍可切換查看另一端 -->
     <div class="mode-tabs">
       <button
         class="mode-tab"
@@ -157,6 +166,8 @@ function statusTitle(s: string) {
       </button>
     </div>
 
+    <fieldset class="lock-wrap" :disabled="locked">
+
     <!-- ── CALLER PROFILE ─────────────────────────────────── -->
     <div class="section" v-if="store.config.mode === 'caller'">
       <div class="section-hdr" @click="toggleSec('caller')">
@@ -169,6 +180,13 @@ function statusTitle(s: string) {
           <label>主叫號碼</label>
           <input v-model="store.config.caller.accessNumber" type="text" placeholder="例：4008001234" :class="{ invalid: !store.config.caller.accessNumber.trim() }">
           <div class="field-hint">From 標頭中的號碼，告訴交換機「這通是誰打的」</div>
+        </div>
+        <div class="toggle-row field">
+          <span title="第 n 通使用「主叫號碼 + n」（保留位數）。端到端對照拿不到 P-CIN-CallId 時，靠不同號碼一對一配對座席端來電">每通不同主叫號碼 <span class="tag">--from-seq</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.caller.numberSeq">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
         </div>
 
         <div class="field">
@@ -357,6 +375,48 @@ function statusTitle(s: string) {
           </div>
         </div>
 
+        <!-- Behavior simulation（區間欄位各佔一列，避免在側欄寬度下數字被截斷） -->
+        <div class="field">
+          <label>響鈴後接聽 (秒) <span class="tag">--ring</span></label>
+          <div class="range-pair">
+            <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
+            <span>–</span>
+            <input v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
+          </div>
+        </div>
+        <div class="field">
+          <label>主動掛斷 (秒) <span class="tag">--talk</span></label>
+          <div class="range-pair">
+            <input v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
+            <span>–</span>
+            <input v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:1">
+            <label>拒接 % <span class="tag">486</span></label>
+            <input v-model.number="store.config.agent.behavior.rejectPct" type="number" min="0" max="100"
+                   title="響鈴後回 486 Busy Here 的比例">
+          </div>
+          <div class="field" style="flex:1">
+            <label>不接 %</label>
+            <input v-model.number="store.config.agent.behavior.noAnswerPct" type="number" min="0" max="100"
+                   title="一直響鈴不接，等 SIPX 逾時 CANCEL 重派的比例">
+          </div>
+          <div class="field" style="flex:1">
+            <label>休息 (秒)</label>
+            <input v-model.number="store.config.agent.behavior.wrapUp" type="number" min="0"
+                   title="通話結束後的 wrap-up 時間，期間來電回 486">
+          </div>
+        </div>
+        <div class="toggle-row field">
+          <span title="已有通話（含響鈴中）時，新來電直接回 486 Busy Here，讓 ACD 改派給其他座席。關閉時同一帳號可同時接多通">通話中忙線 <span class="tag">--busy-in-call</span></span>
+          <label class="toggle">
+            <input type="checkbox" v-model="store.config.agent.behavior.busyInCall">
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+        </div>
+
         <!-- Upload -->
         <div
           class="drop-zone"
@@ -500,8 +560,11 @@ function statusTitle(s: string) {
         <span class="cli-text">{{ store.cliCommand }}</span>
         <span class="cli-copy">{{ copied ? '✓' : '⎘' }}</span>
       </div>
-      <div class="cli-warn" v-if="store.cliUnsupported.length > 0 && store.config.mode === 'caller'">
+      <div class="cli-warn" v-if="store.cliUnsupported.length > 0">
         CLI 不支援：{{ store.cliUnsupported.join('、') }}（僅 GUI 生效）
+      </div>
+      <div class="cli-warn" v-if="store.config.mode === 'agent'">
+        帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv
       </div>
     </div>
 
@@ -533,7 +596,8 @@ function statusTitle(s: string) {
 .lock-banner {
   font-size: 11px;
   color: var(--accent);
-  background: rgba(var(--accent-rgb),0.08);
+  /* sticky：底色必須不透明，否則捲動時下方欄位會透出來 */
+  background: linear-gradient(rgba(var(--accent-rgb),0.08), rgba(var(--accent-rgb),0.08)), var(--bg1);
   border-bottom: 1px solid rgba(var(--accent-rgb),0.25);
   padding: 6px 14px;
   position: sticky;
@@ -622,7 +686,6 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .mode-icon { color: var(--text1); margin-bottom: 2px; }
 .mode-tab.active .mode-icon { color: var(--accent); }
-.mode-tab:disabled { cursor: not-allowed; opacity: 0.6; }
 .mode-name {
   font-size: 12px;
   font-weight: 500;
@@ -889,8 +952,10 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 /* Account actions */
 .acc-actions {
   display: flex;
+  flex-wrap: wrap;            /* 側欄寬度放不下三個按鈕時換行，不擠壓統計文字 */
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   margin-bottom: 4px;
 }
 
@@ -898,6 +963,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 3px;
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text1);
@@ -948,4 +1014,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .cli-text { font-family: var(--mono); font-size: 10px; color: var(--text1); word-break: break-all; line-height: 1.6; flex: 1; }
 .cli-copy { font-size: 12px; color: var(--text2); flex-shrink: 0; margin-top: 1px; transition: color 0.2s; }
 .cli-box:hover .cli-copy { color: var(--accent); }
+.range-pair { display: flex; align-items: center; gap: 4px; }
+.range-pair input { flex: 1; min-width: 0; }
+.range-pair span { color: var(--text2); }
 </style>

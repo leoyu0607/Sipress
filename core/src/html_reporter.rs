@@ -6,7 +6,12 @@ use std::{fs, path::PathBuf};
 pub struct HtmlReporter;
 
 impl HtmlReporter {
-    pub fn save(report: &FinalReport, output_dir: &str, timestamp: &str, server_addr: &str) -> Result<PathBuf> {
+    pub fn save(
+        report: &FinalReport,
+        output_dir: &str,
+        timestamp: &str,
+        server_addr: &str,
+    ) -> Result<PathBuf> {
         fs::create_dir_all(output_dir)?;
         let filename = format!("{}_report.html", timestamp);
         let path = PathBuf::from(output_dir).join(&filename);
@@ -19,23 +24,34 @@ impl HtmlReporter {
         let ccr_cls = kpi_cls(r.ccr, 85.0, 70.0);
         let fail_total = r.fail_4xx + r.fail_5xx + r.fail_6xx;
 
-        let asr_arc   = ring_svg(r.asr / 100.0, "ASR",     &ring_color(r.asr, 85.0, 70.0));
-        let ccr_arc   = ring_svg(r.ccr / 100.0, "CCR",     &ring_color(r.ccr, 85.0, 70.0));
-        let pdd_bars  = bar_chart(&[("P50",r.pdd_p50_ms),("P95",r.pdd_p95_ms),("P99",r.pdd_p99_ms),("MAX",r.pdd_max_ms)]);
-        let setup_bars = bar_chart(&[("P50",r.setup_p50_ms),("P95",r.setup_p95_ms),("P99",r.setup_p99_ms),("MAX",r.setup_max_ms)]);
-        let dist      = dist_bar(r);
+        let asr_arc = ring_svg(r.asr / 100.0, "ASR", &ring_color(r.asr, 85.0, 70.0));
+        let ccr_arc = ring_svg(r.ccr / 100.0, "CCR", &ring_color(r.ccr, 85.0, 70.0));
+        let pdd_bars = bar_chart(&[
+            ("P50", r.pdd_p50_ms),
+            ("P95", r.pdd_p95_ms),
+            ("P99", r.pdd_p99_ms),
+            ("MAX", r.pdd_max_ms),
+        ]);
+        let setup_bars = bar_chart(&[
+            ("P50", r.setup_p50_ms),
+            ("P95", r.setup_p95_ms),
+            ("P99", r.setup_p99_ms),
+            ("MAX", r.setup_max_ms),
+        ]);
+        let dist = dist_bar(r);
 
         // RTP 區塊
         let rtp_section = match (r.mos, r.loss_rate_pct, r.jitter_ms) {
             (Some(mos), Some(loss), Some(jitter)) => {
-                let mos_cls   = mos_badge_cls(mos);
+                let mos_cls = mos_badge_cls(mos);
                 let mos_label = mos_label_str(mos);
-                let loss_cls  = kpi_cls(100.0 - loss, 97.0, 94.0); // 反向：越低越好
+                let loss_cls = kpi_cls(100.0 - loss, 97.0, 94.0); // 反向：越低越好
                 let jitter_cls = kpi_cls(150.0 - jitter.min(150.0), 100.0, 50.0);
                 let sent = r.rtp_sent.unwrap_or(0);
                 let recv = r.rtp_recv.unwrap_or(0);
-                let ooo  = r.rtp_out_of_order.unwrap_or(0);
-                format!(r#"<div class="card">
+                let ooo = r.rtp_out_of_order.unwrap_or(0);
+                format!(
+                    r#"<div class="card">
   <div class="section-title">聲音品質 — RTP 分析</div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
     <span style="font-size:13px;color:var(--text-muted)">整體評分</span>
@@ -64,20 +80,28 @@ impl HtmlReporter {
     <div>亂序封包 &nbsp;<strong>{ooo}</strong></div>
   </div>
 </div>"#,
-                    mos_cls = mos_cls, mos = mos, mos_label = mos_label,
+                    mos_cls = mos_cls,
+                    mos = mos,
+                    mos_label = mos_label,
                     mos_cls2 = mos_to_val_cls(mos),
-                    loss_cls = loss_cls, loss = loss,
-                    jitter_cls = jitter_cls, jitter = jitter,
-                    sent = sent, recv = recv, ooo = ooo,
+                    loss_cls = loss_cls,
+                    loss = loss,
+                    jitter_cls = jitter_cls,
+                    jitter = jitter,
+                    sent = sent,
+                    recv = recv,
+                    ooo = ooo,
                 )
             }
             _ => r#"<div class="card" style="color:var(--text-muted);font-size:13px">
   <div class="section-title">聲音品質 — RTP 分析</div>
   未啟用 RTP（使用 <code>--rtp</code> 旗標啟用，可選 <code>--audio</code> 指定音檔）
-</div>"#.to_string(),
+</div>"#
+                .to_string(),
         };
 
-        format!(r#"<!DOCTYPE html>
+        format!(
+            r#"<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
@@ -251,26 +275,37 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 </main>
 <footer class="footer">sipress v0.1 &nbsp;·&nbsp; 報告產生時間 {ts} &nbsp;·&nbsp; 測試時長 {dur:.1}s</footer>
 </body></html>"#,
-            ts         = timestamp,
-            server     = server_addr,
-            dur        = r.duration_secs,
-            cps        = r.actual_cps,
-            asr        = r.asr,
-            ccr        = r.ccr,
-            acd        = r.acd_secs,
-            initiated  = r.calls_initiated,
-            answered   = r.calls_answered,
-            completed  = r.calls_completed,
-            failed     = r.calls_failed,
-            timeout    = r.calls_timeout,
+            ts = timestamp,
+            server = server_addr,
+            dur = r.duration_secs,
+            cps = r.actual_cps,
+            asr = r.asr,
+            ccr = r.ccr,
+            acd = r.acd_secs,
+            initiated = r.calls_initiated,
+            answered = r.calls_answered,
+            completed = r.calls_completed,
+            failed = r.calls_failed,
+            timeout = r.calls_timeout,
             fail_total = fail_total,
-            f4 = r.fail_4xx, f5 = r.fail_5xx, f6 = r.fail_6xx,
-            asr_cls = asr_cls, ccr_cls = ccr_cls,
-            asr_val = cls_to_val(asr_cls), ccr_val = cls_to_val(ccr_cls),
+            f4 = r.fail_4xx,
+            f5 = r.fail_5xx,
+            f6 = r.fail_6xx,
+            asr_cls = asr_cls,
+            ccr_cls = ccr_cls,
+            asr_val = cls_to_val(asr_cls),
+            ccr_val = cls_to_val(ccr_cls),
             fail_cls = if fail_total > 0 { "warn" } else { "good" },
-            fail_val = if fail_total > 0 { "val-warn" } else { "val-good" },
-            asr_arc = asr_arc, ccr_arc = ccr_arc,
-            dist = dist, pdd_bars = pdd_bars, setup_bars = setup_bars,
+            fail_val = if fail_total > 0 {
+                "val-warn"
+            } else {
+                "val-good"
+            },
+            asr_arc = asr_arc,
+            ccr_arc = ccr_arc,
+            dist = dist,
+            pdd_bars = pdd_bars,
+            setup_bars = setup_bars,
             rtp_section = rtp_section,
             p4 = pct(r.fail_4xx, fail_total),
             p5 = pct(r.fail_5xx, fail_total),
@@ -282,44 +317,80 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 // ── 輔助函式 ────────────────────────────────────────────────────
 
 fn pct(a: u64, b: u64) -> f64 {
-    if b == 0 { 0.0 } else { a as f64 / b as f64 * 100.0 }
+    if b == 0 {
+        0.0
+    } else {
+        a as f64 / b as f64 * 100.0
+    }
 }
 
 fn kpi_cls(v: f64, good: f64, warn: f64) -> &'static str {
-    if v >= good { "good" } else if v >= warn { "warn" } else { "bad" }
+    if v >= good {
+        "good"
+    } else if v >= warn {
+        "warn"
+    } else {
+        "bad"
+    }
 }
 fn cls_to_val(cls: &str) -> &'static str {
-    match cls { "good" => "val-good", "warn" => "val-warn", _ => "val-bad" }
+    match cls {
+        "good" => "val-good",
+        "warn" => "val-warn",
+        _ => "val-bad",
+    }
 }
 fn ring_color(v: f64, good: f64, warn: f64) -> String {
-    if v >= good { "#1a9e5c".into() } else if v >= warn { "#c47d00".into() } else { "#d93025".into() }
+    if v >= good {
+        "#1a9e5c".into()
+    } else if v >= warn {
+        "#c47d00".into()
+    } else {
+        "#d93025".into()
+    }
 }
 
 fn mos_badge_cls(mos: f64) -> &'static str {
-    if mos >= 4.0 { "mos-good" } else if mos >= 3.0 { "mos-warn" } else { "mos-bad" }
+    if mos >= 4.0 {
+        "mos-good"
+    } else if mos >= 3.0 {
+        "mos-warn"
+    } else {
+        "mos-bad"
+    }
 }
 fn mos_to_val_cls(mos: f64) -> &'static str {
-    if mos >= 4.0 { "val-good" } else if mos >= 3.0 { "val-warn" } else { "val-bad" }
+    if mos >= 4.0 {
+        "val-good"
+    } else if mos >= 3.0 {
+        "val-warn"
+    } else {
+        "val-bad"
+    }
 }
 fn mos_label_str(mos: f64) -> &'static str {
     match mos as u32 {
-        5 | 4  => "良好 (Good)",
-        3      => "普通 (Fair)",
-        2      => "差 (Poor)",
-        _      => "劣 (Bad)",
+        5 | 4 => "良好 (Good)",
+        3 => "普通 (Fair)",
+        2 => "差 (Poor)",
+        _ => "劣 (Bad)",
     }
 }
 
 /// SVG 環形圖（110×110）
 fn ring_svg(ratio: f64, label: &str, color: &str) -> String {
     use std::f64::consts::PI;
-    let r = 42.0_f64; let cx = 55.0; let cy = 55.0; let sw = 9.0;
+    let r = 42.0_f64;
+    let cx = 55.0;
+    let cy = 55.0;
+    let sw = 9.0;
     let a = ratio.clamp(0.0, 0.9999) * 2.0 * PI;
     let ex = cx + r * a.sin();
     let ey = cy - r * a.cos();
     let large = if a > PI { 1 } else { 0 };
     // 注意：使用 r##"..."## 避免 SVG hex 顏色中的 "#..." 提前終止 r#"..."# raw string
-    format!(r##"<div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+    format!(
+        r##"<div style="display:flex;flex-direction:column;align-items:center;gap:4px">
 <svg width="110" height="110" viewBox="0 0 110 110">
   <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#dde1e9" stroke-width="{sw}"/>
   <path d="M {cx} {sy} A {r} {r} 0 {large} 1 {ex:.2} {ey:.2}"
@@ -329,16 +400,28 @@ fn ring_svg(ratio: f64, label: &str, color: &str) -> String {
   <text x="{cx}" y="66" text-anchor="middle" font-family="Lato,sans-serif"
     font-size="10" fill="#9ba3b8">{label}</text>
 </svg></div>"##,
-        cx=cx, cy=cy, r=r, sw=sw, sy=cy-r,
-        ex=ex, ey=ey, large=large, color=color,
-        pct=ratio*100.0, label=label,
+        cx = cx,
+        cy = cy,
+        r = r,
+        sw = sw,
+        sy = cy - r,
+        ex = ex,
+        ey = ey,
+        large = large,
+        color = color,
+        pct = ratio * 100.0,
+        label = label,
     )
 }
 
 /// 延遲長條圖
 fn bar_chart(data: &[(&str, f64)]) -> String {
-    let max = data.iter().map(|(_,v)| *v).fold(0.0_f64, f64::max).max(1.0);
-    let colors = ["#1a6ef5","#c47d00","#d93025","#7b0000"];
+    let max = data
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let colors = ["#1a6ef5", "#c47d00", "#d93025", "#7b0000"];
     let mut out = String::new();
     for (i, (lbl, val)) in data.iter().enumerate() {
         let w = (val / max * 100.0) as u32;
@@ -347,7 +430,12 @@ fn bar_chart(data: &[(&str, f64)]) -> String {
   <span class="bar-tag">{lbl}</span>
   <div class="bar-track"><div class="bar-fill" style="width:{w}%;background:{c}"></div></div>
   <span class="bar-val">{val:.1} ms</span>
-</div>"#, lbl=lbl, w=w, c=colors[i.min(3)], val=val));
+</div>"#,
+            lbl = lbl,
+            w = w,
+            c = colors[i.min(3)],
+            val = val
+        ));
     }
     out
 }
@@ -355,19 +443,29 @@ fn bar_chart(data: &[(&str, f64)]) -> String {
 /// 通話分佈堆疊條
 fn dist_bar(r: &FinalReport) -> String {
     let total = r.calls_initiated as f64;
-    if total == 0.0 { return "<p style='color:var(--text-muted);font-size:13px'>無資料</p>".into(); }
+    if total == 0.0 {
+        return "<p style='color:var(--text-muted);font-size:13px'>無資料</p>".into();
+    }
     let segs = [
         (r.calls_completed, "#1a9e5c", "完成"),
-        (r.calls_answered.saturating_sub(r.calls_completed), "#1a6ef5", "接通中"),
-        (r.calls_failed,   "#d93025", "失敗"),
-        (r.calls_timeout,  "#c47d00", "逾時"),
+        (
+            r.calls_answered.saturating_sub(r.calls_completed),
+            "#1a6ef5",
+            "接通中",
+        ),
+        (r.calls_failed, "#d93025", "失敗"),
+        (r.calls_timeout, "#c47d00", "逾時"),
     ];
     let mut bar = r#"<div class="dist-bar">"#.to_string();
     let mut leg = r#"<div class="dist-legend">"#.to_string();
     for (cnt, col, lbl) in &segs {
         let w = (*cnt as f64 / total * 100.0) as u32;
         if w > 0 {
-            bar.push_str(&format!(r#"<div class="dist-seg" style="width:{w}%;background:{c}"></div>"#, w=w, c=col));
+            bar.push_str(&format!(
+                r#"<div class="dist-seg" style="width:{w}%;background:{c}"></div>"#,
+                w = w,
+                c = col
+            ));
         }
         leg.push_str(&format!(
             r#"<div class="dist-item"><span class="dist-dot" style="background:{c}"></span>{lbl}&nbsp;<strong style="color:var(--text)">{cnt}</strong>&nbsp;({p:.1}%)</div>"#,

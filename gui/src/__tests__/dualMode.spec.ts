@@ -170,7 +170,8 @@ describe('雙端：狀態隔離', () => {
     routeSeq({ caller: [1], agent: [1] })
     const s = useTestStore()
     withAccount(s)
-    s.config.duration = 10
+    s.config.caller.duration = 10
+    s.config.agent.duration = 10
     await s.startTest('caller')
     for (let i = 0; i < 4; i++) await tick()
     await s.startTest('agent')
@@ -410,11 +411,11 @@ describe('log 的 mode 標記 (D15)', () => {
 
     for (const m of ['agent', 'caller'] as const) {
       expect(s.logs.some(l => l.mode === m && l.msg.startsWith('測試開始')), `${m} 測試開始`).toBe(true)
-      expect(s.logs.some(l => l.mode === m && l.msg.startsWith('失敗')), `${m} 失敗`).toBe(true)
+      expect(s.logs.some(l => l.mode === m && l.msg.startsWith('新增失敗')), `${m} 失敗`).toBe(true)
       expect(s.logs.some(l => l.mode === m && l.msg.startsWith('測試已手動停止')), `${m} 停止`).toBe(true)
     }
     // 所有「測試開始 / 手動停止 / 失敗 / 測試完成」都必須帶 mode
-    expect(s.logs.filter(l => /^(測試開始|測試已手動停止|失敗|測試完成)/.test(l.msg)).every(l => !!l.mode)).toBe(true)
+    expect(s.logs.filter(l => /^(測試開始|測試已手動停止|新增失敗|測試完成)/.test(l.msg)).every(l => !!l.mode)).toBe(true)
   })
 })
 
@@ -535,5 +536,110 @@ describe('雙端啟動等待座席註冊', () => {
     expect(s.agents).toEqual({ registered: 48, total: 50 })
     s.config.mode = 'caller'
     expect(s.agents).toEqual({ registered: 0, total: 0 })
+  })
+})
+
+describe('持續時間兩端分開設定', () => {
+  it('各端送出自己的 duration_secs，CLI 預覽跟著檢視中的模式', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    withAccount(s)
+    s.config.caller.duration = 120
+    s.config.agent.duration = 300
+    await s.startTest('caller')
+    await s.startTest('agent')
+    const sent = calls.filter(c => c.cmd === 'start_test').map(c => c.args?.config as { mode: string; duration_secs: number })
+    expect(sent.map(c => [c.mode, c.duration_secs])).toEqual([['caller', 120], ['agent', 300]])
+
+    expect(s.cliCommand).toContain('-d 120')
+    s.config.mode = 'agent'
+    expect(s.cliCommand).toContain('-d 300')
+  })
+
+  it('舊版 localStorage 的共用 duration → 兩端都沿用', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ duration: 45 }))
+    const s = useTestStore()
+    expect(s.config.caller.duration).toBe(45)
+    expect(s.config.agent.duration).toBe(45)
+    expect('duration' in s.config).toBe(false)
+  })
+
+  it('新版設定的各端 duration 優先於舊欄位', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ duration: 45, caller: { duration: 10 }, agent: { duration: 0 } }))
+    const s = useTestStore()
+    expect(s.config.caller.duration).toBe(10)
+    expect(s.config.agent.duration).toBe(0)
+  })
+
+  it.each([
+    [60, true], [0, false], [120, false], [300, false],
+  ])('雙端啟動：民眾端 120s、座席端 %ss → 警告=%s', async (agentDuration, warned) => {
+    vi.useFakeTimers()
+    try {
+      routeInvoke({
+        start_test:   () => 'started',
+        get_snapshot: () => snap({ agents_registered: 1, agents_total: 1 }),
+      })
+      const s = useTestStore()
+      withAccount(s)
+      s.config.caller.duration = 120
+      s.config.agent.duration = agentDuration
+      const done = s.startBoth()
+      await vi.advanceTimersByTimeAsync(1500)
+      await done
+      expect(s.sessions.caller.status).toBe('running')
+      expect(s.logs.some(l => l.level === 'warn' && l.msg.includes('座席會先結束'))).toBe(warned)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('端到端對照報告', () => {
+  it('民眾端完成、座席端執行過才可匯出，送出 get_correlation_html 並存檔', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(save).mockResolvedValue('/tmp/e2e.html')
+      const calls = routeInvoke({
+        start_test:           () => 'started',
+        get_snapshot:         a => modeOf(a) === 'caller' ? snap({ finished: true }) : snap({}),
+        get_report:           () => baseReport,
+        get_correlation_html: () => '<html>e2e</html>',
+        save_text_file:       () => null,
+      })
+      const s = useTestStore()
+      withAccount(s)
+      expect(s.canExportE2e).toBe(false)
+      await s.startTest('caller')
+      expect(s.canExportE2e).toBe(false)          // 民眾端執行中、座席端沒跑過
+      await vi.advanceTimersByTimeAsync(1000)
+      await vi.waitFor(() => expect(s.sessions.caller.status).toBe('done'))
+      expect(s.canExportE2e).toBe(false)          // 座席端沒跑過
+      await s.startTest('agent')
+      expect(s.canExportE2e).toBe(true)           // 座席端仍在執行也可匯出
+
+      await s.exportE2eHtml()
+      const req = calls.find(c => c.cmd === 'get_correlation_html')
+      expect(req?.args).toMatchObject({ serverAddr: s.config.server })
+      expect(req?.args?.timestamp).toMatch(/^\d{8}_\d{6}$/)
+      const saved = calls.find(c => c.cmd === 'save_text_file')
+      expect(saved?.args).toEqual({ path: '/tmp/e2e.html', contents: '<html>e2e</html>' })
+      const saveCalls = vi.mocked(save).mock.calls
+      expect(saveCalls[saveCalls.length - 1]?.[0]?.defaultPath).toMatch(/^sipress_e2e_\d{8}_\d{6}\.html$/)
+      expect(s.logs.some(l => l.level === 'ok' && l.msg.includes('端到端對照報告 已匯出'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('每通不同主叫號碼：送出 caller_number_seq，CLI 預覽加 --from-seq', async () => {
+    const calls = routeInvoke({ start_test: () => 'started' })
+    const s = useTestStore()
+    expect(s.cliCommand).not.toContain('--from-seq')
+    s.config.caller.numberSeq = true
+    expect(s.cliCommand).toContain('--from-seq')
+    await s.startTest('caller')
+    const sent = calls.find(c => c.cmd === 'start_test')?.args?.config as { caller_number_seq: boolean }
+    expect(sent.caller_number_seq).toBe(true)
   })
 })

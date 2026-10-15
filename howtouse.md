@@ -103,7 +103,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 - 檢視座席端時，指標列最後一格顯示 **REG 已註冊/總數**（綠＝全部成功、黃＝部分、紅＝全部失敗）；座席端量不到 PDD，所以這格取代 PDD。
 - 事件記錄每行會標示來源（民眾端 / 座席端）。
 - 民眾端的被叫號碼需能經 SIPX 路由到座席帳號（例如固定被叫設為座席分機或對應的接入號）。
-- SIP server、Transport、持續時間為兩端共用設定。
+- SIP server、Transport 為兩端共用設定；**持續時間兩端各自設定**（欄位顯示目前分頁的那一端）。座席端通常先開後關：設得比民眾端長或設 0（手動停止）。雙端啟動時若座席端比民眾端早結束，事件記錄會警告。
 
 ---
 
@@ -116,7 +116,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 | SIP 伺服器 | `192.168.1.100:5060` | 目標 SIP Proxy 的 IP 與 Port |
 | 傳輸層 | `UDP` / `TCP` / `TLS` | 須與伺服器設定一致 |
 | 本機 Port | `5070` | 民眾端 SIP 綁定的本機 port；**0 = 自動分配**。port 被其他程式佔用時無法啟動。座席端不使用此設定（每個帳號各自隨機 port） |
-| 持續時間（秒）| `60` | **設為 0 = 不限時間**，需搭配總通數或手動停止 |
+| 持續時間（秒）| 民眾端 `60`、座席端 `0` | **每端各自設定**，欄位跟著目前的模式分頁切換。**設為 0 = 不限時間**，需搭配總通數或手動停止 |
 
 ### 民眾端設定（Caller mode）
 
@@ -127,6 +127,7 @@ sipress 提供兩種壓測角色，在 Sidebar 上方的「📞 民眾端 / 🎧
 | 併發數量 | `100` | 最大同時進行中通話數 |
 | 呼叫頻率 CPS | `10` | 每秒發起的新通話數 |
 | 總測試通數 | `500` | **設為 0 = 不限通數**，依持續時間決定結束 |
+| 每通不同主叫號碼 | 關閉 | 第 n 通用「主叫號碼 + n」（保留位數，例如 0912000000、0912000001…）。端到端對照拿不到 `P-CIN-CallId` 時，靠它一對一配對 |
 
 ### 座席端設定（Agent mode）
 
@@ -222,6 +223,21 @@ extension,username,password,domain
 5. 也會處理 RE-INVITE（Session-Expires）/ CANCEL / OPTIONS
 6. 測試結束時對每個帳號發 REGISTER Expires=0 解除註冊
 
+### 5.5 座席行為模擬
+
+預設座席收到來電立即接聽、等對方掛斷。要測 ACD 的重新分配與座席忙碌時的行為，可在座席端設定：
+
+| 欄位 | CLI | 說明 |
+|---|---|---|
+| 響鈴後接聽（秒，最小–最大） | `--ring 2-5` | 送 180 Ringing 後隨機等幾秒才 200 OK；最大值 0 = 立即接聽 |
+| 主動掛斷（秒，最小–最大） | `--talk 30-90` | 接聽後隨機幾秒由座席送 BYE；最大值 0 = 等對方 BYE |
+| 拒接 % | `--reject-pct 10` | 響鈴後回 `486 Busy Here` |
+| 不接 % | `--no-answer-pct 10` | 一直響鈴，等 SIPX 逾時 CANCEL（回 487）改派別的座席；120 秒仍未取消則回 480 |
+| 休息（秒） | `--wrap-up 5` | 通話結束後的 wrap-up 時間，期間的新來電直接回 486 |
+| 通話中忙線 | `--busy-in-call` | 已有通話（含響鈴中）時，新來電直接回 486，讓 ACD 改派給其他座席；關閉時同一帳號可同時接多通（預設） |
+
+拒接、不接、休息中或通話中被拒的來電在座席端計為失敗通話（4xx），ASR 會相應降低；響鈴延遲會反映在民眾端的通話建立時間（Setup，到 200 OK），PDD（到第一個 18x）不受影響。
+
 ---
 
 ## 6. 執行測試與讀取即時指標
@@ -289,6 +305,25 @@ extension,username,password,domain
 
 > **注意**：`↓ HTML` 按鈕在測試**執行中**或**尚未開始**時為灰色（disabled），需等測試完成或手動停止後才能使用。
 
+### 端到端對照報告（↓ 對照）
+
+民眾端與座席端都跑過（通常是 **⇄ 雙端啟動**）後，`↓ 對照` 會把民眾端每通電話和座席端收到的來電配對，產生一份合併的 HTML 報告。民眾端完成後即可匯出，座席端仍在執行也沒關係。
+
+| 指標 | 說明 |
+|---|---|
+| 漏接率 | 民眾端接通（SIPX 回 200，可能是 IVR 先接）但沒有任何座席接起的比例；另列出其中完全沒有座席收到來電的通數 |
+| 分配延遲 | 民眾端送出 INVITE → 第一個座席收到 INVITE（排隊 + ACD 分配） |
+| 座席接起 | 民眾端送出 INVITE → 座席回 200 OK（含響鈴與改派） |
+| ACD 改派 | 同一通有多個座席收到 INVITE（例如座席不接被 CANCEL 後改派） |
+| 雙向音質 | 民眾端收到的 MOS（座席→民眾）與座席端收到的 MOS（民眾→座席）；需兩端都啟用 RTP |
+
+配對方式：
+
+1. **`P-CIN-CallId`**：SIPX 在同一通電話的每一段（回給主叫的 180 / 200、送到座席的 INVITE）都帶相同的 `P-CIN-CallId`，SIP 的 Call-ID 則每段都不同。
+2. **主叫號碼 + 時間窗**（預設 120 秒）：拿不到 `P-CIN-CallId` 時，用座席端 INVITE 的 From 號碼對回民眾端。民眾端開「每通不同主叫號碼」才能一對一；同一號碼在時間窗內有多通時，報告會標為「號碼?」（不確定）。
+
+兩端在不同電腦時請先校時（NTP），否則延遲數值會偏差（報告中出現負值即為時鐘不同步）。
+
 ---
 
 ## 8. CLI 使用方式
@@ -337,6 +372,38 @@ extension,username,password,domain
 --format <格式>             table | json | csv（預設：table）
 --logs-dir <目錄>           Log 輸出目錄（預設：logs）
 --tui                      啟用即時儀表板介面
+--mode <模式>               caller（預設）| agent
+--accounts <檔案>           座席帳號檔（agent 模式必填，格式同 GUI 匯入 / 匯出 CSV）
+--account-domain <domain>  帳號未填 domain 時的預設值（預設：SIP server IP）
+--ack-timeout <秒>          座席端等待 ACK 逾時（預設：10）
+--bye-timeout <秒>          座席端等待 BYE 逾時（預設：150）
+--from-seq                 民眾端每通使用不同主叫號碼（從 --from 遞增）
+--trace-file <檔案>         結束後寫出每通的追蹤紀錄（端到端對照用）
+--correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
+--correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
+--ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）
+--talk <秒|最小-最大>       座席端接聽幾秒後主動掛斷（預設：0 = 等對方）
+--reject-pct <%>           座席端拒接比例（486）
+--no-answer-pct <%>        座席端不接比例（等 CANCEL）
+--wrap-up <秒>              座席端兩通之間休息秒數（期間來電回 486）
+--busy-in-call             座席端通話中（含響鈴中）的新來電回 486
+```
+
+座席端範例（Ctrl-C 結束時會先解除註冊）：
+
+```bash
+./sipress -s 192.168.1.100:5060 --mode agent --accounts sipress_accounts.csv -d 0 --tui
+```
+
+端到端對照（兩個終端機，或兩台已校時的電腦）：
+
+```bash
+# 1. 先開座席端，結束時寫出追蹤紀錄
+./sipress -s 192.168.1.100:5060 --mode agent --accounts sipress_accounts.csv -d 0 --trace-file agent.json
+# 2. 再開民眾端
+./sipress -s 192.168.1.100:5060 --from 0912000000 --from-seq --to 168168999 -c 20 --cps 2 -d 60 --trace-file caller.json
+# 3. 座席端 Ctrl-C 結束後合併（檔案順序不拘）；--format json / csv 輸出明細，--html 產生報告
+./sipress --correlate caller.json agent.json --html
 ```
 
 ---
@@ -386,7 +453,7 @@ xattr -c sipress-gui-macos-*-portable
 從 GUI 0.1 起，「開始測試」會依 Sidebar 上方的分頁切換真正執行對應引擎。若懷疑沒切換：
 
 - 看 Event Log 第一行是否寫 `[agent mode]` 或 `[caller mode]`
-- 看 SIP log（`logs/YYYYMMDD_HHMMSS_agent.sip.log`）首先送出的是 `REGISTER`（座席）還是 `INVITE`（民眾）
+- 看 `logs/` 裡新產生的 SIP log：座席端是 `*_agent.sip.log`（先送 `REGISTER`），民眾端是 `*_caller.sip.log`（先送 `INVITE`）
 - 重新點選一次「🎧 座席端」分頁確保 active 狀態
 
 ### 大量通話失敗
@@ -411,7 +478,7 @@ xattr -c sipress-gui-macos-*-portable
 - 收到 RE-INVITE 自動 200 OK + SDP 保活
 - 收到伺服器 BYE 也會自動回 200 OK 並結束統計
 
-若仍遇到，請檢查 `logs/*_agent.sip.log` 中是否有 `收到 RE-INVITE...回應 200 OK` 的紀錄。
+若仍遇到，請檢查民眾端的 `logs/*_caller.sip.log`（座席端為 `*_agent.sip.log`）中是否有 `收到 RE-INVITE...回應 200 OK` 的紀錄。
 
 ### GUI 顯示空白視窗
 

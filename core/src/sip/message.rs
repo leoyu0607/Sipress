@@ -8,17 +8,17 @@ impl SipMessage {
     /// 建構 INVITE 請求
     #[allow(clippy::too_many_arguments)]
     pub fn invite(
-        call_id:      &str,
-        from_number:  &str,
-        from_domain:  &str,
-        to_number:    &str,
-        server_addr:  &str,
-        local_addr:   &str,
-        cseq:         u32,
-        branch:       &str,
-        tag:          &str,
-        transport:    &str,   // "UDP" or "TCP"
-        rtp_port:     u16,    // 本機 RTP port（寫入 SDP m= 行）
+        call_id: &str,
+        from_number: &str,
+        from_domain: &str,
+        to_number: &str,
+        server_addr: &str,
+        local_addr: &str,
+        cseq: u32,
+        branch: &str,
+        tag: &str,
+        transport: &str, // "UDP" or "TCP"
+        rtp_port: u16,   // 本機 RTP port（寫入 SDP m= 行）
     ) -> String {
         let sdp = Self::minimal_sdp(local_addr, rtp_port);
         let sdp_len = sdp.len();
@@ -38,19 +38,19 @@ impl SipMessage {
              Allow: INVITE,ACK,BYE,CANCEL,OPTIONS\r\n\
              \r\n\
              {sdp}",
-            to           = to_number,
-            server       = server_addr,
-            transport    = transport,
+            to = to_number,
+            server = server_addr,
+            transport = transport,
             transport_lower = transport.to_lowercase(),
-            local        = local_addr,
-            branch       = branch,
-            from         = from_number,
-            from_domain  = from_domain,
-            tag          = tag,
-            call_id      = call_id,
-            cseq         = cseq,
-            sdp_len      = sdp_len,
-            sdp          = sdp,
+            local = local_addr,
+            branch = branch,
+            from = from_number,
+            from_domain = from_domain,
+            tag = tag,
+            call_id = call_id,
+            cseq = cseq,
+            sdp_len = sdp_len,
+            sdp = sdp,
         )
     }
 
@@ -60,17 +60,17 @@ impl SipMessage {
     ///                non-2xx ACK 傳 None，回退使用 sip:{to}@{server}。
     #[allow(clippy::too_many_arguments)]
     pub fn ack(
-        call_id:     &str,
+        call_id: &str,
         from_number: &str,
         from_domain: &str,
-        to_number:   &str,
-        to_tag:      &str,
+        to_number: &str,
+        to_tag: &str,
         server_addr: &str,
-        local_addr:  &str,
-        cseq:        u32,
-        branch:      &str,
-        from_tag:    &str,
-        transport:   &str,
+        local_addr: &str,
+        cseq: u32,
+        branch: &str,
+        from_tag: &str,
+        transport: &str,
         request_uri: Option<&str>,
     ) -> String {
         let uri = request_uri
@@ -86,18 +86,18 @@ impl SipMessage {
              CSeq: {cseq} ACK\r\n\
              Content-Length: 0\r\n\
              \r\n",
-            uri        = uri,
-            to         = to_number,
-            server     = server_addr,
-            transport  = transport,
-            local      = local_addr,
-            branch     = branch,
-            from       = from_number,
+            uri = uri,
+            to = to_number,
+            server = server_addr,
+            transport = transport,
+            local = local_addr,
+            branch = branch,
+            from = from_number,
             from_domain = from_domain,
-            from_tag   = from_tag,
-            to_tag     = to_tag,
-            call_id    = call_id,
-            cseq       = cseq,
+            from_tag = from_tag,
+            to_tag = to_tag,
+            call_id = call_id,
+            cseq = cseq,
         )
     }
 
@@ -107,17 +107,17 @@ impl SipMessage {
     ///                None 時回退使用 sip:{to}@{server}。
     #[allow(clippy::too_many_arguments)]
     pub fn bye(
-        call_id:     &str,
+        call_id: &str,
         from_number: &str,
         from_domain: &str,
-        to_number:   &str,
-        to_tag:      &str,
+        to_number: &str,
+        to_tag: &str,
         server_addr: &str,
-        local_addr:  &str,
-        cseq:        u32,
-        branch:      &str,
-        from_tag:    &str,
-        transport:   &str,
+        local_addr: &str,
+        cseq: u32,
+        branch: &str,
+        from_tag: &str,
+        transport: &str,
         request_uri: Option<&str>,
     ) -> String {
         let uri = request_uri
@@ -133,34 +133,34 @@ impl SipMessage {
              CSeq: {cseq} BYE\r\n\
              Content-Length: 0\r\n\
              \r\n",
-            uri         = uri,
-            to          = to_number,
-            server      = server_addr,
-            transport   = transport,
-            local       = local_addr,
-            branch      = branch,
-            from        = from_number,
+            uri = uri,
+            to = to_number,
+            server = server_addr,
+            transport = transport,
+            local = local_addr,
+            branch = branch,
+            from = from_number,
             from_domain = from_domain,
-            from_tag    = from_tag,
-            to_tag      = to_tag,
-            call_id     = call_id,
-            cseq        = cseq,
+            from_tag = from_tag,
+            to_tag = to_tag,
+            call_id = call_id,
+            cseq = cseq,
         )
     }
 
     /// 建構 CANCEL
     #[allow(clippy::too_many_arguments)]
     pub fn cancel(
-        call_id:     &str,
+        call_id: &str,
         from_number: &str,
         from_domain: &str,
-        to_number:   &str,
+        to_number: &str,
         server_addr: &str,
-        local_addr:  &str,
-        cseq:        u32,
-        branch:      &str,
-        from_tag:    &str,
-        transport:   &str,
+        local_addr: &str,
+        cseq: u32,
+        branch: &str,
+        from_tag: &str,
+        transport: &str,
     ) -> String {
         format!(
             "CANCEL sip:{to}@{server} SIP/2.0\r\n\
@@ -172,16 +172,16 @@ impl SipMessage {
              CSeq: {cseq} CANCEL\r\n\
              Content-Length: 0\r\n\
              \r\n",
-            to          = to_number,
-            server      = server_addr,
-            transport   = transport,
-            local       = local_addr,
-            branch      = branch,
-            from        = from_number,
+            to = to_number,
+            server = server_addr,
+            transport = transport,
+            local = local_addr,
+            branch = branch,
+            from = from_number,
             from_domain = from_domain,
-            from_tag    = from_tag,
-            call_id     = call_id,
-            cseq        = cseq,
+            from_tag = from_tag,
+            call_id = call_id,
+            cseq = cseq,
         )
     }
 
@@ -228,8 +228,13 @@ impl SipMessage {
 impl SipMessage {
     /// 從請求訊息中擷取必要標頭（Via / From / To / Call-ID / CSeq）
     pub(crate) fn extract_request_headers(raw: &str) -> (String, String, String, String, String) {
-        let (mut vias, mut from, mut to, mut call_id, mut cseq) =
-            (Vec::<String>::new(), String::new(), String::new(), String::new(), String::new());
+        let (mut vias, mut from, mut to, mut call_id, mut cseq) = (
+            Vec::<String>::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
         for line in raw.lines() {
             let lower = line.to_lowercase();
             if lower.starts_with("via:") || lower.starts_with("v:") {
@@ -238,7 +243,9 @@ impl SipMessage {
                 from = line.to_string();
             } else if to.is_empty() && (lower.starts_with("to:") || lower.starts_with("t:")) {
                 to = line.to_string();
-            } else if call_id.is_empty() && (lower.starts_with("call-id:") || lower.starts_with("i:")) {
+            } else if call_id.is_empty()
+                && (lower.starts_with("call-id:") || lower.starts_with("i:"))
+            {
                 call_id = line.to_string();
             } else if cseq.is_empty() && lower.starts_with("cseq:") {
                 cseq = line.to_string();
@@ -257,16 +264,24 @@ impl SipMessage {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_response);
         // 只保留 top Via，並移除伺服器加上的 received / rport 值
         let top_via = via.split("\r\n").next().unwrap_or("");
-        let top_via: Vec<&str> = top_via.split(';')
+        let top_via: Vec<&str> = top_via
+            .split(';')
             .filter(|p| !p.trim().to_lowercase().starts_with("received="))
-            .map(|p| if p.trim().to_lowercase().starts_with("rport=") { "rport" } else { p })
+            .map(|p| {
+                if p.trim().to_lowercase().starts_with("rport=") {
+                    "rport"
+                } else {
+                    p
+                }
+            })
             .collect();
         let to_value = to.split_once(':').map_or("", |(_, v)| v).trim();
         let request_uri = match (to_value.find('<'), to_value.find('>')) {
             (Some(s), Some(e)) if s < e => to_value[s + 1..e].to_string(),
             _ => to_value.split(';').next().unwrap_or("").trim().to_string(),
         };
-        let cseq_num = cseq.split_once(':')
+        let cseq_num = cseq
+            .split_once(':')
             .and_then(|(_, v)| v.split_whitespace().next())
             .unwrap_or("1");
         format!(
@@ -279,8 +294,12 @@ impl SipMessage {
              CSeq: {cseq} ACK\r\n\
              Content-Length: 0\r\n\
              \r\n",
-            uri = request_uri, via = top_via.join(";"), from = from, to = to,
-            call_id = call_id, cseq = cseq_num,
+            uri = request_uri,
+            via = top_via.join(";"),
+            from = from,
+            to = to,
+            call_id = call_id,
+            cseq = cseq_num,
         )
     }
 
@@ -309,7 +328,11 @@ impl SipMessage {
              Content-Length: 0\r\n\
              \r\n",
             status = status_line,
-            via = via, from = from, to = to, call_id = call_id, cseq = cseq,
+            via = via,
+            from = from,
+            to = to,
+            call_id = call_id,
+            cseq = cseq,
         )
     }
 
@@ -318,13 +341,13 @@ impl SipMessage {
     /// `contact_user`: Contact URI 的 user 部分。INVITE 的 2xx 必須帶 Contact
     /// （RFC 3261 §13.3.1.4），對端以此作為後續請求（ACK/BYE）的目標。
     pub fn ok_for_server_reinvite(
-        raw_request:  &str,
-        local_addr:   &str,
-        rtp_port:     u16,
+        raw_request: &str,
+        local_addr: &str,
+        rtp_port: u16,
         contact_user: &str,
     ) -> String {
         let (via, from, to, call_id, cseq) = Self::extract_request_headers(raw_request);
-        let sdp     = Self::minimal_sdp(local_addr, rtp_port);
+        let sdp = Self::minimal_sdp(local_addr, rtp_port);
         let sdp_len = sdp.len();
         format!(
             "SIP/2.0 200 OK\r\n\
@@ -338,15 +361,15 @@ impl SipMessage {
              Content-Length: {sdp_len}\r\n\
              \r\n\
              {sdp}",
-            via     = via,
-            from    = from,
-            to      = to,
+            via = via,
+            from = from,
+            to = to,
             call_id = call_id,
-            cseq    = cseq,
-            user    = contact_user,
-            local   = local_addr,
+            cseq = cseq,
+            user = contact_user,
+            local = local_addr,
             sdp_len = sdp_len,
-            sdp     = sdp,
+            sdp = sdp,
         )
     }
 }
@@ -368,7 +391,9 @@ impl SipResponse {
     /// 同時解析 c= connection line 與 m=audio port，回傳 "ip:port" 字串。
     /// 若 c= 不存在，以 fallback_ip（SIP server IP）代替。
     pub fn sdp_rtp_addr(raw: &str, fallback_ip: &str) -> Option<String> {
-        let body_start = raw.find("\r\n\r\n").map(|i| i + 4)
+        let body_start = raw
+            .find("\r\n\r\n")
+            .map(|i| i + 4)
             .or_else(|| raw.find("\n\n").map(|i| i + 2))?;
         let body = &raw[body_start..];
 
@@ -418,8 +443,11 @@ impl SipResponse {
             }
             // 找到 audio port 後，繼續讀取直到遇到下一個 m= 行（或結束），
             // 確保 media-level c= 能覆蓋 session-level c=
-            if rtp_port.is_some() && in_audio_section
-                && !line.starts_with("m=audio") && line.starts_with("m=") {
+            if rtp_port.is_some()
+                && in_audio_section
+                && !line.starts_with("m=audio")
+                && line.starts_with("m=")
+            {
                 break;
             }
         }
@@ -486,9 +514,17 @@ mod tests {
     #[test]
     fn invite_contains_required_headers() {
         let msg = SipMessage::invite(
-            "abc@test", "1000", "10.0.0.1:5060", "2001",
-            "10.0.0.2:5060", "10.0.0.1:5070", 1,
-            "z9hG4bK-test", "tag123", "UDP", 16000,
+            "abc@test",
+            "1000",
+            "10.0.0.1:5060",
+            "2001",
+            "10.0.0.2:5060",
+            "10.0.0.1:5070",
+            1,
+            "z9hG4bK-test",
+            "tag123",
+            "UDP",
+            16000,
         );
         assert!(msg.starts_with("INVITE sip:2001@10.0.0.2:5060 SIP/2.0\r\n"));
         assert!(msg.contains("Call-ID: abc@test\r\n"));
@@ -502,9 +538,17 @@ mod tests {
     #[test]
     fn ack_uses_contact_uri_when_provided() {
         let msg = SipMessage::ack(
-            "abc@test", "1000", "10.0.0.1", "2001", "srv-tag",
-            "10.0.0.2:5060", "10.0.0.1:5070", 1,
-            "z9hG4bK-ack", "tag123", "UDP",
+            "abc@test",
+            "1000",
+            "10.0.0.1",
+            "2001",
+            "srv-tag",
+            "10.0.0.2:5060",
+            "10.0.0.1:5070",
+            1,
+            "z9hG4bK-ack",
+            "tag123",
+            "UDP",
             Some("sip:2001@10.0.0.2:5061"),
         );
         assert!(msg.starts_with("ACK sip:2001@10.0.0.2:5061 SIP/2.0\r\n"));
@@ -513,9 +557,18 @@ mod tests {
     #[test]
     fn ack_falls_back_to_to_uri() {
         let msg = SipMessage::ack(
-            "abc@test", "1000", "10.0.0.1", "2001", "srv-tag",
-            "10.0.0.2:5060", "10.0.0.1:5070", 1,
-            "z9hG4bK-ack", "tag123", "UDP", None,
+            "abc@test",
+            "1000",
+            "10.0.0.1",
+            "2001",
+            "srv-tag",
+            "10.0.0.2:5060",
+            "10.0.0.1:5070",
+            1,
+            "z9hG4bK-ack",
+            "tag123",
+            "UDP",
+            None,
         );
         assert!(msg.starts_with("ACK sip:2001@10.0.0.2:5060 SIP/2.0\r\n"));
     }
@@ -523,9 +576,18 @@ mod tests {
     #[test]
     fn bye_contains_correct_cseq() {
         let msg = SipMessage::bye(
-            "abc@test", "1000", "10.0.0.1", "2001", "srv-tag",
-            "10.0.0.2:5060", "10.0.0.1:5070", 2,
-            "z9hG4bK-bye", "tag123", "UDP", None,
+            "abc@test",
+            "1000",
+            "10.0.0.1",
+            "2001",
+            "srv-tag",
+            "10.0.0.2:5060",
+            "10.0.0.1:5070",
+            2,
+            "z9hG4bK-bye",
+            "tag123",
+            "UDP",
+            None,
         );
         assert!(msg.contains("CSeq: 2 BYE\r\n"));
         assert!(msg.contains(";tag=srv-tag\r\n"));
@@ -534,9 +596,16 @@ mod tests {
     #[test]
     fn cancel_preserves_branch() {
         let msg = SipMessage::cancel(
-            "abc@test", "1000", "10.0.0.1", "2001",
-            "10.0.0.2:5060", "10.0.0.1:5070", 1,
-            "z9hG4bK-orig", "tag123", "UDP",
+            "abc@test",
+            "1000",
+            "10.0.0.1",
+            "2001",
+            "10.0.0.2:5060",
+            "10.0.0.1:5070",
+            1,
+            "z9hG4bK-orig",
+            "tag123",
+            "UDP",
         );
         assert!(msg.starts_with("CANCEL sip:2001@10.0.0.2:5060 SIP/2.0\r\n"));
         assert!(msg.contains("branch=z9hG4bK-orig"));
@@ -589,7 +658,8 @@ mod tests {
         let headers = &ok[..ok.find("\r\n\r\n").unwrap()];
         assert!(
             headers.contains("\r\nContact: <sip:1000@10.0.0.1:5070;transport=udp>\r\n"),
-            "INVITE 的 2xx 必須帶 Contact：\n{}", headers
+            "INVITE 的 2xx 必須帶 Contact：\n{}",
+            headers
         );
     }
 
@@ -607,9 +677,16 @@ mod tests {
     #[test]
     fn ack_for_non2xx_mirrors_invite_transaction() {
         let ack = SipMessage::ack_for_non2xx(RESP_487);
-        assert!(ack.starts_with("ACK sip:2001@10.0.0.2:5060 SIP/2.0\r\n"), "{}", ack);
-        assert!(ack.contains("Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bK-inv1;rport\r\n"),
-            "沿用 INVITE branch 並去掉 received / rport 值：{}", ack);
+        assert!(
+            ack.starts_with("ACK sip:2001@10.0.0.2:5060 SIP/2.0\r\n"),
+            "{}",
+            ack
+        );
+        assert!(
+            ack.contains("Via: SIP/2.0/UDP 10.0.0.1:5070;branch=z9hG4bK-inv1;rport\r\n"),
+            "沿用 INVITE branch 並去掉 received / rport 值：{}",
+            ack
+        );
         assert!(ack.contains("From: <sip:1000@10.0.0.1>;tag=from1\r\n"));
         assert!(ack.contains("To: <sip:2001@10.0.0.2:5060>;tag=srv9\r\n"));
         assert!(ack.contains("Call-ID: abc@10.0.0.1\r\n"));
@@ -626,7 +703,11 @@ mod tests {
             i: cid@x\r\n\
             CSeq: 7 INVITE\r\n\r\n";
         let ack = SipMessage::ack_for_non2xx(resp);
-        assert!(ack.starts_with("ACK sip:2001@10.0.0.2 SIP/2.0\r\n"), "{}", ack);
+        assert!(
+            ack.starts_with("ACK sip:2001@10.0.0.2 SIP/2.0\r\n"),
+            "{}",
+            ack
+        );
         assert!(ack.contains("branch=z9hG4bK-c"));
         assert!(ack.contains("CSeq: 7 ACK\r\n"));
     }
@@ -636,7 +717,10 @@ mod tests {
     #[test]
     fn branch_starts_with_magic_cookie() {
         let branch = SipMessage::new_branch();
-        assert!(branch.starts_with("z9hG4bK-"), "branch must start with RFC 3261 magic cookie");
+        assert!(
+            branch.starts_with("z9hG4bK-"),
+            "branch must start with RFC 3261 magic cookie"
+        );
     }
 
     #[test]

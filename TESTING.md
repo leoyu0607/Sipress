@@ -5,7 +5,7 @@
 | 層級 | 位置 | 內容 |
 |---|---|---|
 | Rust 單元測試 | `core/src/**`（`#[cfg(test)]`） | SIP 解析 / 組裝、Dialog 狀態機、RTP 統計（掉包、Jitter、MOS、聚合）、CPS 模式、設定驗證、指標計算 |
-| 引擎流程測試 | `core/tests/*.rs` | loopback mock SIP server：INVITE / 重傳 / CANCEL / BYE / 認證 / 座席註冊與接聽、RTP latching 與 port 釋放 |
+| 引擎流程測試 | `core/tests/*.rs` | loopback mock SIP server：INVITE / 重傳 / CANCEL / BYE / 認證 / 座席註冊與接聽、座席行為模擬、端到端對照（mock SIPX 當 B2BUA 轉送給座席，驗證 `P-CIN-CallId` 與主叫號碼配對）、RTP latching 與 port 釋放 |
 | CLI 端到端測試 | `cli/tests/cli_e2e.rs` | 執行編譯好的 `sipress` 執行檔對 mock UAS 壓測，驗證參數解析 → 引擎 → JSON / CSV / HTML 報告 |
 | 前端單元測試 | `gui/src/__tests__/testStore.spec.ts` | store 的驗證、輪詢 snapshot → 指標 / 圖表、最終報告、停止流程、帳號匯入 / 生成、設定保存、匯出 |
 | 前端 ↔ Rust 契約 | `gui/contract/` | 前端與後端交換的 JSON 格式，雙向驗證（見下節） |
@@ -39,6 +39,9 @@ CI 不會改寫 fixtures，內容與程式不一致時直接失敗。
 # Rust：core + CLI（含流程與端到端測試）
 cargo test -p sipress-core -p sipress
 
+# 格式（CI 會檢查；commit 前先跑 cargo fmt --all）
+cargo fmt --all -- --check
+
 # 與 CI 相同的 lint（警告即失敗）
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -59,7 +62,7 @@ CI 使用 [cargo-nextest](https://nexte.st/) 執行 Rust 測試（設定在 `.co
 
 | Job | 必要 | 內容 |
 |---|---|---|
-| Lint | ✓ | clippy `-D warnings`（版本固定在 `LINT_TOOLCHAIN`）、actionlint 檢查 workflow 語法 |
+| Lint | ✓ | `cargo fmt --check`、clippy `-D warnings`（版本固定在 `LINT_TOOLCHAIN`）、actionlint 檢查 workflow 語法 |
 | Test | ✓ | Linux / macOS / Windows 跑 core + CLI 全部測試、doctest、範例編譯；上傳 JUnit 報告 |
 | Frontend | ✓ | vue-tsc 型別檢查、vitest（含契約）、vite 建置 |
 | GUI backend | ✓ | Tauri 後端 clippy + 測試（含契約驗證） |

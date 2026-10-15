@@ -49,14 +49,14 @@ fn ok_for_invite(raw: &str, uas_addr: SocketAddr, rtp_port: u16) -> String {
         "SIP/2.0 200 OK\r\n{via}\r\n{from}\r\n{to};tag=uas\r\n{cid}\r\n{cseq}\r\n\
          Contact: <sip:2000@{uas}>\r\nContent-Type: application/sdp\r\n\
          Content-Length: {len}\r\n\r\n{sdp}",
-        via  = header_line(raw, &["via", "v"]),
+        via = header_line(raw, &["via", "v"]),
         from = header_line(raw, &["from", "f"]),
-        to   = header_line(raw, &["to", "t"]),
-        cid  = header_line(raw, &["call-id", "i"]),
+        to = header_line(raw, &["to", "t"]),
+        cid = header_line(raw, &["call-id", "i"]),
         cseq = header_line(raw, &["cseq"]),
-        uas  = uas_addr,
-        len  = sdp.len(),
-        sdp  = sdp,
+        uas = uas_addr,
+        len = sdp.len(),
+        sdp = sdp,
     )
 }
 
@@ -119,7 +119,11 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                 (UasBehavior::DropFirstInvite, "INVITE") | (UasBehavior::DropFirstBye, "BYE")
             );
             if drop_first {
-                let key = format!("{} {}", method, SipParser::call_id(&raw).unwrap_or_default());
+                let key = format!(
+                    "{} {}",
+                    method,
+                    SipParser::call_id(&raw).unwrap_or_default()
+                );
                 if dropped.insert(key) {
                     continue; // 第一次：當作掉包，不回應
                 }
@@ -129,7 +133,9 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                     let ok = ok_for_invite(&raw, addr, rtp_port);
                     match behavior {
                         UasBehavior::AnswerWithRetransmit => {
-                            let _ = sock.send_to(ringing_for_invite(&raw).as_bytes(), peer).await;
+                            let _ = sock
+                                .send_to(ringing_for_invite(&raw).as_bytes(), peer)
+                                .await;
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                         }
@@ -138,7 +144,9 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                             let _ = sock.send_to(server_bye(&raw, &cid).as_bytes(), peer).await;
                         }
-                        UasBehavior::Answer | UasBehavior::DropFirstInvite | UasBehavior::DropFirstBye => {
+                        UasBehavior::Answer
+                        | UasBehavior::DropFirstInvite
+                        | UasBehavior::DropFirstBye => {
                             let _ = sock.send_to(ok.as_bytes(), peer).await;
                         }
                         UasBehavior::AnswerThenByeUnknownDialog => {
@@ -154,7 +162,9 @@ async fn spawn_uas(behavior: UasBehavior) -> (SocketAddr, Arc<Mutex<Vec<String>>
                         UasBehavior::RingNoAnswer => {
                             let cid = SipParser::call_id(&raw).unwrap_or_default();
                             invites.insert(cid, raw.clone());
-                            let _ = sock.send_to(ringing_for_invite(&raw).as_bytes(), peer).await;
+                            let _ = sock
+                                .send_to(ringing_for_invite(&raw).as_bytes(), peer)
+                                .await;
                         }
                     }
                 }
@@ -185,11 +195,11 @@ fn test_config(server: SocketAddr) -> Config {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let logs = std::env::temp_dir().join(format!("sipress-test-{}-{}", std::process::id(), n));
     Config {
-        server_addr:         server.to_string(),
-        logs_dir:            logs.to_string_lossy().into_owned(),
-        callee_fixed:        Some("2000".into()),
+        server_addr: server.to_string(),
+        logs_dir: logs.to_string_lossy().into_owned(),
+        callee_fixed: Some("2000".into()),
         invite_timeout_secs: 5,
-        rtp_base_port:       30000 + n * 2000,
+        rtp_base_port: 30000 + n * 2000,
         ..Default::default()
     }
 }
@@ -198,11 +208,11 @@ fn test_config(server: SocketAddr) -> Config {
 async fn retransmitted_200_ok_is_not_double_counted() {
     let (uas, _) = spawn_uas(UasBehavior::AnswerWithRetransmit).await;
     let cfg = Config {
-        cps:                20.0,
-        max_total_calls:    Some(3),
+        cps: 20.0,
+        max_total_calls: Some(3),
         call_duration_secs: 1,
-        duration_secs:      10,
-        enable_rtp:         true,
+        duration_secs: 10,
+        enable_rtp: true,
         ..test_config(uas)
     };
     let report = Engine::new(cfg).run(None).await.unwrap();
@@ -216,9 +226,9 @@ async fn retransmitted_200_ok_is_not_double_counted() {
 async fn calls_active_at_deadline_are_completed_without_waiting_full_timeout() {
     let (uas, _) = spawn_uas(UasBehavior::Answer).await;
     let cfg = Config {
-        cps:                5.0,
+        cps: 5.0,
         call_duration_secs: 0, // 不主動 BYE → 測試結束時必定仍在通話
-        duration_secs:      2,
+        duration_secs: 2,
         ..test_config(uas)
     };
     let started = Instant::now();
@@ -242,9 +252,9 @@ async fn calls_active_at_deadline_are_completed_without_waiting_full_timeout() {
 async fn unlimited_duration_does_not_panic_and_stops_on_signal() {
     let (uas, _) = spawn_uas(UasBehavior::Answer).await;
     let cfg = Config {
-        cps:                5.0,
+        cps: 5.0,
         call_duration_secs: 0,
-        duration_secs:      0, // 不限時
+        duration_secs: 0, // 不限時
         ..test_config(uas)
     };
     let engine = Engine::new(cfg);
@@ -264,10 +274,10 @@ async fn unlimited_duration_does_not_panic_and_stops_on_signal() {
 async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
     let (uas, _) = spawn_uas(UasBehavior::AnswerThenBye).await;
     let cfg = Config {
-        cps:                20.0,
+        cps: 20.0,
         call_duration_secs: 0,
-        duration_secs:      3,
-        enable_rtp:         true,
+        duration_secs: 3,
+        enable_rtp: true,
         ..test_config(uas)
     };
     let snaps: Arc<Mutex<Vec<StatsSnapshot>>> = Arc::new(Mutex::new(Vec::new()));
@@ -279,7 +289,8 @@ async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
 
     assert!(report.calls_completed > 0);
     let snaps = snaps.lock().unwrap();
-    let after_calls: Vec<u64> = snaps.iter()
+    let after_calls: Vec<u64> = snaps
+        .iter()
         .filter(|s| s.calls_completed > 0)
         .map(|s| s.rtp_sessions)
         .collect();
@@ -295,18 +306,19 @@ async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
 async fn bye_for_unknown_dialog_is_still_answered() {
     let (uas, received) = spawn_uas(UasBehavior::AnswerThenByeUnknownDialog).await;
     let cfg = Config {
-        cps:                5.0,
-        max_total_calls:    Some(1),
+        cps: 5.0,
+        max_total_calls: Some(1),
         call_duration_secs: 1,
-        duration_secs:      5,
+        duration_secs: 5,
         ..test_config(uas)
     };
     Engine::new(cfg).run(None).await.unwrap();
 
     let received = received.lock().unwrap();
-    let answer = received.iter()
-        .find(|r| r.starts_with("SIP/2.0")
-            && SipParser::call_id(r).as_deref() == Some("no-such-dialog@127.0.0.1"));
+    let answer = received.iter().find(|r| {
+        r.starts_with("SIP/2.0")
+            && SipParser::call_id(r).as_deref() == Some("no-such-dialog@127.0.0.1")
+    });
     let answer = answer.expect("對不存在 dialog 的 BYE 也必須回應，否則伺服器會一直重傳");
     assert!(
         answer.starts_with("SIP/2.0 200") || answer.starts_with("SIP/2.0 481"),
@@ -318,7 +330,10 @@ async fn bye_for_unknown_dialog_is_still_answered() {
 
 /// 取出 mock 收到的指定方法請求
 fn requests(received: &Mutex<Vec<String>>, method: &str) -> Vec<String> {
-    received.lock().unwrap().iter()
+    received
+        .lock()
+        .unwrap()
+        .iter()
         .filter(|r| r.starts_with(&format!("{} ", method)))
         .cloned()
         .collect()
@@ -326,16 +341,17 @@ fn requests(received: &Mutex<Vec<String>>, method: &str) -> Vec<String> {
 
 fn via_branch(raw: &str) -> Option<String> {
     let via = header_line(raw, &["via", "v"]);
-    via.split(';').find_map(|p| p.trim().strip_prefix("branch=").map(str::to_string))
+    via.split(';')
+        .find_map(|p| p.trim().strip_prefix("branch=").map(str::to_string))
 }
 
 #[tokio::test]
 async fn rejected_invite_is_acked_once_per_response_and_counted_once() {
     let (uas, received) = spawn_uas(UasBehavior::RejectBusyRetransmit).await;
     let cfg = Config {
-        cps:             10.0,
+        cps: 10.0,
         max_total_calls: Some(2),
-        duration_secs:   5,
+        duration_secs: 5,
         ..test_config(uas)
     };
     let report = Engine::new(cfg).run(None).await.unwrap();
@@ -345,15 +361,30 @@ async fn rejected_invite_is_acked_once_per_response_and_counted_once() {
     assert_eq!(report.fail_codes.get(&486), Some(&2));
 
     let invites = requests(&received, "INVITE");
-    let acks    = requests(&received, "ACK");
+    let acks = requests(&received, "ACK");
     assert_eq!(acks.len(), 4, "每個 486（含重傳）都要回 ACK");
     for ack in &acks {
         assert_eq!(SipParser::cseq_method(ack).as_deref(), Some("ACK"));
-        assert_eq!(SipParser::to_tag(ack).as_deref(), Some("uas"), "ACK 的 To 必須帶回應的 tag");
+        assert_eq!(
+            SipParser::to_tag(ack).as_deref(),
+            Some("uas"),
+            "ACK 的 To 必須帶回應的 tag"
+        );
         let cid = SipParser::call_id(ack);
-        let invite = invites.iter().find(|i| SipParser::call_id(i) == cid).expect("對應的 INVITE");
-        assert_eq!(via_branch(ack), via_branch(invite), "non-2xx ACK 必須沿用 INVITE 的 branch");
-        assert!(ack.starts_with("ACK sip:2000@"), "Request-URI 應與 INVITE 相同：{}", ack.lines().next().unwrap());
+        let invite = invites
+            .iter()
+            .find(|i| SipParser::call_id(i) == cid)
+            .expect("對應的 INVITE");
+        assert_eq!(
+            via_branch(ack),
+            via_branch(invite),
+            "non-2xx ACK 必須沿用 INVITE 的 branch"
+        );
+        assert!(
+            ack.starts_with("ACK sip:2000@"),
+            "Request-URI 應與 INVITE 相同：{}",
+            ack.lines().next().unwrap()
+        );
     }
 }
 
@@ -361,9 +392,9 @@ async fn rejected_invite_is_acked_once_per_response_and_counted_once() {
 async fn cancelled_invite_487_is_acked() {
     let (uas, received) = spawn_uas(UasBehavior::RingNoAnswer).await;
     let cfg = Config {
-        cps:                 10.0,
-        max_total_calls:     Some(1),
-        duration_secs:       5,
+        cps: 10.0,
+        max_total_calls: Some(1),
+        duration_secs: 5,
         invite_timeout_secs: 1, // 1 秒沒接 → CANCEL
         ..test_config(uas)
     };
@@ -372,9 +403,17 @@ async fn cancelled_invite_487_is_acked() {
 
     assert_eq!(report.calls_timeout, 1);
     assert_eq!(requests(&received, "CANCEL").len(), 1);
-    assert_eq!(requests(&received, "INVITE").len(), 1, "已收到 180 後不可再重傳 INVITE");
+    assert_eq!(
+        requests(&received, "INVITE").len(),
+        1,
+        "已收到 180 後不可再重傳 INVITE"
+    );
     let acks = requests(&received, "ACK");
-    assert_eq!(acks.len(), 1, "CANCEL 後收到的 487 必須回 ACK，否則伺服器會持續重傳");
+    assert_eq!(
+        acks.len(),
+        1,
+        "CANCEL 後收到的 487 必須回 ACK，否則伺服器會持續重傳"
+    );
     assert_eq!(SipParser::cseq_method(&acks[0]).as_deref(), Some("ACK"));
 }
 
@@ -382,10 +421,10 @@ async fn cancelled_invite_487_is_acked() {
 async fn lost_invite_is_retransmitted_until_answered() {
     let (uas, received) = spawn_uas(UasBehavior::DropFirstInvite).await;
     let cfg = Config {
-        cps:                10.0,
-        max_total_calls:    Some(2),
+        cps: 10.0,
+        max_total_calls: Some(2),
         call_duration_secs: 1,
-        duration_secs:      8,
+        duration_secs: 8,
         ..test_config(uas)
     };
     let report = Engine::new(cfg).run(None).await.unwrap();
@@ -398,22 +437,31 @@ async fn lost_invite_is_retransmitted_until_answered() {
     assert_eq!(invites.len(), 4, "每通電話：原始 INVITE + 1 次重傳");
     for invite in &invites {
         let cid = SipParser::call_id(invite);
-        let first = invites.iter().find(|i| SipParser::call_id(i) == cid).unwrap();
-        assert_eq!(invite, first, "重傳必須是完全相同的請求（同 branch / CSeq）");
+        let first = invites
+            .iter()
+            .find(|i| SipParser::call_id(i) == cid)
+            .unwrap();
+        assert_eq!(
+            invite, first,
+            "重傳必須是完全相同的請求（同 branch / CSeq）"
+        );
     }
     // 重傳間隔應為 T1（500ms）：接通的 setup time 介於 0.5s ~ 1s
-    assert!(report.setup_p50_ms >= 450.0 && report.setup_p50_ms < 1000.0,
-        "setup={}ms", report.setup_p50_ms);
+    assert!(
+        report.setup_p50_ms >= 450.0 && report.setup_p50_ms < 1000.0,
+        "setup={}ms",
+        report.setup_p50_ms
+    );
 }
 
 #[tokio::test]
 async fn lost_bye_is_retransmitted_until_answered() {
     let (uas, received) = spawn_uas(UasBehavior::DropFirstBye).await;
     let cfg = Config {
-        cps:                10.0,
-        max_total_calls:    Some(1),
+        cps: 10.0,
+        max_total_calls: Some(1),
         call_duration_secs: 1,
-        duration_secs:      10,
+        duration_secs: 10,
         invite_timeout_secs: 5, // BYE 逾時強制結束需 5 秒；重傳應在 ~0.5 秒內完成
         ..test_config(uas)
     };
@@ -424,24 +472,28 @@ async fn lost_bye_is_retransmitted_until_answered() {
     let byes = requests(&received, "BYE");
     assert_eq!(byes.len(), 2, "第一個 BYE 掉包後應重傳一次");
     assert_eq!(byes[0], byes[1], "重傳必須是完全相同的 BYE");
-    assert!(started.elapsed() < Duration::from_secs(3),
-        "應靠 BYE 重傳結束，而非等 BYE 逾時（實際 {:?}）", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "應靠 BYE 重傳結束，而非等 BYE 逾時（實際 {:?}）",
+        started.elapsed()
+    );
 }
 
 #[tokio::test]
 async fn acd_is_reported_in_seconds() {
     let (uas, _) = spawn_uas(UasBehavior::Answer).await;
     let cfg = Config {
-        cps:                10.0,
-        max_total_calls:    Some(2),
+        cps: 10.0,
+        max_total_calls: Some(2),
         call_duration_secs: 1,
-        duration_secs:      5,
+        duration_secs: 5,
         ..test_config(uas)
     };
     let report = Engine::new(cfg).run(None).await.unwrap();
     assert_eq!(report.calls_completed, 2);
     assert!(
         report.acd_secs >= 0.9 && report.acd_secs < 1.5,
-        "通話 1 秒，ACD 應約 1 秒（實際 {}）", report.acd_secs
+        "通話 1 秒，ACD 應約 1 秒（實際 {}）",
+        report.acd_secs
     );
 }
