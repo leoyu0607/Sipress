@@ -183,10 +183,9 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - `call.rs`：`DialogCtx`、`PendingInvite`、響鈴結果、SIP 訊息組裝。
 - 行為不變：既有的座席整合測試（註冊、行為模擬、codec、TCP、IPv6、重傳、端到端對照、CLI e2e）全部通過；`load_bench agent 5000` 結果與拆分前相同（CPU 1%、40 MB）。唯一可見差異是 SIP log 中回應訊息的對端標示由 `server` 改為實際的 server 位址。
 
-### [ ] 22. 清理專案（整理）
+### [x] 22. 清理專案（整理）
 
-- 移除 `gui/src.zip`、根目錄只印 Hello world 的 `src/main.rs`。
-- 更新或移除內容過時的 `gui/CHANGES.md`。
-- v0.5.0 發佈說明的下載表漏寫 macOS 免安裝檔（`sipress-gui-macos-*-portable`），GitHub 上的 release 說明一併補上。
-- CI 的 `actions/checkout@v4` 等 action 出現 Node 20 停用警告，升級到新版。
+- 已移除 `gui/src.zip`（2026-04 的前端原始碼舊快照）、根目錄只印 Hello world 的 `src/main.rs`（不在 workspace 內）、內容過時的 `gui/CHANGES.md`（都沒有被引用，git 歷史仍保留）。
+- `docs/release-notes/v0.5.0.md` 下載表補上 macOS 免安裝檔（arm64 / x86_64，已對照 GitHub release 的實際檔案）與首次執行說明；README、howtouse.md 的下載表補上 macOS Intel。GitHub 上的 release 說明需手動貼上（工具沒有編輯 release 的權限）。
+- CI / 發佈流程的 action 升級為 Node 24 版：`checkout@v5`、`setup-node@v5`、`upload-artifact@v6`、`download-artifact@v7`（只用到 name / path，不受新版行為變更影響）；發佈流程建置 GUI 的 Node 由 20（已停止支援）改為與 CI 相同的 22。
 

@@ -38,7 +38,7 @@ jobs:
     outputs:
       publish: ${{ steps.mode.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG || github.sha }}
 
@@ -99,7 +99,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
@@ -121,7 +121,7 @@ jobs:
           - { os: macos-latest,   target: x86_64-apple-darwin,        asset: sipress-macos-x86_64,      smoke: true }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,     asset: sipress-windows-x86_64.exe, smoke: true }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG || github.sha }}
 
@@ -157,7 +157,7 @@ jobs:
         if: matrix.smoke
         run: ./out/${{ matrix.asset }} --version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cli-${{ matrix.asset }}
           path: out/*
@@ -180,7 +180,7 @@ jobs:
           # 22.04 的 glibc 較舊，AppImage / deb 可在較多發行版上執行
           - { os: ubuntu-22.04,   label: linux-x86_64,   target: '',                       args: '' }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG || github.sha }}
 
@@ -197,9 +197,9 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             patchelf
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22   # 與 CI 的 NODE_VERSION 相同
           cache: npm
           cache-dependency-path: gui/package-lock.json
 
@@ -255,7 +255,7 @@ jobs:
           done
           ls -l
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: gui-${{ matrix.label }}
           path: out/*

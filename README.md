@@ -60,6 +60,7 @@
 | Windows | `sipress-gui-windows-x86_64-setup.exe`（NSIS） | — |
 | Linux | `sipress-gui-linux-x86_64-installer.deb` | `sipress-gui-linux-x86_64-portable.AppImage` |
 | macOS ARM | `sipress-gui-macos-arm64-installer.dmg` | `sipress-gui-macos-arm64-portable` |
+| macOS Intel | `sipress-gui-macos-x86_64-installer.dmg` | `sipress-gui-macos-x86_64-portable` |
 
 > **CLI 執行檔**（無 GUI）：
 > - Windows：`sipress-windows-x86_64-native.exe`（MSVC）或 `sipress-windows-x86_64.exe`（GNU zigbuild）
