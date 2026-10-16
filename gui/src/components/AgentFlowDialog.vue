@@ -194,7 +194,7 @@ function save() {
             </div>
 
             <div class="dialog-footer">
-              <button class="btn btn-sm" @click="applyPreset(true)" title="SIPX 掛線後自動就緒（建議）：開始時登入 → 等待 1 秒 → 就緒；結束時未就緒 → 登出；每通結束後不撥碼">SIPX 預設</button>
+              <button class="btn btn-sm" @click="applyPreset(true)" title="SIPX 掛線後自動就緒（建議）：開始時登入 → 等待 1 秒 → 就緒；結束時未就緒 → 等待 1 秒 → 登出；每通結束後不撥碼">SIPX 預設</button>
               <button class="btn btn-sm" @click="applyPreset(false)" title="SIPX 設為非自動就緒時：同 SIPX 預設，再加上每通結束後等待 3 秒 → 就緒">非自動就緒</button>
               <button class="btn btn-sm" @click="clearAll">清空</button>
               <span class="spacer"></span>

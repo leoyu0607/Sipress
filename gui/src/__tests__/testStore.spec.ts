@@ -599,7 +599,7 @@ describe('座席流程', () => {
     expect(codes(preset.onStart)).toEqual(['*94{agent}*{pwd}', 'wait 1', '*96'])
     expect(preset.afterCall).toEqual([])
     expect(codes(sipxPresetFlow(s.config.agent.flow.codes, false).afterCall)).toEqual(['wait 3', '*96'])
-    expect(codes(preset.onStop)).toEqual(['*97', '*95'])
+    expect(codes(preset.onStop)).toEqual(['*97', 'wait 1', '*95'])
   })
 
   it('驗證：空白撥碼、非法字元、用了 {pwd} 卻沒設密碼', () => {

@@ -104,7 +104,7 @@ export function newFlowStep(type: 'dial' | 'wait', code = '', label = '', secs =
 }
 
 /**
- * SIPX 預設流程：開始時登入 → 就緒；結束時未就緒 → 登出。
+ * SIPX 預設流程：開始時登入 → 就緒；結束時未就緒 → 等待 1 秒 → 登出。
  * 自動就緒（預設）：掛線後座席自己回到就緒，每通結束後不撥碼——在掛線後撥碼會佔住分機，
  * CTI 這時派來的電話會失敗（506），座席之後不再被派話。
  * 非自動就緒：每通結束後等 3 秒（避開 SIPX 掛線後的收尾）再撥就緒。
@@ -114,7 +114,8 @@ export function sipxPresetFlow(codes: Record<FlowCodeKey, string>, autoReady = t
   return {
     onStart:   [dial('login'), newFlowStep('wait', '', '', 1), dial('ready')],
     afterCall: autoReady ? [] : [newFlowStep('wait', '', '', 3), dial('ready')],
-    onStop:    [dial('notReady'), dial('logout')],
+    // 未就緒剛掛斷時 CTI 還在處理，馬上撥登出會被拒（603 CTIError2140）
+    onStop:    [dial('notReady'), newFlowStep('wait', '', '', 1), dial('logout')],
   }
 }
 

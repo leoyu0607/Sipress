@@ -78,6 +78,10 @@
         "label": "未就緒"
       },
       {
+        "type": "wait",
+        "secs": 1
+      },
+      {
         "type": "dial",
         "code": "*95",
         "label": "登出"
