@@ -21,6 +21,12 @@ pub enum CpsPattern {
         spike_at_pct: f64,
         spike_duration_secs: u64,
     },
+    /// 批次：每 `every_secs` 秒一次發出 `count` 通（測試開始時發第一批）；
+    /// 發出時併發已滿，就只補空出的線路，這一批剩下的略過、不累積
+    Batch {
+        count: u32,
+        every_secs: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +73,14 @@ impl CpsPattern {
                     anyhow::bail!("CPS 尖峰模式需設定持續時間（> 0）");
                 }
             }
+            Self::Batch { count, every_secs } => {
+                if *count == 0 {
+                    anyhow::bail!("批次模式每批至少 1 通");
+                }
+                if !(every_secs.is_finite() && *every_secs > 0.0) {
+                    anyhow::bail!("批次模式的間隔秒數需 > 0");
+                }
+            }
         }
         Ok(())
     }
@@ -111,6 +125,8 @@ impl CpsPattern {
                     *base
                 }
             }
+            // 平均速率（引擎依批次排程發話，不使用這個值排程）
+            Self::Batch { count, every_secs } => *count as f64 / every_secs.max(0.001),
         }
     }
 }
@@ -570,6 +586,11 @@ pub struct Config {
     /// Agent 模式：註冊後 / 每通結束後 / 結束前要撥的特殊碼（座席登入、就緒、登出等）
     #[serde(default)]
     pub agent_flow: AgentFlow,
+
+    /// Caller 模式：線路釋放後幾秒才補新的通話（0 = 立即補）。
+    /// 避免新來電剛好在座席掛線的瞬間進線（真實話務不會每通都緊接著前一通）
+    #[serde(default)]
+    pub refill_delay_secs: f64,
 }
 
 fn default_ack_timeout() -> u64 {
@@ -619,6 +640,7 @@ impl Default for Config {
             agent_reregister_after_call: false,
             agent_register_interval_ms: 0,
             agent_flow: AgentFlow::default(),
+            refill_delay_secs: 0.0,
         }
     }
 }
@@ -679,6 +701,9 @@ impl Config {
                 anyhow::bail!("最大並發通話數必須大於 0");
             }
             self.cps_pattern.validate(self.duration_secs)?;
+            if !(self.refill_delay_secs.is_finite() && self.refill_delay_secs >= 0.0) {
+                anyhow::bail!("補話延遲秒數需 ≥ 0（目前為 {}）", self.refill_delay_secs);
+            }
             if let Some(seq) = self.dtmf_sequence.as_deref() {
                 crate::rtp::dtmf::validate_dtmf_sequence(seq).map_err(anyhow::Error::msg)?;
             }
@@ -728,6 +753,28 @@ mod tests {
         let p = CpsPattern::Flat;
         let cps = p.current_cps(Duration::from_secs(30), 10.0, Duration::from_secs(60));
         assert!((cps - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn batch_pattern_validation_and_rate() {
+        let b = |count, every_secs| CpsPattern::Batch { count, every_secs };
+        assert!(b(3, 20.0).validate(0).is_ok());
+        assert!(b(0, 20.0).validate(0).is_err());
+        assert!(b(3, 0.0).validate(0).is_err());
+        assert!(b(3, f64::NAN).validate(0).is_err());
+        let rate = b(3, 20.0).current_cps(Duration::ZERO, 10.0, Duration::from_secs(60));
+        assert!((rate - 0.15).abs() < 1e-9);
+        let json = r#"{"type":"batch","count":3,"every_secs":20}"#;
+        assert!(matches!(
+            serde_json::from_str::<CpsPattern>(json).unwrap(),
+            CpsPattern::Batch { count: 3, .. }
+        ));
+        assert!(Config {
+            refill_delay_secs: -1.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

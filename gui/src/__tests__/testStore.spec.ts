@@ -674,3 +674,35 @@ describe('座席流程', () => {
     }
   })
 })
+
+// ── 批次模式與補話延遲 ─────────────────────────────────────────────
+describe('批次模式與補話延遲', () => {
+  it('CLI 預覽：批次 --cps-batch N/M、補話延遲 > 0 才出現', () => {
+    const s = useTestStore()
+    expect(s.cliCommand).not.toMatch(/--cps-batch|--refill-delay/)
+    s.config.caller.cpsPattern.type = 'batch'
+    Object.assign(s.config.caller.cpsPattern, { batchCount: 3, batchEvery: 20 })
+    s.config.caller.refillDelay = 2
+    expect(s.cliCommand).toContain('--cps-batch 3/20')
+    expect(s.cliCommand).toContain('--refill-delay 2')
+    expect(s.cliCommand).not.toContain('--cps 10')
+  })
+
+  it('驗證：每批通數 ≥ 1 的整數、間隔 > 0、補話延遲 ≥ 0', () => {
+    const s = useTestStore()
+    s.config.caller.cpsPattern.type = 'batch'
+    expect(s.validationErrors).toEqual([])
+    Object.assign(s.config.caller.cpsPattern, { batchCount: 0, batchEvery: 0 })
+    s.config.caller.refillDelay = -1
+    expect(s.validationErrors).toEqual(expect.arrayContaining([
+      '批次模式每批通數需為 ≥ 1 的整數', '批次模式的間隔秒數需 > 0', '補話延遲需 ≥ 0 秒',
+    ]))
+  })
+
+  it('舊設定沒有新欄位時補上預設值', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ caller: { cps: 5, cpsPattern: { type: 'flat' } } }))
+    const c = useTestStore().config.caller
+    expect(c.refillDelay).toBe(0)
+    expect(c.cpsPattern).toMatchObject({ batchCount: 3, batchEvery: 20 })
+  })
+})

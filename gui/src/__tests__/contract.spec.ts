@@ -56,6 +56,17 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: 'caller-batch',
+    apply: c => {
+      c.caller.cpsPattern.type = 'batch'
+      Object.assign(c.caller.cpsPattern, { batchCount: 3, batchEvery: 20 })
+      c.caller.concurrency = 3
+      c.caller.callDuration = 15
+      c.caller.refillDelay = 2.5
+      c.caller.duration = 120
+    },
+  },
+  {
     name: 'agent',
     apply: c => {
       c.mode = 'agent'

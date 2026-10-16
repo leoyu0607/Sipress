@@ -17,6 +17,7 @@
     "spike_at_pct": 25,
     "spike_duration_secs": 15
   },
+  "refill_delay_secs": 0,
   "max_concurrent_calls": 100,
   "max_total_calls": null,
   "duration_secs": 60,

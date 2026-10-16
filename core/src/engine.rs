@@ -1,5 +1,5 @@
 /// SIP 壓測主引擎
-use crate::config::Config;
+use crate::config::{Config, CpsPattern};
 use crate::rtp::{
     session::{RtpSession, RtpSessionConfig},
     stats::{aggregate_snapshots, RtpStatsSnapshot},
@@ -14,7 +14,7 @@ use crate::timeline::TimelineRecorder;
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::Result;
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -431,6 +431,18 @@ impl Engine {
         let mut draining_until: Option<Instant> = None;
 
         let mut next_call = Instant::now();
+        // 批次模式：每 every 秒一次發出 count 通（併發已滿時略過剩下的，不累積）
+        let batch = match &cps_pattern {
+            CpsPattern::Batch { count, every_secs } => {
+                Some((*count as usize, Duration::from_secs_f64(*every_secs)))
+            }
+            _ => None,
+        };
+        let mut next_batch = Instant::now();
+        // 補話延遲：線路釋放後 refill_delay 內不補新的通話（記錄每條線釋放的時間）
+        let refill_delay = Duration::from_secs_f64(cfg.refill_delay_secs);
+        let mut cooling: VecDeque<Instant> = VecDeque::new();
+        let mut last_active = 0usize;
         // 等待期間收到的第一個 SIP 事件（下一輪 ① 優先處理）
         let mut pending_event: Option<SipEvent> = None;
         let mut next_scan = Instant::now();
@@ -884,29 +896,48 @@ impl Engine {
 
             let deadline_reached = deadline.is_some_and(|d| now >= d);
 
+            // 線路釋放：進行中通話數比上一輪少 → 記下釋放時間，補話延遲內這些線路不補
+            let mut concurrent = dialogs
+                .values()
+                .filter(|d| {
+                    matches!(
+                        d.state,
+                        DialogState::Calling
+                            | DialogState::Trying
+                            | DialogState::Ringing
+                            | DialogState::Connected
+                    )
+                })
+                .count();
+            for _ in concurrent..last_active {
+                cooling.push_back(now);
+            }
+            while cooling.front().is_some_and(|t| now >= *t + refill_delay) {
+                cooling.pop_front();
+            }
+            last_active = concurrent;
+
+            let due = match batch {
+                Some(_) => now >= next_batch,
+                None => now >= next_call,
+            };
             if draining_until.is_none()
                 && !stopped
                 && !total_limit_reached
                 && !deadline_reached
-                && now >= next_call
+                && due
             {
-                let mut concurrent = dialogs
-                    .values()
-                    .filter(|d| {
-                        matches!(
-                            d.state,
-                            DialogState::Calling
-                                | DialogState::Trying
-                                | DialogState::Ringing
-                                | DialogState::Connected
-                        )
-                    })
-                    .count();
                 let mut issued = 0;
+                // 這一輪最多發幾通：批次模式為一批的通數，其他模式依排程補到期的通話
+                let quota = batch.map_or(MAX_CALLS_PER_TICK, |(count, _)| count);
 
-                while now >= next_call && issued < MAX_CALLS_PER_TICK && !total_limit_reached {
-                    if concurrent >= cfg.max_concurrent_calls {
-                        // 受並發上限限制：不累積欠額，空出名額後依原速率繼續
+                while issued < quota
+                    && (batch.is_some() || now >= next_call)
+                    && !total_limit_reached
+                {
+                    if concurrent + cooling.len() >= cfg.max_concurrent_calls {
+                        // 受並發上限（含補話延遲中的線路）限制：不累積欠額，
+                        // 空出名額後依原速率繼續；批次模式略過這一批剩下的通數
                         next_call = now;
                         break;
                     }
@@ -974,6 +1005,13 @@ impl Engine {
                     let current_cps = cps_pattern.current_cps(now - start, cfg.cps, total_dur);
                     next_call += Duration::from_secs_f64(1.0 / current_cps.max(0.1));
                     total_limit_reached = total_reached();
+                }
+                last_active = concurrent;
+                if let Some((_, every)) = batch {
+                    next_batch += every;
+                    if next_batch <= now {
+                        next_batch = now + every;
+                    }
                 }
             }
 

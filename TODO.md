@@ -213,3 +213,8 @@ ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 
 
 雙端實測（2026-10-16，3 座席、3 併發、每通 15 秒）：CTI 會在座席 `CallCleared` 的同一秒 `RouteSelect` 該座席，SIPX 回 `ReRoute cause=506`（沒有送 INVITE），之後 CTI 不再選這個座席；該座席之後撥 `*96` 也回 `506 NULL`。sipress 送出的 SIP 在被卡住與正常的座席之間沒有差異。
 待辦：請 SIPX 端設話後處理時間（ACW）2–3 秒或確認非自動就緒設定，並請原廠查 506 的原因；調整後重跑雙端測試確認每輪都能派給所有座席。sipress 端已做：自動就緒時每通結束後不撥碼（GUI「SIPX 預設」）、提示音後 1 秒即掛斷撥碼。
+
+### [x] 27. 民眾端批次發話與補話延遲（功能）
+
+雙端測 SIPX 時，民眾端一有線路釋放就立刻補話，新來電剛好在座席掛線的瞬間進線，觸發第 26 項的 506。
+已完成（分支 `feat/cps-batch-refill-delay`）：CPS 模式新增「批次」`CpsPattern::Batch { count, every_secs }`（CLI `--cps-batch N/M`、GUI「批次 Batch」）：每 M 秒一次發出 N 通，發出時併發已滿只補空出的線路、剩下的略過不累積；`Config.refill_delay_secs`（CLI `--refill-delay`、GUI「補話延遲」）：線路釋放後等 N 秒才補，對所有 CPS 模式有效。測試：`core/tests/cps_batch_refill.rs`、CLI 參數與 GUI 驗證 / 預覽、契約 fixtures 新增 `caller-batch`。
