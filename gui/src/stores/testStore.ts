@@ -103,12 +103,17 @@ export function newFlowStep(type: 'dial' | 'wait', code = '', label = '', secs =
   return { id: uid(), type, code, label, secs }
 }
 
-/** SIPX 預設（非自動就緒）：開始時登入 → 就緒；每通結束後就緒；結束時未就緒 → 登出 */
-export function sipxPresetFlow(codes: Record<FlowCodeKey, string>): Pick<AgentFlowConfig, FlowPhase> {
+/**
+ * SIPX 預設流程：開始時登入 → 就緒；結束時未就緒 → 登出。
+ * 自動就緒（預設）：掛線後座席自己回到就緒，每通結束後不撥碼——在掛線後撥碼會佔住分機，
+ * CTI 這時派來的電話會失敗（506），座席之後不再被派話。
+ * 非自動就緒：每通結束後等 3 秒（避開 SIPX 掛線後的收尾）再撥就緒。
+ */
+export function sipxPresetFlow(codes: Record<FlowCodeKey, string>, autoReady = true): Pick<AgentFlowConfig, FlowPhase> {
   const dial = (k: FlowCodeKey) => newFlowStep('dial', codes[k], FLOW_CODE_NAMES[k])
   return {
     onStart:   [dial('login'), newFlowStep('wait', '', '', 1), dial('ready')],
-    afterCall: [dial('ready')],
+    afterCall: autoReady ? [] : [newFlowStep('wait', '', '', 3), dial('ready')],
     onStop:    [dial('notReady'), dial('logout')],
   }
 }
