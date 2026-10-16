@@ -256,9 +256,12 @@ function statusTitle(s: string) {
             <option value="ramp">漸增 Ramp</option>
             <option value="step">階梯 Step</option>
             <option value="spike">尖峰 Spike</option>
+            <option value="batch">批次 Batch</option>
           </select>
           <div class="field-hint" v-if="store.config.caller.cpsPattern.type !== 'flat'">
-            {{ store.config.caller.cpsPattern.type === 'step' ? '依下列階層依序執行' : '需設定持續時間，CPS 依時間比例變化' }}
+            {{ store.config.caller.cpsPattern.type === 'step' ? '依下列階層依序執行'
+             : store.config.caller.cpsPattern.type === 'batch' ? '每隔固定秒數一次發出一批；併發已滿時只補空出的線路，剩下的略過'
+             : '需設定持續時間，CPS 依時間比例變化' }}
           </div>
         </div>
 
@@ -320,6 +323,25 @@ function statusTitle(s: string) {
               <input type="number" min="1" max="300" v-model.number="store.config.caller.cpsPattern.spikeDurationSecs">
             </div>
           </div>
+        </div>
+
+        <!-- Batch config -->
+        <div class="field-row" v-if="store.config.caller.cpsPattern.type === 'batch'">
+          <div class="field" style="flex:1">
+            <label>每批通數 <span class="tag">--cps-batch</span></label>
+            <input type="number" min="1" max="1000" v-model.number="store.config.caller.cpsPattern.batchCount">
+          </div>
+          <div class="field" style="flex:1">
+            <label>間隔 (秒)</label>
+            <input type="number" min="0.1" step="0.5" v-model.number="store.config.caller.cpsPattern.batchEvery">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>補話延遲 (秒) <span class="tag">--refill-delay</span></label>
+          <input type="number" min="0" step="0.5" v-model.number="store.config.caller.refillDelay"
+                 title="線路釋放後等幾秒才補新的通話；雙端測 SIPX 時設 2–3 秒，避免新來電剛好在座席掛線的瞬間進線">
+          <div class="field-hint">{{ store.config.caller.refillDelay > 0 ? `線路釋放 ${store.config.caller.refillDelay} 秒後才補下一通` : '0 = 線路一釋放就補' }}</div>
         </div>
 
         <div class="field">

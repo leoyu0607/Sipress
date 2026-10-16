@@ -16,7 +16,7 @@ export interface SipAccount {
   status: 'idle' | 'registering' | 'registered' | 'failed'
 }
 
-export type CpsPatternType = 'flat' | 'ramp' | 'step' | 'spike'
+export type CpsPatternType = 'flat' | 'ramp' | 'step' | 'spike' | 'batch'
 
 export interface CpsStep {
   cps: number
@@ -32,6 +32,8 @@ export interface CpsPatternConfig {
   spikePeak: number
   spikeAtPct: number
   spikeDurationSecs: number
+  batchCount: number   // 批次：每批通數
+  batchEvery: number   // 批次：每幾秒一批
 }
 
 export interface CallerProfile {
@@ -47,6 +49,7 @@ export interface CallerProfile {
   concurrency:   number
   cps:           number
   cpsPattern:    CpsPatternConfig
+  refillDelay:   number   // 線路釋放後幾秒才補新的通話（0 = 立即補）
   totalCalls:    number   // 0 = unlimited
   callDuration:  number   // per-call duration seconds (0 = unlimited)
   enableAudio:   boolean
@@ -401,7 +404,10 @@ function defaultConfig(): TestConfig {
         spikePeak: 100,
         spikeAtPct: 50,
         spikeDurationSecs: 10,
+        batchCount: 3,
+        batchEvery: 20,
       },
+      refillDelay:  0,
       totalCalls:   0,
       callDuration: 30,
       enableAudio:  false,
@@ -483,6 +489,7 @@ export function cpsFlag(pat: CpsPatternConfig, cps: number): string {
     case 'ramp':  return `--cps-ramp ${pat.rampStart}-${pat.rampEnd}`
     case 'step':  return `--cps-steps ${pat.steps.map(st => `${st.cps}:${st.duration_secs}`).join(',')}`
     case 'spike': return `--cps-spike ${pat.spikeBase},${pat.spikePeak},${pat.spikeAtPct},${pat.spikeDurationSecs}`
+    case 'batch': return `--cps-batch ${pat.batchCount}/${pat.batchEvery}`
     default:      return `--cps ${cps}`
   }
 }
@@ -563,6 +570,11 @@ export const useTestStore = defineStore('test', () => {
       if (!(p.concurrency >= 1)) errs.push('併發數量需 ≥ 1')
       if (p.cpsPattern.type === 'flat' && !(p.cps > 0)) errs.push('CPS 需 > 0')
       if (p.cpsPattern.type === 'step' && p.cpsPattern.steps.length === 0) errs.push('階梯模式至少需要一個階層')
+      if (p.cpsPattern.type === 'batch') {
+        if (!(Number.isInteger(p.cpsPattern.batchCount) && p.cpsPattern.batchCount >= 1)) errs.push('批次模式每批通數需為 ≥ 1 的整數')
+        if (!(p.cpsPattern.batchEvery > 0)) errs.push('批次模式的間隔秒數需 > 0')
+      }
+      if (!(Number.isFinite(p.refillDelay) && p.refillDelay >= 0)) errs.push('補話延遲需 ≥ 0 秒')
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
       if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
@@ -620,6 +632,7 @@ export const useTestStore = defineStore('test', () => {
       if (p.authPass) parts.push(...(p.authUser.trim() ? [`--auth-user ${p.authUser.trim()}`] : []), '--auth-pass "<密碼>"')
       parts.push(p.calleeFixed ? `--to ${p.calleeFixed}` : `--to-prefix ${p.calleePrefix} --to-range ${p.calleeRange}`)
       parts.push(`-c ${p.concurrency}`, cpsFlag(p.cpsPattern, p.cps), `-d ${p.duration}`, `--call-duration ${p.callDuration}`)
+      if (p.refillDelay > 0) parts.push(`--refill-delay ${p.refillDelay}`)
       if (p.totalCalls > 0) parts.push(`--max-calls ${p.totalCalls}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
@@ -665,6 +678,7 @@ export const useTestStore = defineStore('test', () => {
       case 'ramp':  return { type: 'ramp',  start: p.rampStart, end: p.rampEnd }
       case 'step':  return { type: 'step',  levels: p.steps }
       case 'spike': return { type: 'spike', base: p.spikeBase, peak: p.spikePeak, spike_at_pct: p.spikeAtPct, spike_duration_secs: p.spikeDurationSecs }
+      case 'batch': return { type: 'batch', count: p.batchCount, every_secs: p.batchEvery }
       default:      return { type: 'flat' }
     }
   }
@@ -686,6 +700,7 @@ export const useTestStore = defineStore('test', () => {
       callee_fixed:         c.caller.calleeFixed ? c.caller.calleeFixed : null,
       cps:                  c.caller.cps,
       cps_pattern:          buildCpsPattern(c.caller.cpsPattern),
+      refill_delay_secs:    c.caller.refillDelay,
       max_concurrent_calls: c.caller.concurrency,
       max_total_calls:      c.caller.totalCalls > 0 ? c.caller.totalCalls : null,
       duration_secs:        c[mode].duration,

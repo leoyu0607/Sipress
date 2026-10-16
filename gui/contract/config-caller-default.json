@@ -13,6 +13,7 @@
   "cps_pattern": {
     "type": "flat"
   },
+  "refill_delay_secs": 0,
   "max_concurrent_calls": 100,
   "max_total_calls": null,
   "duration_secs": 60,

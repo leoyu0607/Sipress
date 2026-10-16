@@ -23,16 +23,25 @@ pub struct Args {
     pub cps: f64,
 
     /// CPS 漸增：`START-END`，在 --duration 內從 START 線性升到 END（取代 --cps）
-    #[arg(long = "cps-ramp", value_parser = parse_cps_ramp, conflicts_with_all = ["cps_steps", "cps_spike"])]
+    #[arg(long = "cps-ramp", value_parser = parse_cps_ramp, conflicts_with_all = ["cps_steps", "cps_spike", "cps_batch"])]
     pub cps_ramp: Option<CpsPattern>,
 
     /// CPS 階梯：`CPS:秒,CPS:秒,...`，依序維持各階，最後一階維持到結束（取代 --cps）
-    #[arg(long = "cps-steps", value_parser = parse_cps_steps, conflicts_with = "cps_spike")]
+    #[arg(long = "cps-steps", value_parser = parse_cps_steps, conflicts_with_all = ["cps_spike", "cps_batch"])]
     pub cps_steps: Option<CpsPattern>,
 
     /// CPS 尖峰：`基準,尖峰,開始%,尖峰秒數`，例如 `10,100,50,10` = 平時 10，跑到 50% 時 100 CPS 持續 10 秒（取代 --cps）
-    #[arg(long = "cps-spike", value_parser = parse_cps_spike)]
+    #[arg(long = "cps-spike", value_parser = parse_cps_spike, conflicts_with = "cps_batch")]
     pub cps_spike: Option<CpsPattern>,
+
+    /// 批次：`通數/秒數`，例如 `3/20` = 每 20 秒一次發出 3 通；併發已滿時只補空出的線路，
+    /// 剩下的略過（取代 --cps）
+    #[arg(long = "cps-batch", value_parser = parse_cps_batch)]
+    pub cps_batch: Option<CpsPattern>,
+
+    /// 線路釋放後幾秒才補新的通話（0 = 立即補）；避免新來電剛好在座席掛線的瞬間進線
+    #[arg(long = "refill-delay", default_value_t = 0.0)]
+    pub refill_delay: f64,
 
     /// 壓測持續秒數（0 = 不限，直到 Ctrl-C 或 TUI 按 q）
     #[arg(short = 'd', long = "duration", default_value_t = 60)]
@@ -304,6 +313,22 @@ fn parse_cps_spike(s: &str) -> Result<CpsPattern, String> {
     Ok(p)
 }
 
+/// `3/20` → 每 20 秒一次發出 3 通
+fn parse_cps_batch(s: &str) -> Result<CpsPattern, String> {
+    let (count, every) = s
+        .split_once('/')
+        .ok_or_else(|| format!("格式需為 通數/秒數：{}", s))?;
+    let p = CpsPattern::Batch {
+        count: count
+            .trim()
+            .parse()
+            .map_err(|_| format!("通數需為整數：{}", count))?,
+        every_secs: num(every)?,
+    };
+    p.validate(0).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
 /// `300` / `30s` / `5m` / `1h` → 秒
 fn parse_interval(s: &str) -> Result<u64, String> {
     let s = s.trim();
@@ -339,6 +364,7 @@ impl Args {
             .clone()
             .or_else(|| self.cps_steps.clone())
             .or_else(|| self.cps_spike.clone())
+            .or_else(|| self.cps_batch.clone())
             .unwrap_or_default()
     }
 }
@@ -373,9 +399,14 @@ mod tests {
                 if base == 10.0 && peak == 100.0 && spike_at_pct == 50.0
         ));
         assert!(matches!(
+            parse(&["--cps-batch", "3/20"]).unwrap().cps_pattern(),
+            CpsPattern::Batch { count: 3, every_secs } if every_secs == 20.0
+        ));
+        assert!(matches!(
             parse(&[]).unwrap().cps_pattern(),
             CpsPattern::Flat
         ));
+        assert_eq!(parse(&["--refill-delay", "2.5"]).unwrap().refill_delay, 2.5);
 
         for bad in [
             &["--cps-ramp", "5"][..],
@@ -385,6 +416,10 @@ mod tests {
             &["--cps-spike", "10,100,50"],
             &["--cps-spike", "10,100,150,5"],
             &["--cps-ramp", "1-5", "--cps-spike", "10,100,50,10"],
+            &["--cps-batch", "3"],
+            &["--cps-batch", "0/20"],
+            &["--cps-batch", "3/0"],
+            &["--cps-batch", "3/20", "--cps-ramp", "1-5"],
         ] {
             assert!(parse(bad).is_err(), "{:?} 應被拒絕", bad);
         }
