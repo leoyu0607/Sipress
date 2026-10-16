@@ -218,3 +218,8 @@ ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 
 
 雙端測 SIPX 時，民眾端一有線路釋放就立刻補話，新來電剛好在座席掛線的瞬間進線，觸發第 26 項的 506。
 已完成（分支 `feat/cps-batch-refill-delay`）：CPS 模式新增「批次」`CpsPattern::Batch { count, every_secs }`（CLI `--cps-batch N/M`、GUI「批次 Batch」）：每 M 秒一次發出 N 通，發出時併發已滿只補空出的線路、剩下的略過不累積；`Config.refill_delay_secs`（CLI `--refill-delay`、GUI「補話延遲」）：線路釋放後等 N 秒才補，對所有 CPS 模式有效。測試：`core/tests/cps_batch_refill.rs`、CLI 參數與 GUI 驗證 / 預覽、契約 fixtures 新增 `caller-batch`。
+
+### [ ] 28. 結束流程遇到座席仍在通話中（正確性）
+
+實測時停止測試的當下座席還在通話中，結束流程撥的未就緒 / 登出被 CTI 拒絕（`603 CTIError2140`），座席留在 CTI 登入狀態（下次測試時 CTI 先派給它、每次 506）。
+做法：收到停止訊號時，有進行中通話的帳號先等通話結束（最多等 BYE 逾時或結束流程時限）再執行結束流程；測試：mock 在通話中送停止訊號，確認 BYE 之後才撥未就緒 / 登出。
