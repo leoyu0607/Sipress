@@ -592,12 +592,12 @@ describe('座席流程', () => {
     expect(expandFlowCode('{agent}', '1001', { ...f, agentDigits: 8 })).toBe('1001')
   })
 
-  it('SIPX 預設：開始登入 → 等待 → 就緒；結束未就緒 → 登出', () => {
+  it('SIPX 預設：開始登入 → 等待 → 就緒；每通後就緒；結束未就緒 → 登出', () => {
     const s = useTestStore()
     const preset = sipxPresetFlow(s.config.agent.flow.codes)
     const codes = (steps: typeof preset.onStart) => steps.map(st => st.type === 'dial' ? st.code : `wait ${st.secs}`)
     expect(codes(preset.onStart)).toEqual(['*94{agent}*{pwd}', 'wait 1', '*96'])
-    expect(preset.afterCall).toEqual([])
+    expect(codes(preset.afterCall)).toEqual(['*96'])
     expect(codes(preset.onStop)).toEqual(['*97', '*95'])
   })
 

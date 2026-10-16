@@ -87,10 +87,29 @@ impl FlowQueue {
 pub(super) enum DialState {
     /// 已送 INVITE，等最終回應
     Calling,
+    /// 交換機回 18x 播提示音（SIPX 的特殊碼不接通，播完自己送 487）：
+    /// `hangup_at` 時由座席 CANCEL，像真人聽完提示音就掛機，盡快空出分機
+    Early { hangup_at: Instant },
     /// 已接通，`hangup_at` 時由座席掛斷
     Answered { hangup_at: Instant },
+    /// 提示音後已送 CANCEL，等 487
+    Cancelling,
     /// 已送 BYE，等回應
     Terminating,
+}
+
+/// 回應的 Reason 標頭說明（例如 SIPX 的 `text="CTIError2140"`）；沒有時為空字串
+pub(super) fn reason_text(raw: &str) -> String {
+    let Some(line) = raw
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("reason:"))
+    else {
+        return String::new();
+    };
+    match line.split_once("text=\"") {
+        Some((_, rest)) => rest.split('"').next().unwrap_or("").to_string(),
+        None => line["reason:".len()..].trim().to_string(),
+    }
 }
 
 /// 撥碼用到的本端資訊
@@ -163,7 +182,7 @@ impl OutDial {
 
     pub fn deadline(&self) -> Instant {
         let state = match self.state {
-            DialState::Answered { hangup_at } => hangup_at,
+            DialState::Answered { hangup_at } | DialState::Early { hangup_at } => hangup_at,
             _ => self.give_up_at,
         };
         match &self.retx {
@@ -226,6 +245,22 @@ impl OutDial {
         *interval = (*interval * 2).min(T2);
         *at = now + *interval;
         Some(msg.clone())
+    }
+
+    /// 收到 18x：開始計算提示音的保持時間
+    pub fn on_early(&mut self, hold: Duration, now: Instant) {
+        self.provisional = true;
+        self.retx = None;
+        self.state = DialState::Early {
+            hangup_at: now + hold,
+        };
+    }
+
+    /// 提示音保持時間到：送 CANCEL 並等 487
+    pub fn start_cancel(&mut self, ep: &Endpoint, now: Instant) -> String {
+        self.state = DialState::Cancelling;
+        self.give_up_at = now + Duration::from_secs(crate::config::AgentFlow::BYE_TIMEOUT_SECS);
+        self.cancel(ep)
     }
 
     /// 收到 2xx：記下 dialog 資訊
@@ -328,6 +363,15 @@ mod tests {
         );
         assert!(matches!(q.next(t0 + Duration::from_secs(2)), Next::Idle));
         assert!(q.is_idle());
+    }
+
+    #[test]
+    fn reason_text_extracts_sipx_cti_error() {
+        let raw = "SIP/2.0 603 Decline\r\nReason: SIP;cause=603;text=\"CTIError2140\";location=\"acd@1.2.3.4\"\r\n\r\n";
+        assert_eq!(reason_text(raw), "CTIError2140");
+        let q850 = "SIP/2.0 486 Busy\r\nReason: Q.850;cause=17\r\n\r\n";
+        assert_eq!(reason_text(q850), "Q.850;cause=17");
+        assert_eq!(reason_text("SIP/2.0 486 Busy\r\n\r\n"), "");
     }
 
     #[test]

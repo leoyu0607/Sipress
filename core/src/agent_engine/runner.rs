@@ -7,7 +7,7 @@ use super::call::{
     build_bye_from_dialog, build_response_with_sdp, pick_dummy_rtp_port, random_secs, short,
     DialogCtx, PendingInvite, RingOutcome,
 };
-use super::flow::{DialState, Endpoint, FlowQueue, Next, OutDial};
+use super::flow::{reason_text, DialState, Endpoint, FlowQueue, Next, OutDial};
 use super::register::{Registration, INITIAL_EXPIRES, MAX_AUTH_RETRIES};
 use super::{trace_key, Shared};
 use crate::config::{AgentAccount, AgentBehavior, FlowStep};
@@ -928,10 +928,21 @@ impl AccountRunner {
                     return;
                 }
                 match code {
-                    100..=199 => {
+                    100 => {
                         if let Some(d) = self.flow.dial.as_mut() {
                             d.provisional = true;
                             d.stop_retx();
+                        }
+                    }
+                    // 提示音（SIPX 的特殊碼回 183 播語音，不會接通）
+                    101..=199 => {
+                        let hold = Duration::from_secs_f64(self.sh.cfg.agent_flow.hold_secs);
+                        if let Some(d) = self.flow.dial.as_mut() {
+                            if d.state == DialState::Calling {
+                                d.on_early(hold, now);
+                                let name = d.name().to_string();
+                                self.event(&format!("[撥碼] {}：提示音（SIP {}）", name, code));
+                            }
                         }
                     }
                     200..=299 => self.on_dial_answered(raw, code, now).await,
@@ -944,8 +955,18 @@ impl AccountRunner {
                     }
                     300.. => {
                         let _ = self.send(&SipMessage::ack_for_non2xx(raw)).await;
-                        if state == DialState::Calling {
-                            self.fail_dial(code, "").await;
+                        match (state, code) {
+                            // 提示音播完由交換機結束（SIPX 特殊碼的正常結束方式）
+                            (DialState::Early { .. }, 487) => {
+                                self.succeed_dial("提示音後交換機結束").await;
+                                self.finish_dial().await;
+                            }
+                            // 座席 CANCEL 後的 487：成功已在送 CANCEL 時記錄
+                            (DialState::Cancelling, _) => self.finish_dial().await,
+                            (DialState::Calling | DialState::Early { .. }, _) => {
+                                self.fail_dial(code, &reason_text(raw)).await;
+                            }
+                            _ => {}
                         }
                     }
                     _ => {}
@@ -964,18 +985,24 @@ impl AccountRunner {
         let Some(dial) = self.flow.dial.as_mut() else {
             return;
         };
-        if dial.state == DialState::Calling {
+        let state = dial.state;
+        if matches!(state, DialState::Calling | DialState::Early { .. }) {
             dial.on_answered(raw, hold, now);
-            let (name, template, label) = (
-                dial.name().to_string(),
-                dial.template.clone(),
-                dial.label.clone(),
-            );
-            self.event(&format!("[撥碼] {}：成功（SIP {}）", name, code));
-            self.sh.record_dial(&template, &label, None);
+            self.succeed_dial(&format!("SIP {}", code)).await;
+        } else if state == DialState::Cancelling {
+            // CANCEL 與 200 OK 交錯：照樣 ACK，再以 BYE 結束（RFC 3261 §9.1）
+            dial.on_answered(raw, Duration::ZERO, now);
         }
         if let Some(ack) = self.flow.dial.as_ref().map(|d| d.ack(&self.endpoint())) {
             let _ = self.send(&ack).await;
+        }
+    }
+
+    /// 記錄撥碼成功（`how` 寫進 log，例如「SIP 200」「提示音後掛斷」）
+    async fn succeed_dial(&mut self, how: &str) {
+        if let Some(dial) = self.flow.dial.as_ref() {
+            self.event(&format!("[撥碼] {}：成功（{}）", dial.name(), how));
+            self.sh.record_dial(&dial.template, &dial.label, None);
         }
     }
 
@@ -1048,6 +1075,21 @@ impl AccountRunner {
                     }
                 }
                 self.fail_dial(0, "").await;
+            }
+            DialState::Early { hangup_at } if now >= hangup_at => {
+                let ep = Endpoint {
+                    username: &self.account.username,
+                    server: &self.sh.cfg.server_addr,
+                    local_addr: &self.local_addr,
+                    transport: self.sh.cfg.transport_str(),
+                    codec_pt: self.sh.cfg.codec.payload_type(),
+                };
+                let cancel = dial.start_cancel(&ep, now);
+                let _ = self.send(&cancel).await;
+                self.succeed_dial("提示音後掛斷").await;
+            }
+            DialState::Cancelling if now >= dial.give_up_at => {
+                self.finish_dial().await;
             }
             DialState::Answered { hangup_at } if now >= hangup_at => {
                 // Endpoint 只借用帳號 / 設定欄位，與 self.flow 不重疊

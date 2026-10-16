@@ -50,7 +50,7 @@
     "on_stop": [],
     "agent_digits": 4,
     "agent_password": "",
-    "hold_secs": 3
+    "hold_secs": 1
   },
   "agent_bye_timeout_secs": 150,
   "agent_behavior": {

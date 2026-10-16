@@ -87,7 +87,7 @@ export interface AgentFlowConfig {
   onStop:        FlowStepConfig[]
   agentDigits:   number   // {agent} 取分機末幾碼（0 = 整個分機）
   agentPassword: string   // {pwd}
-  holdSecs:      number   // 撥通後保持幾秒再掛斷
+  holdSecs:      number   // 撥通（200）或開始播提示音（18x）後保持幾秒再掛斷
   /** 常用碼：手動按鈕與「套用 SIPX 預設」使用（只存在 GUI） */
   codes: Record<FlowCodeKey, string>
 }
@@ -103,12 +103,12 @@ export function newFlowStep(type: 'dial' | 'wait', code = '', label = '', secs =
   return { id: uid(), type, code, label, secs }
 }
 
-/** SIPX 預設：開始時登入 → 就緒；結束時未就緒 → 登出 */
+/** SIPX 預設（非自動就緒）：開始時登入 → 就緒；每通結束後就緒；結束時未就緒 → 登出 */
 export function sipxPresetFlow(codes: Record<FlowCodeKey, string>): Pick<AgentFlowConfig, FlowPhase> {
   const dial = (k: FlowCodeKey) => newFlowStep('dial', codes[k], FLOW_CODE_NAMES[k])
   return {
     onStart:   [dial('login'), newFlowStep('wait', '', '', 1), dial('ready')],
-    afterCall: [],
+    afterCall: [dial('ready')],
     onStop:    [dial('notReady'), dial('logout')],
   }
 }
@@ -416,7 +416,7 @@ function defaultConfig(): TestConfig {
       registerInterval: 1000,
       flow: {
         onStart: [], afterCall: [], onStop: [],
-        agentDigits: 4, agentPassword: '', holdSecs: 3,
+        agentDigits: 4, agentPassword: '', holdSecs: 1,
         codes: { login: '*94{agent}*{pwd}', ready: '*96', notReady: '*97', logout: '*95' },
       },
       duration: 0,

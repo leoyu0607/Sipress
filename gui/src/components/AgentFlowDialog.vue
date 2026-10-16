@@ -167,9 +167,9 @@ function save() {
                     <input v-model="draft.agentPassword" class="in" type="text" placeholder="000000">
                   </label>
                   <label class="field">
-                    <span>撥通後保持（秒）</span>
+                    <span>撥通 / 提示音後保持（秒）</span>
                     <input v-model.number="draft.holdSecs" class="in" type="number" min="0" max="60" step="0.5"
-                           title="交換機回 200 OK 後保持幾秒再掛斷；交換機先掛斷就提早結束">
+                           title="交換機回 200 OK 或開始播提示音（183）後保持幾秒再掛斷；提示音期間分機仍被佔用，SIPX 派來的電話會失敗，建議 1 秒">
                   </label>
                 </div>
                 <div class="codes">
@@ -194,7 +194,7 @@ function save() {
             </div>
 
             <div class="dialog-footer">
-              <button class="btn btn-sm" @click="applyPreset" title="開始：登入 → 等待 1 秒 → 就緒；結束：未就緒 → 登出">套用 SIPX 預設</button>
+              <button class="btn btn-sm" @click="applyPreset" title="非自動就緒的 SIPX：開始時登入 → 等待 1 秒 → 就緒；每通結束後就緒；結束時未就緒 → 登出。SIPX 設為自動就緒時，請刪掉就緒步驟">套用 SIPX 預設</button>
               <button class="btn btn-sm" @click="clearAll">清空</button>
               <span class="spacer"></span>
               <button class="btn btn-sm" @click="emit('cancel')">取消</button>
