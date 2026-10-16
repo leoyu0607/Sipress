@@ -206,6 +206,7 @@ fn build_config(args: &Args, agent_accounts: Vec<AgentAccount>) -> Config {
         agent_bye_timeout_secs: args.bye_timeout,
         agent_reregister_after_call: args.reregister_after_call,
         agent_register_interval_ms: args.register_interval,
+        agent_register_expires: args.register_expires,
         agent_flow: AgentFlow::default(), // 由 --agent-flow 檔案另外讀入
         refill_delay_secs: args.refill_delay,
         agent_behavior: AgentBehavior {

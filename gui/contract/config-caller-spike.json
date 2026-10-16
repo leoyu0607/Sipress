@@ -35,6 +35,7 @@
   "agent_ack_timeout_secs": 10,
   "agent_reregister_after_call": false,
   "agent_register_interval_ms": 1000,
+  "agent_register_expires": 3600,
   "agent_flow": {
     "on_start": [],
     "after_call": [],

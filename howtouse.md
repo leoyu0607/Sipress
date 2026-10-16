@@ -220,7 +220,7 @@ extension,username,password,domain
 按「▶ 開始測試」後：
 
 1. Rust 後端為**每個帳號**獨立建立 UDP socket 並再做一次 REGISTER（這次是壓測用的常駐連線，不同於上面的即時驗證）
-2. 每個帳號自動在 `Expires/2` 計時器到期時 re-REGISTER 維持註冊
+2. 每個帳號在註冊有效期的 2/3 時 re-REGISTER 維持註冊（預設要求 3600 秒；SIPX 給 1800 秒時約每 20 分鐘一次，與一般 IP 話機相同）
 3. 收到伺服器送來的 INVITE → 自動回 100 Trying → 200 OK + SDP（PCMA） → 等 ACK → 通話建立
 4. 收到 BYE → 200 OK，計入完成通數
 5. 也會處理 RE-INVITE（Session-Expires）/ CANCEL / OPTIONS
@@ -424,6 +424,7 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 --busy-in-call             座席端通話中（含響鈴中）的新來電回 486
 --reregister-after-call    座席端每通結束後立即重新 REGISTER（預設只在到期前刷新）
 --register-interval <毫秒>  座席端各帳號開始註冊的間隔（0 = 同時註冊）
+--register-expires <秒>     座席端 REGISTER 要求的有效期（預設 3600，2/3 時刷新）
 --agent-flow <檔案>         座席流程檔（JSON；註冊後 / 每通後 / 結束前要撥的特殊碼）
 ```
 

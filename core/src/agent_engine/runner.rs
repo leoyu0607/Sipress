@@ -8,7 +8,7 @@ use super::call::{
     DialogCtx, PendingInvite, RingOutcome,
 };
 use super::flow::{reason_text, DialState, Endpoint, FlowQueue, Next, OutDial};
-use super::register::{Registration, INITIAL_EXPIRES, MAX_AUTH_RETRIES};
+use super::register::{Registration, MAX_AUTH_RETRIES};
 use super::{trace_key, Shared};
 use crate::config::{AgentAccount, AgentBehavior, FlowStep};
 use crate::rtp::session::{RtpSession, RtpSessionConfig};
@@ -78,6 +78,7 @@ impl AccountRunner {
         let reg = Registration::new(
             SipMessage::new_tag(),
             SipMessage::new_call_id(&domain),
+            sh.cfg.agent_register_expires,
             Arc::clone(&sh.live),
         );
         Ok(Self {
@@ -115,7 +116,7 @@ impl AccountRunner {
             }
         }
         self.event("開始 REGISTER");
-        if let Err(e) = self.send_register(INITIAL_EXPIRES).await {
+        if let Err(e) = self.send_register(self.sh.cfg.agent_register_expires).await {
             self.event(&format!("初始 REGISTER 送出失敗: {}", e));
             return Err(e);
         }
