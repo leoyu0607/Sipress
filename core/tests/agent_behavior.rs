@@ -483,7 +483,11 @@ async fn accounts_register_one_interval_apart() {
     let msgs = log.lock().unwrap().clone();
     let mut first: Vec<(String, Instant)> = Vec::new();
     for (at, m) in &msgs {
-        let Some(cid) = m.starts_with("REGISTER").then(|| SipParser::call_id(m)).flatten() else {
+        let Some(cid) = m
+            .starts_with("REGISTER")
+            .then(|| SipParser::call_id(m))
+            .flatten()
+        else {
             continue;
         };
         if !first.iter().any(|(c, _)| *c == cid) {
@@ -510,11 +514,10 @@ async fn answer_contact_is_agent_account_not_caller() {
         .into_iter()
         .find(|(_, m)| status(m) == 200)
         .expect("應接聽 call-1");
-    let contact = ok
-        .1
-        .lines()
-        .find(|l| l.starts_with("Contact:"))
-        .expect("200 OK 應帶 Contact");
+    let contact =
+        ok.1.lines()
+            .find(|l| l.starts_with("Contact:"))
+            .expect("200 OK 應帶 Contact");
     assert!(contact.contains("<sip:1001@"), "{}", contact);
     assert!(!contact.contains("caller"), "{}", contact);
 }
