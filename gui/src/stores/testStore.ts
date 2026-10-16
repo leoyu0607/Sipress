@@ -836,8 +836,11 @@ export const useTestStore = defineStore('test', () => {
     if (ad > 0 && (cd === 0 || ad < cd))
       addLog('warn', `座席端持續時間（${fmtDuration(ad)}）比民眾端（${fmtDuration(cd)}）短，座席會先結束，後段來電將無人接聽`)
     if (!await startTest('agent')) return
-    addLog('info', `雙端啟動：等待座席註冊完成（最多 ${AGENT_REGISTER_TIMEOUT_MS / 1000}s）後開始撥號`)
-    const deadline = Date.now() + AGENT_REGISTER_TIMEOUT_MS
+    // 分批註冊時，最後一個帳號要 (帳號數 - 1) × 間隔後才開始註冊，等待上限一併延長
+    const a0 = config.value.agent
+    const waitMs = AGENT_REGISTER_TIMEOUT_MS + a0.registerInterval * Math.max(0, a0.accounts.length - 1)
+    addLog('info', `雙端啟動：等待座席註冊完成（最多 ${fmtDuration(Math.ceil(waitMs / 1000))}）後開始撥號`)
+    const deadline = Date.now() + waitMs
     const result = await new Promise<BothWaitResult>(resolve => {
       const timer = setInterval(() => {
         const a = sessions.value.agent
@@ -854,7 +857,7 @@ export const useTestStore = defineStore('test', () => {
     }
     if (result === 'timeout') {
       if (registered === 0) {
-        addLog('err', `座席在 ${AGENT_REGISTER_TIMEOUT_MS / 1000}s 內沒有任何帳號註冊成功，民眾端不啟動`)
+        addLog('err', `座席在 ${fmtDuration(Math.ceil(waitMs / 1000))} 內沒有任何帳號註冊成功，民眾端不啟動`)
         return
       }
       addLog('warn', `僅 ${registered}/${total} 個座席註冊成功，仍開始撥號`)
