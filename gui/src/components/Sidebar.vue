@@ -438,6 +438,12 @@ function statusTitle(s: string) {
                  title="每個分機開始註冊的間隔；大量分機同時註冊會部分失敗時調大。壓測啟動、帳號批次註冊與座席流程都依此錯開；0 = 同時註冊">
           <div class="field-hint" v-if="registerEta">{{ registerEta }}</div>
         </div>
+        <div class="field">
+          <label>註冊有效期 (秒) <span class="tag">--register-expires</span></label>
+          <input v-model.number="store.config.agent.registerExpires" type="number" min="30" step="60" placeholder="3600"
+                 title="REGISTER 要求的有效期；伺服器可能改給其他值（SIPX 對 3600 給 1800），在有效期的 2/3 時重新註冊。一般 IP 話機用 3600；SIPX 的 CTI 每次收到註冊都會產生 Register 事件，不建議設太短">
+          <div class="field-hint">有效期的 2/3 時重新註冊（SIPX 給 1800 秒時約每 20 分鐘）</div>
+        </div>
 
         <!-- Behavior simulation（區間欄位各佔一列，避免在側欄寬度下數字被截斷） -->
         <div class="field">

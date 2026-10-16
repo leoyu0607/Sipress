@@ -179,6 +179,7 @@ export interface AgentProfile {
   behavior:   AgentBehaviorConfig
   reregisterAfterCall: boolean   // 每通結束後立即重新 REGISTER（預設只在到期前刷新）
   registerInterval: number       // 各帳號開始註冊的間隔毫秒（0 = 同時註冊）
+  registerExpires:  number       // REGISTER 要求的有效期秒數（伺服器可能改給其他值；2/3 時刷新）
   flow:       AgentFlowConfig     // 座席流程（撥特殊碼登入 / 就緒 / 登出）
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
@@ -426,6 +427,7 @@ function defaultConfig(): TestConfig {
       behavior: { ringMin: 1, ringMax: 2, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
       reregisterAfterCall: false,
       registerInterval: 1000,
+      registerExpires: 3600,
       flow: {
         onStart: [], afterCall: [], onStop: [],
         agentDigits: 4, agentPassword: '', holdSecs: 1,
@@ -590,6 +592,8 @@ export const useTestStore = defineStore('test', () => {
         if (b.talkMin > b.talkMax) errs.push('通話秒數最小值不可大於最大值')
       }
       const pctOk = (v: number) => Number.isFinite(v) && v >= 0 && v <= 100
+      if (!(Number.isInteger(c.agent.registerExpires) && c.agent.registerExpires >= 30))
+        errs.push('註冊有效期需為 ≥ 30 的整數秒')
       if (!(Number.isInteger(c.agent.registerInterval) && c.agent.registerInterval >= 0))
         errs.push('註冊間隔需為 ≥ 0 的整數毫秒')
       errs.push(...flowErrors(c.agent.flow))
@@ -622,6 +626,7 @@ export const useTestStore = defineStore('test', () => {
       if (b.busyInCall)      parts.push('--busy-in-call')
       if (a.reregisterAfterCall) parts.push('--reregister-after-call')
       if (a.registerInterval > 0) parts.push(`--register-interval ${a.registerInterval}`)
+      if (a.registerExpires !== 3600) parts.push(`--register-expires ${a.registerExpires}`)
       // 流程檔由「座席流程」的「匯出 JSON」產生（sipress_flow.json）
       if (flowStepCount(a.flow) > 0) parts.push('--agent-flow sipress_flow.json')
       parts.push(`--transport ${c.transport.toLowerCase()}`)
@@ -725,6 +730,7 @@ export const useTestStore = defineStore('test', () => {
       agent_ack_timeout_secs: c.agent.ackTimeout,
       agent_reregister_after_call: c.agent.reregisterAfterCall,
       agent_register_interval_ms: c.agent.registerInterval,
+      agent_register_expires: c.agent.registerExpires,
       agent_flow:           flowToRust(c.agent.flow),
       agent_bye_timeout_secs: c.agent.byeTimeout,
       agent_behavior: {

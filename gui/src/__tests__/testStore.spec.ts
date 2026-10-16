@@ -99,6 +99,13 @@ describe('validationErrors', () => {
     expect(s.cliCommand).not.toContain('--reregister-after-call')
     s.config.agent.reregisterAfterCall = true
     expect(s.cliCommand).toContain('--reregister-after-call')
+    expect(s.config.agent.registerExpires).toBe(3600)
+    expect(s.cliCommand).not.toContain('--register-expires')
+    s.config.agent.registerExpires = 600
+    expect(s.cliCommand).toContain('--register-expires 600')
+    s.config.agent.registerExpires = 10
+    expect(s.validationErrors).toContain('註冊有效期需為 ≥ 30 的整數秒')
+    s.config.agent.registerExpires = 3600
     s.config.agent.registerInterval = 0
     expect(s.cliCommand).not.toContain('--register-interval')
     s.config.agent.registerInterval = 50

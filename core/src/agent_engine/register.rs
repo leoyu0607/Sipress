@@ -4,9 +4,6 @@ use crate::stats::LiveStats;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// 第一次 REGISTER 的 Expires（秒）
-pub(super) const INITIAL_EXPIRES: u32 = 240;
-
 /// 同一輪 REGISTER 收到 401/407 後最多帶認證重送幾次（避免密碼錯誤時無限重送）
 pub(super) const MAX_AUTH_RETRIES: u32 = 2;
 
@@ -42,23 +39,25 @@ struct RegRetx {
 }
 
 impl Registration {
-    pub fn new(from_tag: String, call_id: String, live: Arc<LiveStats>) -> Self {
+    /// `expires`：REGISTER 要求的有效期（秒）；收到 200 OK 後改用伺服器給的值
+    pub fn new(from_tag: String, call_id: String, expires: u32, live: Arc<LiveStats>) -> Self {
         Self {
             from_tag,
             call_id,
             cseq: 0,
             challenge: None,
             auth_retries: 0,
-            expires: INITIAL_EXPIRES,
+            expires,
             last_register_at: Instant::now(),
             retx: None,
             gauge: RegisteredGauge::new(live),
         }
     }
 
-    /// 下一次刷新的時間：Expires 的一半，最少 60 秒
+    /// 下一次刷新的時間：有效期的 2/3（與一般 IP 話機相同，例如 Yealink 在 SIPX 給 1800 秒時每 1200 秒刷新），
+    /// 最少 30 秒
     pub fn refresh_at(&self) -> Instant {
-        self.last_register_at + Duration::from_secs((self.expires as u64 / 2).max(60))
+        self.last_register_at + Duration::from_secs((self.expires as u64 * 2 / 3).max(30))
     }
 
     /// 送出 REGISTER 後呼叫：UDP 時排定重傳（TCP 由傳輸層保證送達）
@@ -163,7 +162,7 @@ mod tests {
     }
 
     fn reg() -> Registration {
-        Registration::new("t".into(), "c".into(), Arc::default())
+        Registration::new("t".into(), "c".into(), 3600, Arc::default())
     }
 
     #[test]
@@ -199,12 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_at_half_of_expires_but_at_least_60s() {
+    fn refresh_at_two_thirds_of_expires_but_at_least_30s() {
         let mut r = reg();
         let t = r.last_register_at;
-        assert_eq!(r.refresh_at(), t + Duration::from_secs(120));
-        r.expires = 60;
-        assert_eq!(r.refresh_at(), t + Duration::from_secs(60));
+        assert_eq!(r.refresh_at(), t + Duration::from_secs(2400));
+        r.expires = 1800; // SIPX 對 3600 的要求實際給 1800
+        assert_eq!(r.refresh_at(), t + Duration::from_secs(1200));
+        r.expires = 30;
+        assert_eq!(r.refresh_at(), t + Duration::from_secs(30));
     }
 
     #[test]

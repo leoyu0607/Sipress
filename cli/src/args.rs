@@ -142,6 +142,10 @@ pub struct Args {
     #[arg(long = "register-interval", default_value_t = 0)]
     pub register_interval: u64,
 
+    /// 座席端：REGISTER 要求的有效期秒數（伺服器可能改給其他值，在有效期的 2/3 時刷新）
+    #[arg(long = "register-expires", default_value_t = 3600)]
+    pub register_expires: u32,
+
     /// 座席端：通話中忙線——已有通話（含響鈴中）時新來電回 486，讓 ACD 改派
     #[arg(long = "busy-in-call")]
     pub busy_in_call: bool,

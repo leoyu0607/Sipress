@@ -221,7 +221,7 @@ UAC (sipress)              UAS (軟交換機)
        │       4. 啟動真實 RTP 收發（若 enable_rtp）
        │       5. 處理 RE-INVITE（更新 RTP 目標）/ BYE / CANCEL / OPTIONS
        │       6. BYE timeout（150s → 主動 BYE）
-       │       7. 在 Expires/2 計時器到期時 re-REGISTER（最少每 60 秒）
+       │       7. 在有效期的 2/3 時 re-REGISTER（預設要求 3600 秒，與一般 IP 話機相同）
        │       8. （選項 --reregister-after-call）通話結束後立即 re-REGISTER
        │       9. （選項 --agent-flow）註冊後 / 每通結束後依序撥特殊碼（登入、就緒…）
        │
@@ -297,7 +297,7 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
      │──── REGISTER ───────────────────────────────────▶│
      │◀─── 401 Unauthorized + WWW-Authenticate ─────────│  Digest challenge
      │──── REGISTER + Authorization (Digest MD5) ──────▶│
-     │◀─── 200 OK (Expires=N) ──────────────────────────│  註冊成功，Expires/2 後 re-REGISTER
+     │◀─── 200 OK (Expires=N) ──────────────────────────│  註冊成功，有效期的 2/3 時 re-REGISTER
      │                                                  │
      │           （等待外部撥入）                       │
      │                                                  │
@@ -316,7 +316,7 @@ sipress (UAC for REGISTER, UAS for INVITE)        軟交換機
      │◀─── BYE ─────────────────────────────────────────│  對方掛斷（或 150s timeout → 主動 BYE）
      │──── 200 OK ─────────────────────────────────────▶│  停止 RTP
      │                                                  │
-     │──── REGISTER (re-register) ─────────────────────▶│  Expires/2 到期時刷新（開啟選項時通話後也會送）
+     │──── REGISTER (re-register) ─────────────────────▶│  有效期的 2/3 時刷新（開啟選項時通話後也會送）
      │◀─── 200 OK ──────────────────────────────────────│
      │                                                  │
      │           （測試結束）                           │
@@ -494,6 +494,7 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
 | `--busy-in-call` | 關閉 | 通話中忙線：已有通話（含響鈴中）時新來電回 486，讓 ACD 改派；關閉時同一帳號可同時接多通 |
 | `--reregister-after-call` | 關閉 | 每通結束後立即重新 REGISTER；預設只在 Expires 到期前刷新。SIPX 環境請勿開啟（CTI 會讓座席不再被派話） |
+| `--register-expires` | `3600` | REGISTER 要求的有效期秒數；伺服器可能改給其他值（SIPX 給 1800），在有效期的 2/3 時重新註冊 |
 | `--register-interval` | `0` | 各帳號開始註冊的間隔毫秒（0 = 同時註冊；GUI 預設 1000）；座席流程的撥碼也依此錯開 |
 | `--agent-flow` | — | 座席流程檔（JSON，GUI「座席流程」的「匯出」產生）：`on_start` / `after_call` / `on_stop` 三段步驟（`{"type":"dial","code":"*96","label":"就緒"}` 或 `{"type":"wait","secs":2}`），以及 `agent_digits`（`{agent}` 取分機末幾碼，預設 4）、`agent_password`（`{pwd}`）、`hold_secs`（撥通或提示音後保持秒數，預設 1） |
 
@@ -752,7 +753,7 @@ RTP 品質統計，所有計算均符合 RFC 3550 標準：
 座席端壓測引擎，每個 `AgentAccount` 一個獨立 tokio task（`runner::AccountRunner`）+ 自帶 socket。每個帳號的狀態只由自己的 task 存取，不需上鎖；主迴圈等待「收到 SIP 訊息 / 註冊刷新 / REGISTER 重傳 / 響鈴與通話計時器 / 停止訊號」之一，交給對應的方法處理：
 
 1. **REGISTER**：初次無認證 → 收 401 解析 `WWW-Authenticate: Digest` → 用 MD5 計算 response → 重送
-2. **保持註冊**：在 `Expires/2` 計時器到期時 re-REGISTER（沿用快取的 challenge）
+2. **保持註冊**：在有效期的 2/3 時 re-REGISTER（沿用快取的 challenge）。REGISTER 要求 `agent_register_expires` 秒（預設 3600，CLI `--register-expires`），伺服器給的值優先；SIPX 給 1800 時約每 20 分鐘刷新，與 Yealink 話機相同
 3. **接受來電**：收到 INVITE → 100 Trying → 180 Ringing → 200 OK + SDP（PCMA, 真實 RTP port）
 4. **等待 ACK**：10s 未收到 ACK → 座席主動 BYE
 5. **真實 RTP**：啟動 `RtpSession` 收發 G.711A 音訊（若 `enable_rtp`），收集 MOS / 掉包 / Jitter

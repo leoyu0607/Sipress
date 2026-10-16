@@ -583,6 +583,11 @@ pub struct Config {
     #[serde(default)]
     pub agent_register_interval_ms: u64,
 
+    /// Agent 模式：REGISTER 要求的有效期（秒，預設 3600，與一般 IP 話機相同）。
+    /// 伺服器可能改給其他值（SIPX 給 1800）；在有效期的 2/3 時刷新
+    #[serde(default = "default_register_expires")]
+    pub agent_register_expires: u32,
+
     /// Agent 模式：註冊後 / 每通結束後 / 結束前要撥的特殊碼（座席登入、就緒、登出等）
     #[serde(default)]
     pub agent_flow: AgentFlow,
@@ -591,6 +596,10 @@ pub struct Config {
     /// 避免新來電剛好在座席掛線的瞬間進線（真實話務不會每通都緊接著前一通）
     #[serde(default)]
     pub refill_delay_secs: f64,
+}
+
+fn default_register_expires() -> u32 {
+    3600
 }
 
 fn default_ack_timeout() -> u64 {
@@ -639,6 +648,7 @@ impl Default for Config {
             stats_interval_secs: default_stats_interval(),
             agent_reregister_after_call: false,
             agent_register_interval_ms: 0,
+            agent_register_expires: default_register_expires(),
             agent_flow: AgentFlow::default(),
             refill_delay_secs: 0.0,
         }
@@ -709,6 +719,12 @@ impl Config {
             }
         }
         if self.mode == Mode::Agent {
+            if self.agent_register_expires < 30 {
+                anyhow::bail!(
+                    "座席註冊有效期需 ≥ 30 秒（目前為 {}）",
+                    self.agent_register_expires
+                );
+            }
             self.agent_behavior.validate()?;
             self.agent_flow.validate()?;
         }

@@ -2,7 +2,7 @@
 ///
 /// 每個帳號各自一個 task（`runner::AccountRunner`），行為：
 ///   1. 用獨立 socket REGISTER（含 401 Digest 認證重送；UDP 遺失時重傳）
-///   2. 在 Expires/2 時自動 re-REGISTER 維持註冊
+///   2. 在有效期的 2/3 時自動 re-REGISTER 維持註冊（與一般 IP 話機相同）
 ///   3. 監聽 INVITE → 100 Trying → 180 Ringing → 200 OK + SDP（或依行為模擬拒接 / 不接）
 ///   4. 等待 ACK（逾時 → 主動 BYE）
 ///   5. 啟動真實 RTP 收發（若 enable_rtp）

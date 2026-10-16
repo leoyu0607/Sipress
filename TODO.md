@@ -223,3 +223,8 @@ ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 
 
 實測時停止測試的當下座席還在通話中，結束流程撥的未就緒 / 登出被 CTI 拒絕（`603 CTIError2140`），座席留在 CTI 登入狀態（下次測試時 CTI 先派給它、每次 506）。
 做法：收到停止訊號時，有進行中通話的帳號先等通話結束（最多等 BYE 逾時或結束流程時限）再執行結束流程；測試：mock 在通話中送停止訊號，確認 BYE 之後才撥未就緒 / 登出。
+
+### [x] 29. 座席註冊有效期與刷新間隔比照 IP 話機（相容性）
+
+實測 Yealink SIP-T20P：REGISTER 要求 3600 秒、SIPX 給 1800 秒、每 1200 秒（2/3）刷新，不送 OPTIONS。sipress 原本要求 240 秒、SIPX 給 360 秒、每 180 秒刷新，刷新次數是話機的 6.7 倍，而 SIPX 會把每次註冊轉成 CTI 的 Register 事件。
+已完成（分支 `feat/register-expires`）：`Config.agent_register_expires`（預設 3600，CLI `--register-expires`、GUI「註冊有效期」），刷新改在有效期的 2/3（最少 30 秒）。實測 SIPX 回 1800 秒。
