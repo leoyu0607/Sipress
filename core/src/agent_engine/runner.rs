@@ -435,7 +435,7 @@ impl AccountRunner {
             raw,
             &self.local_addr,
             port,
-            &self.account.extension,
+            &self.account.username,
             ctx.codec_pt,
         );
         let _ = self.send(&ok).await;
@@ -601,6 +601,7 @@ impl AccountRunner {
             raw,
             "200 OK",
             &local_to_tag,
+            &self.account.username,
             &self.local_addr,
             rtp_port,
             &sdp::answer_payloads(codec_pt, &offer),

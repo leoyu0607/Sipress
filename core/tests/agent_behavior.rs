@@ -451,3 +451,21 @@ async fn reregister_after_call_is_opt_in() {
     let (report, msgs) = run_with(Script::AnswerHangupThenSecondCall, behavior, 3, true).await;
     assert_eq!(registrations(&msgs) as u64, 1 + report.calls_completed);
 }
+
+/// 200 OK 的 Contact 要是座席自己的帳號（與 REGISTER 相同），不是主叫號碼：
+/// SIPX 以此對應到已註冊的座席，否則通話結束後只有部分座席恢復可派話
+#[tokio::test]
+async fn answer_contact_is_agent_account_not_caller() {
+    let (_, msgs) = run(Script::Invite, AgentBehavior::default(), 2).await;
+    let ok = invite_responses(&msgs, "call-1")
+        .into_iter()
+        .find(|(_, m)| status(m) == 200)
+        .expect("應接聽 call-1");
+    let contact = ok
+        .1
+        .lines()
+        .find(|l| l.starts_with("Contact:"))
+        .expect("200 OK 應帶 Contact");
+    assert!(contact.contains("<sip:1001@"), "{}", contact);
+    assert!(!contact.contains("caller"), "{}", contact);
+}
