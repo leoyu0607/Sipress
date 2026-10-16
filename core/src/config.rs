@@ -359,7 +359,8 @@ pub struct AgentFlow {
     pub agent_digits: u32,
     /// `{pwd}` 的值（座席密碼）
     pub agent_password: String,
-    /// 撥碼接通（200 OK）後保持幾秒再掛斷；交換機先掛斷就提早結束
+    /// 撥碼接通（200 OK）或開始播提示音（18x）後保持幾秒再掛斷；交換機先掛斷就提早結束。
+    /// 提示音期間分機仍被佔用（SIPX 派來的電話會失敗），所以預設很短
     pub hold_secs: f64,
 }
 
@@ -371,7 +372,7 @@ impl Default for AgentFlow {
             on_stop: Vec::new(),
             agent_digits: 4,
             agent_password: String::new(),
-            hold_secs: 3.0,
+            hold_secs: 1.0,
         }
     }
 }
@@ -955,7 +956,7 @@ mod tests {
         let flow: AgentFlow = serde_json::from_str(json).unwrap();
         assert_eq!(flow.on_start.len(), 2);
         assert_eq!(flow.agent_digits, 4, "未填欄位取預設值");
-        assert_eq!(flow.hold_secs, 3.0);
+        assert_eq!(flow.hold_secs, 1.0);
         let back: AgentFlow = serde_json::from_str(&serde_json::to_string(&flow).unwrap()).unwrap();
         assert_eq!(back, flow);
     }

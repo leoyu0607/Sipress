@@ -87,7 +87,7 @@ export interface AgentFlowConfig {
   onStop:        FlowStepConfig[]
   agentDigits:   number   // {agent} 取分機末幾碼（0 = 整個分機）
   agentPassword: string   // {pwd}
-  holdSecs:      number   // 撥通後保持幾秒再掛斷
+  holdSecs:      number   // 撥通（200）或開始播提示音（18x）後保持幾秒再掛斷
   /** 常用碼：手動按鈕與「套用 SIPX 預設」使用（只存在 GUI） */
   codes: Record<FlowCodeKey, string>
 }
@@ -103,13 +103,19 @@ export function newFlowStep(type: 'dial' | 'wait', code = '', label = '', secs =
   return { id: uid(), type, code, label, secs }
 }
 
-/** SIPX 預設：開始時登入 → 就緒；結束時未就緒 → 登出 */
-export function sipxPresetFlow(codes: Record<FlowCodeKey, string>): Pick<AgentFlowConfig, FlowPhase> {
+/**
+ * SIPX 預設流程：開始時登入 → 就緒；結束時未就緒 → 等待 1 秒 → 登出。
+ * 自動就緒（預設）：掛線後座席自己回到就緒，每通結束後不撥碼——在掛線後撥碼會佔住分機，
+ * CTI 這時派來的電話會失敗（506），座席之後不再被派話。
+ * 非自動就緒：每通結束後等 3 秒（避開 SIPX 掛線後的收尾）再撥就緒。
+ */
+export function sipxPresetFlow(codes: Record<FlowCodeKey, string>, autoReady = true): Pick<AgentFlowConfig, FlowPhase> {
   const dial = (k: FlowCodeKey) => newFlowStep('dial', codes[k], FLOW_CODE_NAMES[k])
   return {
     onStart:   [dial('login'), newFlowStep('wait', '', '', 1), dial('ready')],
-    afterCall: [],
-    onStop:    [dial('notReady'), dial('logout')],
+    afterCall: autoReady ? [] : [newFlowStep('wait', '', '', 3), dial('ready')],
+    // 未就緒剛掛斷時 CTI 還在處理，馬上撥登出會被拒（603 CTIError2140）
+    onStop:    [dial('notReady'), newFlowStep('wait', '', '', 1), dial('logout')],
   }
 }
 
@@ -416,7 +422,7 @@ function defaultConfig(): TestConfig {
       registerInterval: 1000,
       flow: {
         onStart: [], afterCall: [], onStop: [],
-        agentDigits: 4, agentPassword: '', holdSecs: 3,
+        agentDigits: 4, agentPassword: '', holdSecs: 1,
         codes: { login: '*94{agent}*{pwd}', ready: '*96', notReady: '*97', logout: '*95' },
       },
       duration: 0,

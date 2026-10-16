@@ -592,13 +592,14 @@ describe('座席流程', () => {
     expect(expandFlowCode('{agent}', '1001', { ...f, agentDigits: 8 })).toBe('1001')
   })
 
-  it('SIPX 預設：開始登入 → 等待 → 就緒；結束未就緒 → 登出', () => {
+  it('SIPX 預設：開始登入 → 等待 → 就緒；結束未就緒 → 登出；非自動就緒才在每通後就緒', () => {
     const s = useTestStore()
     const preset = sipxPresetFlow(s.config.agent.flow.codes)
     const codes = (steps: typeof preset.onStart) => steps.map(st => st.type === 'dial' ? st.code : `wait ${st.secs}`)
     expect(codes(preset.onStart)).toEqual(['*94{agent}*{pwd}', 'wait 1', '*96'])
     expect(preset.afterCall).toEqual([])
-    expect(codes(preset.onStop)).toEqual(['*97', '*95'])
+    expect(codes(sipxPresetFlow(s.config.agent.flow.codes, false).afterCall)).toEqual(['wait 3', '*96'])
+    expect(codes(preset.onStop)).toEqual(['*97', 'wait 1', '*95'])
   })
 
   it('驗證：空白撥碼、非法字元、用了 {pwd} 卻沒設密碼', () => {
