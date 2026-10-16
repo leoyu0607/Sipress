@@ -96,6 +96,38 @@ impl Reporter {
         println!("╚══════════════════════════════════════════════════╝");
         println!();
         Self::print_timeline(r);
+        Self::print_agent_dials(r);
+    }
+
+    /// 座席流程的撥碼結果（有流程時才印）
+    fn print_agent_dials(r: &FinalReport) {
+        if r.agent_dials.is_empty() {
+            return;
+        }
+        println!("座席流程撥碼");
+        for d in &r.agent_dials {
+            let codes: Vec<String> = d
+                .fail_codes
+                .iter()
+                .map(|(c, n)| match c {
+                    0 => format!("無回應×{}", n),
+                    c => format!("{}×{}", c, n),
+                })
+                .collect();
+            let name = if d.label.is_empty() {
+                d.code.clone()
+            } else {
+                format!("{}（{}）", d.label, d.code)
+            };
+            println!(
+                "  {}  成功 {}  失敗 {}  {}",
+                name,
+                d.ok,
+                d.failed,
+                codes.join(" ")
+            );
+        }
+        println!();
     }
 
     /// 輸出 JSON（適合 pipe 給其他工具）

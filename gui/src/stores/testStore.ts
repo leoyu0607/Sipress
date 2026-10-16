@@ -68,6 +68,99 @@ export interface AgentBehaviorConfig {
   busyInCall:  boolean  // 通話中（含響鈴中）的新來電回 486
 }
 
+/** 座席流程的一個步驟（dial：撥特殊碼；wait：等待秒數） */
+export interface FlowStepConfig {
+  id:    string
+  type:  'dial' | 'wait'
+  code:  string   // dial：撥碼範本，可含 {agent}、{pwd}
+  label: string   // dial：顯示名稱（例如「就緒」）
+  secs:  number   // wait：秒數
+}
+
+export type FlowPhase = 'onStart' | 'afterCall' | 'onStop'
+export type FlowCodeKey = 'login' | 'ready' | 'notReady' | 'logout'
+
+/** 座席流程：註冊後 / 每通結束後 / 結束前依序執行的撥碼與等待 */
+export interface AgentFlowConfig {
+  onStart:       FlowStepConfig[]
+  afterCall:     FlowStepConfig[]
+  onStop:        FlowStepConfig[]
+  agentDigits:   number   // {agent} 取分機末幾碼（0 = 整個分機）
+  agentPassword: string   // {pwd}
+  holdSecs:      number   // 撥通後保持幾秒再掛斷
+  /** 常用碼：手動按鈕與「套用 SIPX 預設」使用（只存在 GUI） */
+  codes: Record<FlowCodeKey, string>
+}
+
+export const FLOW_CODE_NAMES: Record<FlowCodeKey, string> = {
+  login: '登入', ready: '就緒', notReady: '未就緒', logout: '登出',
+}
+export const FLOW_PHASE_NAMES: Record<FlowPhase, string> = {
+  onStart: '測試開始（註冊成功後）', afterCall: '每通結束後', onStop: '測試結束（解除註冊前）',
+}
+
+export function newFlowStep(type: 'dial' | 'wait', code = '', label = '', secs = 2): FlowStepConfig {
+  return { id: uid(), type, code, label, secs }
+}
+
+/** SIPX 預設：開始時登入 → 就緒；結束時未就緒 → 登出 */
+export function sipxPresetFlow(codes: Record<FlowCodeKey, string>): Pick<AgentFlowConfig, FlowPhase> {
+  const dial = (k: FlowCodeKey) => newFlowStep('dial', codes[k], FLOW_CODE_NAMES[k])
+  return {
+    onStart:   [dial('login'), newFlowStep('wait', '', '', 1), dial('ready')],
+    afterCall: [],
+    onStop:    [dial('notReady'), dial('logout')],
+  }
+}
+
+/** 代入 {agent}（分機末 agentDigits 碼）與 {pwd}；與 core 的 AgentFlow::expand 一致 */
+export function expandFlowCode(code: string, ext: string, flow: Pick<AgentFlowConfig, 'agentDigits' | 'agentPassword'>): string {
+  const d = flow.agentDigits
+  const agent = d <= 0 || d >= ext.length ? ext : ext.slice(ext.length - d)
+  return code.replaceAll('{agent}', agent).replaceAll('{pwd}', flow.agentPassword)
+}
+
+function stepToRust(st: FlowStepConfig) {
+  return st.type === 'dial'
+    ? { type: 'dial', code: st.code.trim(), label: st.label.trim() }
+    : { type: 'wait', secs: st.secs }
+}
+
+/** 送給 Rust 的 AgentFlow（也是 --agent-flow 檔案的格式） */
+export function flowToRust(f: AgentFlowConfig) {
+  return {
+    on_start:       f.onStart.map(stepToRust),
+    after_call:     f.afterCall.map(stepToRust),
+    on_stop:        f.onStop.map(stepToRust),
+    agent_digits:   f.agentDigits,
+    agent_password: f.agentPassword,
+    hold_secs:      f.holdSecs,
+  }
+}
+
+export function flowStepCount(f: AgentFlowConfig): number {
+  return f.onStart.length + f.afterCall.length + f.onStop.length
+}
+
+/** 流程設定的錯誤（空陣列 = 沒問題）；與 core 的 AgentFlow::validate 一致 */
+export function flowErrors(f: AgentFlowConfig): string[] {
+  const errs: string[] = []
+  const steps = [...f.onStart, ...f.afterCall, ...f.onStop]
+  for (const st of steps) {
+    if (st.type === 'dial') {
+      if (!st.code.trim()) errs.push('座席流程的撥碼不可空白')
+      else if (!/^[0-9A-Za-z*#{}]+$/.test(st.code.trim())) errs.push(`座席流程的撥碼「${st.code}」含不支援的字元`)
+    } else if (!(Number.isFinite(st.secs) && st.secs >= 0)) {
+      errs.push('座席流程的等待秒數需 ≥ 0')
+    }
+  }
+  if (!(Number.isFinite(f.holdSecs) && f.holdSecs >= 0 && f.holdSecs <= 60)) errs.push('撥通後保持秒數需介於 0–60')
+  if (!(Number.isInteger(f.agentDigits) && f.agentDigits >= 0)) errs.push('{agent} 的位數需為 ≥ 0 的整數')
+  if (!f.agentPassword && steps.some(st => st.type === 'dial' && st.code.includes('{pwd}')))
+    errs.push('座席流程使用 {pwd}，但尚未設定座席密碼')
+  return [...new Set(errs)]
+}
+
 export interface AgentProfile {
   count: number
   accounts: SipAccount[]
@@ -77,6 +170,7 @@ export interface AgentProfile {
   behavior:   AgentBehaviorConfig
   reregisterAfterCall: boolean   // 每通結束後立即重新 REGISTER（預設只在到期前刷新）
   registerInterval: number       // 各帳號開始註冊的間隔毫秒（0 = 同時註冊）
+  flow:       AgentFlowConfig     // 座席流程（撥特殊碼登入 / 就緒 / 登出）
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
@@ -181,6 +275,9 @@ export interface RustSnapshot {
   // 座席端：註冊成功數 / 帳號總數（民眾端皆為 0）
   agents_registered: number
   agents_total:      number
+  // 座席端：座席流程的撥碼成功 / 失敗累計
+  agent_dials_ok:     number
+  agent_dials_failed: number
   // 引擎是否已結束
   finished:          boolean
 }
@@ -205,6 +302,8 @@ export interface RustReport {
   rtp_recv:         number | null
   rtp_out_of_order: number | null
   fail_codes:       Record<string, number>
+  // 座席端：座席流程每個撥碼的結果（沒有流程時不存在）
+  agent_dials?:     { code: string; label: string; ok: number; failed: number; fail_codes: Record<string, number> }[]
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -311,9 +410,15 @@ function defaultConfig(): TestConfig {
       defaultDomain: '192.168.166.60',
       ackTimeout: 10,
       byeTimeout: 150,
-      behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
+      // 響鈴 1–2 秒再接：0 秒時 100 / 180 / 200 同時送出，SIPX 的 CTI 可能漏掉「接聽」事件
+      behavior: { ringMin: 1, ringMax: 2, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
       reregisterAfterCall: false,
-      registerInterval: 0,
+      registerInterval: 1000,
+      flow: {
+        onStart: [], afterCall: [], onStop: [],
+        agentDigits: 4, agentPassword: '', holdSecs: 3,
+        codes: { login: '*94{agent}*{pwd}', ready: '*96', notReady: '*97', logout: '*95' },
+      },
       duration: 0,
     },
   }
@@ -343,6 +448,11 @@ function loadConfig(): TestConfig {
         ...legacyDuration,
         ...saved.agent,
         behavior: { ...def.agent.behavior, ...saved.agent?.behavior },
+        flow: {
+          ...def.agent.flow,
+          ...saved.agent?.flow,
+          codes: { ...def.agent.flow.codes, ...saved.agent?.flow?.codes },
+        },
       },
     }
     if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
@@ -404,9 +514,10 @@ export const useTestStore = defineStore('test', () => {
     clockTimer:    ReturnType<typeof setInterval> | null
     prevFailed:    number    // 上一筆 snapshot 的失敗 + 逾時累計（只在增加時寫 WARN）
     rtpLoggedOnce: boolean   // 防止重複寫 RTP session 啟動 log
+    prevDials:     number    // 上一筆 snapshot 的撥碼成功 + 失敗累計（只在增加時寫 log）
   }> = {
-    caller: { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
-    agent:  { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false },
+    caller: { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false, prevDials: 0 },
+    agent:  { pollTimer: null, clockTimer: null, prevFailed: 0, rtpLoggedOnce: false, prevDials: 0 },
   }
   let logSeq = 0
   /** 雙端啟動中等待座席註冊的輪詢；取消時 resolve('cancelled')，startBoth 不再啟動民眾端 */
@@ -463,6 +574,7 @@ export const useTestStore = defineStore('test', () => {
       const pctOk = (v: number) => Number.isFinite(v) && v >= 0 && v <= 100
       if (!(Number.isInteger(c.agent.registerInterval) && c.agent.registerInterval >= 0))
         errs.push('註冊間隔需為 ≥ 0 的整數毫秒')
+      errs.push(...flowErrors(c.agent.flow))
       if (!pctOk(b.rejectPct) || !pctOk(b.noAnswerPct)) errs.push('拒接 / 不接比例需介於 0–100%')
       else if (b.rejectPct + b.noAnswerPct > 100) errs.push('拒接 + 不接比例合計不可超過 100%')
     }
@@ -492,6 +604,8 @@ export const useTestStore = defineStore('test', () => {
       if (b.busyInCall)      parts.push('--busy-in-call')
       if (a.reregisterAfterCall) parts.push('--reregister-after-call')
       if (a.registerInterval > 0) parts.push(`--register-interval ${a.registerInterval}`)
+      // 流程檔由「座席流程」的「匯出 JSON」產生（sipress_flow.json）
+      if (flowStepCount(a.flow) > 0) parts.push('--agent-flow sipress_flow.json')
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
@@ -590,6 +704,7 @@ export const useTestStore = defineStore('test', () => {
       agent_ack_timeout_secs: c.agent.ackTimeout,
       agent_reregister_after_call: c.agent.reregisterAfterCall,
       agent_register_interval_ms: c.agent.registerInterval,
+      agent_flow:           flowToRust(c.agent.flow),
       agent_bye_timeout_secs: c.agent.byeTimeout,
       agent_behavior: {
         ring_min_secs: c.agent.behavior.ringMin,
@@ -652,6 +767,14 @@ export const useTestStore = defineStore('test', () => {
     if (failed > rt.prevFailed)
       addLog('warn', `新增失敗 ${failed - rt.prevFailed}（失敗 ${snap.calls_failed} 逾時 ${snap.calls_timeout}）  發起 ${snap.calls_initiated}  ASR ${snap.asr.toFixed(1)}%`, mode)
     rt.prevFailed = Math.max(rt.prevFailed, failed)
+
+    // 座席流程撥碼：有新結果時記錄累計
+    const dialOk = snap.agent_dials_ok ?? 0
+    const dialFailed = snap.agent_dials_failed ?? 0
+    if (dialOk + dialFailed > rt.prevDials) {
+      addLog(dialFailed > 0 ? 'warn' : 'ok', `座席撥碼累計：成功 ${dialOk}  失敗 ${dialFailed}`, mode)
+      rt.prevDials = dialOk + dialFailed
+    }
 
     // RTP session 啟動後只寫一次 log
     if ((snap.rtp_sessions ?? 0) > 0 && !rt.rtpLoggedOnce) {
@@ -724,6 +847,12 @@ export const useTestStore = defineStore('test', () => {
       // 200 and 408 come from summary counters (may not appear in fail_codes)
       r.respCodes['200'] = report.calls_answered
       r.respCodes['408'] = report.calls_timeout
+      for (const d of report.agent_dials ?? []) {
+        const codes = Object.entries(d.fail_codes ?? {})
+          .map(([c, n]) => `${c === '0' ? '無回應' : c}×${n}`).join(' ')
+        addLog(d.failed > 0 ? 'warn' : 'ok',
+          `撥碼 ${d.label || d.code}（${d.code}）：成功 ${d.ok}  失敗 ${d.failed}${codes ? `  ${codes}` : ''}`, mode)
+      }
       addLog('ok', `測試完成  發起 ${report.calls_initiated}  接通 ${report.calls_answered}  失敗 ${report.calls_failed + report.calls_timeout}  ASR ${report.asr.toFixed(1)}%  CPS ${report.actual_cps.toFixed(1)}  PDD p50 ${report.pdd_p50_ms.toFixed(0)}ms`, mode)
       return true
     } catch (e) {
@@ -755,6 +884,7 @@ export const useTestStore = defineStore('test', () => {
     sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
     rt.prevFailed = 0
     rt.rtpLoggedOnce = false
+    rt.prevDials = 0
     const cur = sessions.value[mode]
 
     const c = config.value
@@ -1047,6 +1177,30 @@ export const useTestStore = defineStore('test', () => {
     return path
   }
 
+  /** 匯出座席流程（CLI --agent-flow 使用的 JSON） */
+  function exportFlowJson() {
+    return exportWith('座席流程', () =>
+      saveTextFile('sipress_flow.json', 'json', 'JSON', JSON.stringify(flowToRust(config.value.agent.flow), null, 2) + '\n'))
+  }
+
+  /** 手動撥碼：座席端執行中，所有已註冊座席依註冊間隔逐一撥出常用碼 */
+  async function runAgentCode(key: FlowCodeKey) {
+    const flow = config.value.agent.flow
+    const code = flow.codes[key].trim()
+    const name = FLOW_CODE_NAMES[key]
+    const errs = flowErrors({ ...flow, onStart: [newFlowStep('dial', code, name)], afterCall: [], onStop: [] })
+    if (errs.length > 0) {
+      for (const e of errs) addLog('err', `${name}：${e}`, 'agent')
+      return
+    }
+    try {
+      await invoke('agent_run_steps', { steps: [{ type: 'dial', code, label: name }] })
+      addLog('info', `手動撥碼「${name}」（${code}）已送出，已註冊的座席依註冊間隔逐一撥出`, 'agent')
+    } catch (e) {
+      addLog('err', `手動撥碼「${name}」失敗：${e}`, 'agent')
+    }
+  }
+
   async function exportWith(label: string, fn: () => Promise<string | null>) {
     try {
       const path = await fn()
@@ -1115,5 +1269,6 @@ export const useTestStore = defineStore('test', () => {
     registerAccount, registerAll,
     startTest, stopTest, startBoth, stopAll,
     exportJson, exportCsv, exportHtml, exportAccountsCsv, exportE2eHtml, canExportE2e,
+    exportFlowJson, runAgentCode,
   }
 })

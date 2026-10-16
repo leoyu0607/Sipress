@@ -26,6 +26,9 @@ pub struct LiveStats {
     pub agents_registered: AtomicU64,
     /// 座席端：設定的帳號總數（民眾端為 0）
     pub agents_total: AtomicU64,
+    /// 座席端：座席流程的撥碼成功 / 失敗次數
+    pub agent_dials_ok: AtomicU64,
+    pub agent_dials_failed: AtomicU64,
 }
 
 impl LiveStats {
@@ -62,6 +65,13 @@ impl LiveStats {
                     Some(0)
                 }
             });
+    }
+    pub fn on_agent_dial(&self, ok: bool) {
+        if ok {
+            self.agent_dials_ok.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.agent_dials_failed.fetch_add(1, Ordering::Relaxed);
+        }
     }
     pub fn on_rtp_start(&self) {
         self.rtp_sessions.fetch_add(1, Ordering::Relaxed);
@@ -115,6 +125,8 @@ impl LiveStats {
             cps: 0.0,
             agents_registered: self.agents_registered.load(Ordering::Relaxed),
             agents_total: self.agents_total.load(Ordering::Relaxed),
+            agent_dials_ok: self.agent_dials_ok.load(Ordering::Relaxed),
+            agent_dials_failed: self.agent_dials_failed.load(Ordering::Relaxed),
             finished: false,
         }
     }
@@ -193,6 +205,12 @@ pub struct StatsSnapshot {
     /// 座席端：設定的帳號總數（民眾端為 0）
     #[serde(default)]
     pub agents_total: u64,
+    /// 座席端：座席流程的撥碼成功次數
+    #[serde(default)]
+    pub agent_dials_ok: u64,
+    /// 座席端：座席流程的撥碼失敗次數（錯誤回應或逾時）
+    #[serde(default)]
+    pub agent_dials_failed: u64,
     /// 引擎是否已結束（用於前端偵測 max_total_calls 完成）
     pub finished: bool,
 }
@@ -357,6 +375,22 @@ pub struct FinalReport {
     /// 分時段統計（`stats_interval_secs` 一段；0 = 不分段時為空）
     #[serde(default)]
     pub timeline: Vec<crate::timeline::TimelineBucket>,
+
+    /// 座席端：座席流程每個撥碼的結果（沒有流程時為空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_dials: Vec<DialStat>,
+}
+
+/// 座席流程中一個撥碼（依設定的撥碼範本彙總，不分帳號）的結果
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DialStat {
+    /// 撥碼範本（例如 `*94{agent}*{pwd}`）
+    pub code: String,
+    pub label: String,
+    pub ok: u64,
+    pub failed: u64,
+    /// 失敗的回應碼（0 = 沒有回應）→ 次數
+    pub fail_codes: std::collections::BTreeMap<u16, u64>,
 }
 
 impl FinalReport {
@@ -413,6 +447,7 @@ impl FinalReport {
             rtp_recv: rtp.map(|r| r.recv_packets),
             rtp_out_of_order: rtp.map(|r| r.out_of_order),
             timeline: Vec::new(),
+            agent_dials: Vec::new(),
         }
     }
 

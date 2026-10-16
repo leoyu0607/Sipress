@@ -9,7 +9,7 @@
  * 改了 buildRustConfig / cliCommand 後，本機執行 `npm test -- -u` 更新 fixtures，並一起 commit。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestStore, type TestConfig, type RustSnapshot, type RustReport } from '../stores/testStore'
+import { useTestStore, sipxPresetFlow, newFlowStep, type TestConfig, type RustSnapshot, type RustReport } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -66,6 +66,8 @@ const SCENARIOS: Scenario[] = [
       c.agent.behavior = { ringMin: 1, ringMax: 3, rejectPct: 10, noAnswerPct: 5, talkMin: 30, talkMax: 30, wrapUp: 2, busyInCall: true }
       c.agent.reregisterAfterCall = true
       c.agent.registerInterval = 100
+      Object.assign(c.agent.flow, sipxPresetFlow(c.agent.flow.codes), { agentPassword: '000000', holdSecs: 2 })
+      c.agent.flow.afterCall = [newFlowStep('wait', '', '', 1.5), newFlowStep('dial', '*96', '就緒')]
       c.agent.accounts = [
         { id: 'a', extension: '1001', username: 'u1001', password: 'p1', domain: '', status: 'idle' },
         { id: 'b', extension: '1002', username: 'u1002', password: 'p2', domain: 'other.example', status: 'registered' },
