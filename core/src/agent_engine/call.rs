@@ -104,10 +104,14 @@ pub(super) struct PendingInvite {
 }
 
 /// 帶 SDP 的回應（接聽的 200 OK）
+///
+/// `contact_user` 要與 REGISTER 的 Contact 相同（座席帳號）：交換機以此對應到已註冊的座席，
+/// 通話結束時才能把正確的座席恢復為可派話
 pub(super) fn build_response_with_sdp(
     raw_request: &str,
     status_line: &str,
     to_tag: &str,
+    contact_user: &str,
     local_addr: &str,
     rtp_port: u16,
     payloads: &[u8],
@@ -116,10 +120,6 @@ pub(super) fn build_response_with_sdp(
     let to_with_tag = crate::sip::message::inject_to_tag_if_missing(&to, to_tag);
     let sdp = sdp::body(&crate::net::host(local_addr), rtp_port, payloads);
     let sdp_len = sdp.len();
-    let user_part = from
-        .split_once("sip:")
-        .map(|(_, s)| s.split('@').next().unwrap_or("agent"))
-        .unwrap_or("agent");
     format!(
         "SIP/2.0 {status}\r\n\
          {via}\r\n\
@@ -139,7 +139,7 @@ pub(super) fn build_response_with_sdp(
         to = to_with_tag,
         call_id = call_id,
         cseq = cseq,
-        user = user_part,
+        user = contact_user,
         local = local_addr,
         sdp_len = sdp_len,
         sdp = sdp,

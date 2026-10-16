@@ -91,6 +91,12 @@ describe('validationErrors', () => {
     expect(s.cliCommand).not.toContain('--reregister-after-call')
     s.config.agent.reregisterAfterCall = true
     expect(s.cliCommand).toContain('--reregister-after-call')
+    expect(s.config.agent.registerInterval).toBe(0)
+    expect(s.cliCommand).not.toContain('--register-interval')
+    s.config.agent.registerInterval = 50
+    expect(s.cliCommand).toContain('--register-interval 50')
+    s.config.agent.registerInterval = -1
+    expect(s.validationErrors).toContain('註冊間隔需為 ≥ 0 的整數毫秒')
   })
 
   it('CPS 模式：漸增 / 尖峰需要持續時間，階梯至少一階', () => {

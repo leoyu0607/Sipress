@@ -202,6 +202,7 @@ fn build_config(args: &Args, agent_accounts: Vec<AgentAccount>) -> Config {
         agent_ack_timeout_secs: args.ack_timeout,
         agent_bye_timeout_secs: args.bye_timeout,
         agent_reregister_after_call: args.reregister_after_call,
+        agent_register_interval_ms: args.register_interval,
         agent_behavior: AgentBehavior {
             ring_min_secs: args.ring.0,
             ring_max_secs: args.ring.1,

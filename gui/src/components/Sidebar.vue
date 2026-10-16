@@ -386,6 +386,11 @@ function statusTitle(s: string) {
             <input v-model.number="store.config.agent.byeTimeout" type="number" min="1" max="600" placeholder="150">
           </div>
         </div>
+        <div class="field">
+          <label>註冊間隔 (毫秒) <span class="tag">--register-interval</span></label>
+          <input v-model.number="store.config.agent.registerInterval" type="number" min="0" step="10" placeholder="0"
+                 title="每個分機開始註冊的間隔；大量分機同時註冊會部分失敗時調大（例如 50–200）。壓測啟動與帳號批次註冊都套用；0 = 同時註冊">
+        </div>
 
         <!-- Behavior simulation（區間欄位各佔一列，避免在側欄寬度下數字被截斷） -->
         <div class="field">

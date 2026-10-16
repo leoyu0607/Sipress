@@ -451,3 +451,73 @@ async fn reregister_after_call_is_opt_in() {
     let (report, msgs) = run_with(Script::AnswerHangupThenSecondCall, behavior, 3, true).await;
     assert_eq!(registrations(&msgs) as u64, 1 + report.calls_completed);
 }
+
+#[tokio::test]
+async fn accounts_register_one_interval_apart() {
+    let (server, log) = spawn_server(Script::Invite).await;
+    let logs = std::env::temp_dir().join(format!("sipress-agentreg-test-{}", std::process::id()));
+    let accounts = ["1001", "1002", "1003"]
+        .iter()
+        .map(|ext| AgentAccount {
+            extension: (*ext).into(),
+            username: (*ext).into(),
+            password: "pw".into(),
+            domain: String::new(),
+        })
+        .collect();
+    let cfg = Config {
+        server_addr: server.to_string(),
+        logs_dir: logs.to_string_lossy().into_owned(),
+        mode: Mode::Agent,
+        duration_secs: 2,
+        agent_accounts: accounts,
+        agent_register_interval_ms: 400,
+        ..Default::default()
+    };
+    tokio::time::timeout(Duration::from_secs(20), AgentEngine::new(cfg).run(None))
+        .await
+        .expect("agent engine 應正常結束")
+        .unwrap();
+
+    // 每個帳號（各自的註冊 Call-ID）第一個 REGISTER 的時間
+    let msgs = log.lock().unwrap().clone();
+    let mut first: Vec<(String, Instant)> = Vec::new();
+    for (at, m) in &msgs {
+        let Some(cid) = m
+            .starts_with("REGISTER")
+            .then(|| SipParser::call_id(m))
+            .flatten()
+        else {
+            continue;
+        };
+        if !first.iter().any(|(c, _)| *c == cid) {
+            first.push((cid, *at));
+        }
+    }
+    assert_eq!(first.len(), 3, "三個帳號都應送出 REGISTER");
+    for w in first.windows(2) {
+        let gap = w[1].1.duration_since(w[0].1);
+        assert!(
+            gap >= Duration::from_millis(350),
+            "相鄰帳號的首次 REGISTER 應相隔約 400ms（實際 {:?}）",
+            gap
+        );
+    }
+}
+
+/// 200 OK 的 Contact 要是座席自己的帳號（與 REGISTER 相同），不是主叫號碼：
+/// SIPX 以此對應到已註冊的座席，否則通話結束後只有部分座席恢復可派話
+#[tokio::test]
+async fn answer_contact_is_agent_account_not_caller() {
+    let (_, msgs) = run(Script::Invite, AgentBehavior::default(), 2).await;
+    let ok = invite_responses(&msgs, "call-1")
+        .into_iter()
+        .find(|(_, m)| status(m) == 200)
+        .expect("應接聽 call-1");
+    let contact =
+        ok.1.lines()
+            .find(|l| l.starts_with("Contact:"))
+            .expect("200 OK 應帶 Contact");
+    assert!(contact.contains("<sip:1001@"), "{}", contact);
+    assert!(!contact.contains("caller"), "{}", contact);
+}

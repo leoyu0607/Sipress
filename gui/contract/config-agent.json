@@ -42,6 +42,7 @@
   ],
   "agent_ack_timeout_secs": 5,
   "agent_reregister_after_call": true,
+  "agent_register_interval_ms": 100,
   "agent_bye_timeout_secs": 60,
   "agent_behavior": {
     "ring_min_secs": 1,
