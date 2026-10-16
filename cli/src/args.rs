@@ -91,6 +91,11 @@ pub struct Args {
     #[arg(long = "accounts")]
     pub accounts_file: Option<std::path::PathBuf>,
 
+    /// 座席流程檔（JSON，GUI「座席流程」可匯出）：註冊後 / 每通結束後 / 結束前要撥的特殊碼，
+    /// 例如登入 `*94{agent}*{pwd}`、就緒 `*96`、未就緒 `*97`、登出 `*95`
+    #[arg(long = "agent-flow")]
+    pub agent_flow_file: Option<std::path::PathBuf>,
+
     /// 座席帳號未填 domain 時使用的預設值（不設 = SIP server 的 IP）
     #[arg(long = "account-domain", default_value = "")]
     pub account_domain: String,

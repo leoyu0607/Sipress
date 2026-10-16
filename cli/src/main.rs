@@ -6,7 +6,7 @@ use args::Args;
 use clap::Parser;
 use sipress_core::{
     agent_engine::AgentEngine,
-    config::{AgentAccount, AgentBehavior, Codec, Config, Mode, Transport},
+    config::{AgentAccount, AgentBehavior, AgentFlow, Codec, Config, Mode, Transport},
     correlate::{correlate, CorrelateOptions, CorrelationReport, MatchKind},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
@@ -44,7 +44,10 @@ async fn main() -> Result<()> {
     } else {
         Vec::new()
     };
-    let config = build_config(&args, agent_accounts);
+    let mut config = build_config(&args, agent_accounts);
+    if mode == Mode::Agent {
+        config.agent_flow = load_agent_flow(&args)?;
+    }
     config.validate()?;
 
     let engine = AnyEngine::new(config);
@@ -203,6 +206,7 @@ fn build_config(args: &Args, agent_accounts: Vec<AgentAccount>) -> Config {
         agent_bye_timeout_secs: args.bye_timeout,
         agent_reregister_after_call: args.reregister_after_call,
         agent_register_interval_ms: args.register_interval,
+        agent_flow: AgentFlow::default(), // 由 --agent-flow 檔案另外讀入
         agent_behavior: AgentBehavior {
             ring_min_secs: args.ring.0,
             ring_max_secs: args.ring.1,
@@ -435,6 +439,16 @@ fn load_accounts(args: &Args) -> Result<Vec<AgentAccount>> {
     Ok(accounts)
 }
 
+/// 讀取 --agent-flow 指定的座席流程檔（未指定 = 沒有流程）
+fn load_agent_flow(args: &Args) -> Result<AgentFlow> {
+    let Some(path) = args.agent_flow_file.as_ref() else {
+        return Ok(AgentFlow::default());
+    };
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("無法讀取座席流程檔 {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("座席流程檔 {} 格式錯誤", path.display()))
+}
+
 /// 取得當前時間字串（用於報告檔名）
 fn report_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -495,8 +509,9 @@ mod tests {
             )
             .unwrap();
 
-            // 預覽不會、也不需要帶的部分：帳號在 CSV 檔、密碼以佔位字代替
+            // 預覽不會、也不需要帶的部分：帳號在 CSV 檔、流程在 JSON 檔、密碼以佔位字代替
             gui.agent_accounts.clear();
+            gui.agent_flow = AgentFlow::default();
             assert_eq!(
                 cli.caller_auth_password.is_some(),
                 gui.caller_auth_password.is_some(),
@@ -511,6 +526,14 @@ mod tests {
             // 非固定 CPS 模式時 --cps 不使用
             if !matches!(gui.cps_pattern, CpsPattern::Flat) {
                 cli.cps = gui.cps;
+            }
+            if gui.mode == Mode::Caller {
+                // 民眾端不使用座席端的設定（GUI 一律帶上，預覽不會出現）
+                for c in [&mut cli, &mut gui] {
+                    c.agent_behavior = AgentBehavior::default();
+                    c.agent_reregister_after_call = false;
+                    c.agent_register_interval_ms = 0;
+                }
             }
             if gui.mode == Mode::Agent {
                 // 座席端不使用民眾端的撥號設定

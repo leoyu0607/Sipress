@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { useTestStore } from '../stores/testStore'
+import { useTestStore, FLOW_CODE_NAMES, flowStepCount, type AgentFlowConfig, type FlowCodeKey } from '../stores/testStore'
 import GenerateDialog from './GenerateDialog.vue'
+import AgentFlowDialog from './AgentFlowDialog.vue'
 
 const store = useTestStore()
 const copied = ref(false)
@@ -14,6 +15,29 @@ function handleGenConfirm(opts: Parameters<typeof store.generateAccounts>[0]) {
   store.generateAccounts(opts)
   showGenDialog.value = false
 }
+
+// 座席流程（撥特殊碼登入 / 就緒 / 登出）
+const showFlowDialog = ref(false)
+const FLOW_CODE_KEYS: FlowCodeKey[] = ['login', 'ready', 'notReady', 'logout']
+function handleFlowSave(flow: AgentFlowConfig) {
+  store.config.agent.flow = flow
+  showFlowDialog.value = false
+}
+const flowSummary = computed(() => {
+  const f = store.config.agent.flow
+  if (flowStepCount(f) === 0) return '未設定'
+  return `開始 ${f.onStart.length} 步 · 每通後 ${f.afterCall.length} 步 · 結束 ${f.onStop.length} 步`
+})
+const flowSampleExt = computed(() => store.config.agent.accounts[0]?.extension || '0000021113333001')
+const agentRunning = computed(() => store.sessions.agent.status === 'running' && !store.sessions.agent.stopping)
+
+// 分批註冊：最後一個帳號開始註冊的時間
+const registerEta = computed(() => {
+  const n = store.config.agent.accounts.length
+  const secs = Math.max(0, n - 1) * (store.config.agent.registerInterval || 0) / 1000
+  if (n === 0 || secs === 0) return ''
+  return secs < 60 ? `${n} 個分機約 ${Math.ceil(secs)} 秒註冊完` : `${n} 個分機約 ${(secs / 60).toFixed(1)} 分鐘註冊完`
+})
 
 // Section collapse state（民眾端 / 座席端各自記憶）
 const sec = ref({ target:true, caller:true, agent:true, cliOpts:false })
@@ -388,13 +412,14 @@ function statusTitle(s: string) {
         </div>
         <div class="field">
           <label>註冊間隔 (毫秒) <span class="tag">--register-interval</span></label>
-          <input v-model.number="store.config.agent.registerInterval" type="number" min="0" step="10" placeholder="0"
-                 title="每個分機開始註冊的間隔；大量分機同時註冊會部分失敗時調大（例如 50–200）。壓測啟動與帳號批次註冊都套用；0 = 同時註冊">
+          <input v-model.number="store.config.agent.registerInterval" type="number" min="0" step="100" placeholder="1000"
+                 title="每個分機開始註冊的間隔；大量分機同時註冊會部分失敗時調大。壓測啟動、帳號批次註冊與座席流程都依此錯開；0 = 同時註冊">
+          <div class="field-hint" v-if="registerEta">{{ registerEta }}</div>
         </div>
 
         <!-- Behavior simulation（區間欄位各佔一列，避免在側欄寬度下數字被截斷） -->
         <div class="field">
-          <label>響鈴後接聽 (秒) <span class="tag">--ring</span></label>
+          <label title="SIPX 環境建議 1–2 秒：設 0 秒時 100 / 180 / 200 幾乎同時送出，CTI 可能漏掉「接聽」事件，座席之後不再被派話">響鈴後接聽 (秒) <span class="tag">--ring</span></label>
           <div class="range-pair">
             <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
             <span>–</span>
@@ -434,11 +459,21 @@ function statusTitle(s: string) {
           </label>
         </div>
         <div class="toggle-row field">
-          <span title="每通結束後立即重新 REGISTER。預設只在註冊到期前刷新；只有交換機要求通話後重新註冊才會繼續派話時才需要開啟，高話務下會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag">--reregister-after-call</span></span>
+          <span title="每通結束後立即重新 REGISTER。SIPX 環境請勿開啟：CTI 會把掛線後收到的註冊當成座席重新登入，座席之後不再被派話。高話務下也會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag warn-tag">SIPX 勿開</span></span>
           <label class="toggle">
             <input type="checkbox" v-model="store.config.agent.reregisterAfterCall">
             <span class="track"><span class="thumb"></span></span>
           </label>
+        </div>
+
+        <!-- 座席流程 -->
+        <div class="field">
+          <label>座席流程 <span class="tag">--agent-flow</span></label>
+          <div class="flow-row">
+            <span class="flow-summary" :title="'註冊後 / 每通結束後 / 結束前依序撥特殊碼（登入、就緒、未就緒、登出）'">{{ flowSummary }}</span>
+            <button class="btn btn-sm" @click="showFlowDialog = true">設定…</button>
+            <button class="btn btn-sm" :disabled="flowSummary === '未設定'" @click="store.exportFlowJson()" title="匯出 CLI --agent-flow 使用的 JSON">匯出</button>
+          </div>
         </div>
 
         <!-- Upload -->
@@ -556,6 +591,16 @@ function statusTitle(s: string) {
 
     </fieldset>
 
+    <!-- 座席狀態手動撥碼（測試中可用，所以放在鎖定區外） -->
+    <div class="section agent-ctl" v-if="store.config.mode === 'agent'">
+      <div class="ctl-title">座席狀態（手動撥碼）</div>
+      <div class="ctl-btns">
+        <button v-for="k in FLOW_CODE_KEYS" :key="k" class="btn btn-sm" :disabled="!agentRunning"
+                :title="store.config.agent.flow.codes[k]" @click="store.runAgentCode(k)">{{ FLOW_CODE_NAMES[k] }}</button>
+      </div>
+      <div class="field-hint">座席端執行中可用；已註冊的座席依註冊間隔逐一撥出，碼在「座席流程」設定</div>
+    </div>
+
     <!-- ── CLI Preview ────────────────────────────────────── -->
     <div class="cli-section">
       <div class="cli-label-row">
@@ -588,9 +633,18 @@ function statusTitle(s: string) {
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
       </div>
       <div class="cli-warn" v-if="store.config.mode === 'agent'">
-        帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv
+        帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv<template v-if="flowSummary !== '未設定'">；流程檔用座席流程的「匯出」存成 sipress_flow.json</template>
       </div>
     </div>
+
+<!-- Agent Flow Dialog -->
+<AgentFlowDialog
+  :visible="showFlowDialog"
+  :flow="store.config.agent.flow"
+  :sample-ext="flowSampleExt"
+  @save="handleFlowSave"
+  @cancel="showFlowDialog = false"
+/>
 
 <!-- Generate Dialog -->
 <GenerateDialog
@@ -753,6 +807,12 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   padding: 1px 5px;
   border-radius: 3px;
 }
+.warn-tag { color: var(--warn); background: rgba(var(--warn-rgb), 0.12); }
+.flow-row { display: flex; align-items: center; gap: 6px; }
+.flow-summary { flex: 1; font-size: 11px; color: var(--text1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-ctl { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.ctl-title { font-size: 11px; color: var(--text1); margin-bottom: 6px; }
+.ctl-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .field-hint {
   font-size: 10px;
   color: var(--text2);

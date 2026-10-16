@@ -305,6 +305,133 @@ impl AgentBehavior {
     }
 }
 
+/// 座席流程的一個步驟
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum FlowStep {
+    /// 撥特殊碼（例如 `*96`、`*94{agent}*{pwd}`）
+    Dial {
+        code: String,
+        /// 顯示用的名稱（例如「就緒」）
+        #[serde(default)]
+        label: String,
+    },
+    /// 等待秒數
+    Wait { secs: f64 },
+}
+
+impl FlowStep {
+    /// 撥碼可用的字元：數字、`*`、`#`、英文字母，以及變數的大括號
+    fn validate(&self) -> anyhow::Result<()> {
+        match self {
+            Self::Dial { code, .. } => {
+                if code.trim().is_empty() {
+                    anyhow::bail!("座席流程的撥碼不可空白");
+                }
+                if let Some(c) = code
+                    .chars()
+                    .find(|c| !(c.is_ascii_alphanumeric() || "*#{}".contains(*c)))
+                {
+                    anyhow::bail!("座席流程的撥碼「{}」含不支援的字元「{}」", code, c);
+                }
+            }
+            Self::Wait { secs } => {
+                if !(secs.is_finite() && *secs >= 0.0) {
+                    anyhow::bail!("座席流程的等待秒數需為 ≥ 0 的數字（目前為 {}）", secs);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 座席流程：在三個時間點依序執行的撥碼 / 等待步驟（例如註冊後撥 `*94…` 登入、`*96` 就緒）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentFlow {
+    /// 註冊成功後（每個帳號一次）
+    pub on_start: Vec<FlowStep>,
+    /// 每通通話結束後
+    pub after_call: Vec<FlowStep>,
+    /// 測試結束、解除註冊前
+    pub on_stop: Vec<FlowStep>,
+    /// `{agent}` 取分機號碼的末幾碼（0 = 整個分機號碼）
+    pub agent_digits: u32,
+    /// `{pwd}` 的值（座席密碼）
+    pub agent_password: String,
+    /// 撥碼接通（200 OK）後保持幾秒再掛斷；交換機先掛斷就提早結束
+    pub hold_secs: f64,
+}
+
+impl Default for AgentFlow {
+    fn default() -> Self {
+        Self {
+            on_start: Vec::new(),
+            after_call: Vec::new(),
+            on_stop: Vec::new(),
+            agent_digits: 4,
+            agent_password: String::new(),
+            hold_secs: 3.0,
+        }
+    }
+}
+
+impl AgentFlow {
+    /// 撥碼沒有最終回應時放棄的秒數
+    pub const DIAL_TIMEOUT_SECS: u64 = 15;
+    /// 送出 BYE 後等待回應的秒數
+    pub const BYE_TIMEOUT_SECS: u64 = 4;
+
+    pub fn is_empty(&self) -> bool {
+        self.on_start.is_empty() && self.after_call.is_empty() && self.on_stop.is_empty()
+    }
+
+    /// 代入 `{agent}`（分機末 `agent_digits` 碼）與 `{pwd}`
+    pub fn expand(&self, code: &str, extension: &str) -> String {
+        let digits = self.agent_digits as usize;
+        let agent = if digits == 0 || digits >= extension.len() {
+            extension
+        } else {
+            &extension[extension.len() - digits..]
+        };
+        code.replace("{agent}", agent)
+            .replace("{pwd}", &self.agent_password)
+    }
+
+    /// 結束流程最多需要多久（每個撥碼以逾時 + 保持時間計），用來延長引擎的收尾時間
+    pub fn stop_budget(&self) -> Duration {
+        let secs: f64 = self
+            .on_stop
+            .iter()
+            .map(|s| match s {
+                FlowStep::Dial { .. } => {
+                    (Self::DIAL_TIMEOUT_SECS + Self::BYE_TIMEOUT_SECS) as f64 + self.hold_secs
+                }
+                FlowStep::Wait { secs } => *secs,
+            })
+            .sum();
+        Duration::from_secs_f64(secs)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for step in self
+            .on_start
+            .iter()
+            .chain(&self.after_call)
+            .chain(&self.on_stop)
+        {
+            step.validate()?;
+        }
+        if !(self.hold_secs.is_finite() && (0.0..=60.0).contains(&self.hold_secs)) {
+            anyhow::bail!(
+                "座席流程的撥通後保持秒數需介於 0–60（目前為 {}）",
+                self.hold_secs
+            );
+        }
+        Ok(())
+    }
+}
+
 /// 傳輸層協定
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -438,6 +565,10 @@ pub struct Config {
     /// 大量座席同時 REGISTER 會有部分被交換機丟掉或拒絕時，拉開間隔分批註冊
     #[serde(default)]
     pub agent_register_interval_ms: u64,
+
+    /// Agent 模式：註冊後 / 每通結束後 / 結束前要撥的特殊碼（座席登入、就緒、登出等）
+    #[serde(default)]
+    pub agent_flow: AgentFlow,
 }
 
 fn default_ack_timeout() -> u64 {
@@ -486,6 +617,7 @@ impl Default for Config {
             stats_interval_secs: default_stats_interval(),
             agent_reregister_after_call: false,
             agent_register_interval_ms: 0,
+            agent_flow: AgentFlow::default(),
         }
     }
 }
@@ -552,6 +684,7 @@ impl Config {
         }
         if self.mode == Mode::Agent {
             self.agent_behavior.validate()?;
+            self.agent_flow.validate()?;
         }
         if self.invite_timeout_secs == 0 {
             anyhow::bail!("INVITE 逾時秒數必須大於 0");
@@ -748,6 +881,83 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn agent_flow_expands_agent_and_password() {
+        let flow = AgentFlow {
+            agent_password: "000000".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.expand("*94{agent}*{pwd}", "0000021113333001"),
+            "*943001*000000"
+        );
+        assert_eq!(flow.expand("*96", "0000021113333001"), "*96");
+        let whole = AgentFlow {
+            agent_digits: 0,
+            ..Default::default()
+        };
+        assert_eq!(whole.expand("*94{agent}", "1001"), "*941001");
+        let longer = AgentFlow {
+            agent_digits: 8,
+            ..Default::default()
+        };
+        assert_eq!(
+            longer.expand("{agent}", "1001"),
+            "1001",
+            "分機比位數短時用整個分機"
+        );
+    }
+
+    #[test]
+    fn agent_flow_validation_and_stop_budget() {
+        let dial = |code: &str| FlowStep::Dial {
+            code: code.into(),
+            label: String::new(),
+        };
+        let ok = AgentFlow {
+            on_start: vec![dial("*94{agent}*{pwd}"), FlowStep::Wait { secs: 1.5 }],
+            on_stop: vec![dial("*97"), FlowStep::Wait { secs: 2.0 }, dial("#95")],
+            hold_secs: 3.0,
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
+        // 兩個撥碼各 (15 + 4 + 3) 秒，加上等待 2 秒
+        assert_eq!(ok.stop_budget(), Duration::from_secs(46));
+
+        for bad in [
+            AgentFlow {
+                after_call: vec![dial(" ")],
+                ..Default::default()
+            },
+            AgentFlow {
+                on_start: vec![dial("*96;x")],
+                ..Default::default()
+            },
+            AgentFlow {
+                on_stop: vec![FlowStep::Wait { secs: -1.0 }],
+                ..Default::default()
+            },
+            AgentFlow {
+                hold_secs: f64::NAN,
+                ..Default::default()
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{:?}", bad);
+        }
+    }
+
+    #[test]
+    fn agent_flow_json_round_trips() {
+        let json = r#"{"on_start":[{"type":"dial","code":"*96","label":"就緒"},{"type":"wait","secs":2}],
+                       "agent_password":"000000"}"#;
+        let flow: AgentFlow = serde_json::from_str(json).unwrap();
+        assert_eq!(flow.on_start.len(), 2);
+        assert_eq!(flow.agent_digits, 4, "未填欄位取預設值");
+        assert_eq!(flow.hold_secs, 3.0);
+        let back: AgentFlow = serde_json::from_str(&serde_json::to_string(&flow).unwrap()).unwrap();
+        assert_eq!(back, flow);
     }
 
     #[test]

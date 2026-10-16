@@ -43,6 +43,50 @@
   "agent_ack_timeout_secs": 5,
   "agent_reregister_after_call": true,
   "agent_register_interval_ms": 100,
+  "agent_flow": {
+    "on_start": [
+      {
+        "type": "dial",
+        "code": "*94{agent}*{pwd}",
+        "label": "登入"
+      },
+      {
+        "type": "wait",
+        "secs": 1
+      },
+      {
+        "type": "dial",
+        "code": "*96",
+        "label": "就緒"
+      }
+    ],
+    "after_call": [
+      {
+        "type": "wait",
+        "secs": 1.5
+      },
+      {
+        "type": "dial",
+        "code": "*96",
+        "label": "就緒"
+      }
+    ],
+    "on_stop": [
+      {
+        "type": "dial",
+        "code": "*97",
+        "label": "未就緒"
+      },
+      {
+        "type": "dial",
+        "code": "*95",
+        "label": "登出"
+      }
+    ],
+    "agent_digits": 4,
+    "agent_password": "000000",
+    "hold_secs": 2
+  },
   "agent_bye_timeout_secs": 60,
   "agent_behavior": {
     "ring_min_secs": 1,

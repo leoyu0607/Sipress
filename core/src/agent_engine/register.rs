@@ -131,6 +131,10 @@ impl RegisteredGauge {
         }
     }
 
+    pub fn is_on(&self) -> bool {
+        self.on
+    }
+
     /// 收到 REGISTER 200 OK（Expires=0 代表伺服器已移除註冊）
     pub fn on_ok(&mut self, expires: Option<u32>) {
         self.last_ok = Instant::now();

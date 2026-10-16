@@ -1,4 +1,6 @@
 {
+  "agent_dials_failed": 0,
+  "agent_dials_ok": 0,
   "agents_registered": 48,
   "agents_total": 50,
   "asr": 83.33333333333334,

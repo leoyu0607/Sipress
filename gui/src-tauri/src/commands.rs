@@ -1,7 +1,7 @@
 /// Tauri commands：前端 ↔ core 橋接層
 use sipress_core::{
     agent_engine::AgentEngine,
-    config::{Config, Mode},
+    config::{Config, FlowStep, Mode},
     correlate::{correlate, CorrelateOptions, CorrelationReport},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
@@ -16,7 +16,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use tauri::State;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 // ── 全域狀態 ─────────────────────────────────────────────────────
 
@@ -28,6 +28,8 @@ pub struct Session {
     /// 引擎執行失敗的原因（get_report 會回傳此錯誤給前端）
     pub error: Mutex<Option<String>>,
     pub stop_tx: Mutex<Option<mpsc::Sender<()>>>,
+    /// 座席端：手動撥碼（登入 / 就緒等按鈕）送給引擎的管道；未執行時為 None
+    pub manual_tx: Mutex<Option<broadcast::Sender<Vec<FlowStep>>>>,
     /// 此模式是否有壓測正在執行（含停止後的收尾階段），防止重複啟動
     pub running: AtomicBool,
     /// 最近一次執行的每通追蹤紀錄（端到端對照用；執行中即時更新，下次啟動時換新）
@@ -66,6 +68,7 @@ impl Session {
             }
         }
         *self.stop_tx.lock().unwrap() = None;
+        *self.manual_tx.lock().unwrap() = None;
         self.running.store(false, Ordering::SeqCst);
     }
 }
@@ -145,6 +148,7 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
             Mode::Agent => {
                 let engine = AgentEngine::new(config);
                 *state_t.traces.lock().unwrap() = Some(engine.trace_log());
+                *state_t.manual_tx.lock().unwrap() = Some(engine.manual_handle());
                 let stop_handle = engine.stop_handle();
                 // 將前端的 stop 訊號轉發成 watch::Sender(true)
                 // 讓 AgentEngine 可以走完 graceful stop（REGISTER Expires=0 + drain）
@@ -181,6 +185,25 @@ pub async fn stop_test(state: State<'_, Arc<AppState>>, mode: Mode) -> Result<St
         Ok("stopped".to_string())
     } else {
         Err("沒有正在執行的壓測".to_string())
+    }
+}
+
+/// 座席端手動撥碼：所有已註冊的座席依分批註冊的順序執行這串步驟
+/// 前端呼叫：await invoke('agent_run_steps', { steps: [{ type: 'dial', code: '*96', label: '就緒' }] })
+#[tauri::command]
+pub fn agent_run_steps(
+    state: State<'_, Arc<AppState>>,
+    steps: Vec<FlowStep>,
+) -> Result<String, String> {
+    let flow = sipress_core::config::AgentFlow {
+        on_start: steps.clone(),
+        ..Default::default()
+    };
+    flow.validate().map_err(|e| e.to_string())?;
+    let tx = state.agent.manual_tx.lock().unwrap().clone();
+    match tx {
+        Some(tx) if tx.send(steps).is_ok() => Ok("sent".to_string()),
+        _ => Err("座席端沒有正在執行的壓測".to_string()),
     }
 }
 

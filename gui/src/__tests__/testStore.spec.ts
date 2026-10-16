@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, mosGrade, isValidDtmf, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport } from '../stores/testStore'
+import {
+  useTestStore, mosGrade, isValidDtmf, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS,
+  sipxPresetFlow, newFlowStep, expandFlowCode, flowErrors, flowToRust,
+  type RustSnapshot, type RustReport,
+} from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -80,7 +84,11 @@ describe('validationErrors', () => {
     const s = useTestStore()
     expect(s.config.agent.behavior.rejectPct).toBe(0)
     expect(s.config.agent.ackTimeout).toBe(5)
-    expect(s.cliCommand).not.toMatch(/--ring|--talk|--reject-pct|--no-answer-pct|--wrap-up|--busy-in-call/)
+    // 預設響鈴 1–2 秒（SIPX 的 CTI 才收得到接聽事件）、註冊間隔 1000 ms
+    expect(s.config.agent.behavior).toMatchObject({ ringMin: 1, ringMax: 2 })
+    expect(s.cliCommand).toContain('--ring 1-2 ')
+    expect(s.cliCommand).toContain('--register-interval 1000')
+    expect(s.cliCommand).not.toMatch(/--talk|--reject-pct|--no-answer-pct|--wrap-up|--busy-in-call|--agent-flow/)
     expect(s.config.agent.behavior.busyInCall).toBe(false)
     Object.assign(s.config.agent.behavior, { ringMin: 2, ringMax: 2, talkMin: 10, talkMax: 60 })
     expect(s.cliCommand).toContain('--ring 2 ')
@@ -91,7 +99,7 @@ describe('validationErrors', () => {
     expect(s.cliCommand).not.toContain('--reregister-after-call')
     s.config.agent.reregisterAfterCall = true
     expect(s.cliCommand).toContain('--reregister-after-call')
-    expect(s.config.agent.registerInterval).toBe(0)
+    s.config.agent.registerInterval = 0
     expect(s.cliCommand).not.toContain('--register-interval')
     s.config.agent.registerInterval = 50
     expect(s.cliCommand).toContain('--register-interval 50')
@@ -572,5 +580,96 @@ describe('匯出', () => {
     const calls = routeInvoke({})
     await useTestStore().exportJson()
     expect(calls).toEqual([])
+  })
+})
+
+// ── 座席流程 ───────────────────────────────────────────────────────
+describe('座席流程', () => {
+  it('{agent} 取分機末幾碼、{pwd} 代入密碼（與 core 一致）', () => {
+    const f = { agentDigits: 4, agentPassword: '000000' }
+    expect(expandFlowCode('*94{agent}*{pwd}', '0000021113333001', f)).toBe('*943001*000000')
+    expect(expandFlowCode('*94{agent}', '1001', { ...f, agentDigits: 0 })).toBe('*941001')
+    expect(expandFlowCode('{agent}', '1001', { ...f, agentDigits: 8 })).toBe('1001')
+  })
+
+  it('SIPX 預設：開始登入 → 等待 → 就緒；結束未就緒 → 登出', () => {
+    const s = useTestStore()
+    const preset = sipxPresetFlow(s.config.agent.flow.codes)
+    const codes = (steps: typeof preset.onStart) => steps.map(st => st.type === 'dial' ? st.code : `wait ${st.secs}`)
+    expect(codes(preset.onStart)).toEqual(['*94{agent}*{pwd}', 'wait 1', '*96'])
+    expect(preset.afterCall).toEqual([])
+    expect(codes(preset.onStop)).toEqual(['*97', '*95'])
+  })
+
+  it('驗證：空白撥碼、非法字元、用了 {pwd} 卻沒設密碼', () => {
+    const s = useTestStore()
+    s.config.mode = 'agent'
+    s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'p', domain: '', status: 'idle' }]
+    const flow = s.config.agent.flow
+    flow.onStart = [newFlowStep('dial', '*94{agent}*{pwd}', '登入')]
+    expect(s.validationErrors).toContain('座席流程使用 {pwd}，但尚未設定座席密碼')
+    flow.agentPassword = '000000'
+    expect(s.validationErrors).toEqual([])
+    flow.afterCall = [newFlowStep('dial', ' '), newFlowStep('dial', '*96;x')]
+    expect(flowErrors(flow)).toEqual(['座席流程的撥碼不可空白', '座席流程的撥碼「*96;x」含不支援的字元'])
+    flow.afterCall = [newFlowStep('wait', '', '', -1)]
+    expect(flowErrors(flow)).toEqual(['座席流程的等待秒數需 ≥ 0'])
+  })
+
+  it('有流程時 CLI 預覽帶 --agent-flow，送給 Rust 的格式與 --agent-flow 檔案相同', () => {
+    const s = useTestStore()
+    s.config.mode = 'agent'
+    expect(s.cliCommand).not.toContain('--agent-flow')
+    Object.assign(s.config.agent.flow, sipxPresetFlow(s.config.agent.flow.codes))
+    expect(s.cliCommand).toContain('--agent-flow sipress_flow.json')
+    expect(flowToRust(s.config.agent.flow).on_start).toEqual([
+      { type: 'dial', code: '*94{agent}*{pwd}', label: '登入' },
+      { type: 'wait', secs: 1 },
+      { type: 'dial', code: '*96', label: '就緒' },
+    ])
+  })
+
+  it('舊設定沒有 flow 欄位時補上預設值（含常用碼）', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ mode: 'agent', agent: { flow: { agentPassword: '1234', codes: { ready: '*86' } } } }))
+    const f = useTestStore().config.agent.flow
+    expect(f.agentPassword).toBe('1234')
+    expect(f.onStart).toEqual([])
+    expect(f.codes).toEqual({ login: '*94{agent}*{pwd}', ready: '*86', notReady: '*97', logout: '*95' })
+  })
+
+  it('手動撥碼送出常用碼；座席端沒在跑時記錯誤', async () => {
+    const calls = routeInvoke({ agent_run_steps: () => 'sent' })
+    const s = useTestStore()
+    await s.runAgentCode('ready')
+    expect(calls.find(c => c.cmd === 'agent_run_steps')?.args).toEqual({ steps: [{ type: 'dial', code: '*96', label: '就緒' }] })
+
+    routeInvoke({ agent_run_steps: () => { throw new Error('座席端沒有正在執行的壓測') } })
+    await s.runAgentCode('logout')
+    expect(s.logs.some(l => l.level === 'err' && l.msg.includes('手動撥碼「登出」失敗'))).toBe(true)
+  })
+
+  it('撥碼結果：快照有新結果時記錄累計，結束時逐項列出', async () => {
+    routeInvoke({
+      start_test:   () => 'started',
+      get_snapshot: () => snap({ agent_dials_ok: 2, agent_dials_failed: 1, finished: true }),
+      get_report:   () => ({ ...baseReport, agent_dials: [
+        { code: '*96', label: '就緒', ok: 2, failed: 0, fail_codes: {} },
+        { code: '*97', label: '未就緒', ok: 0, failed: 1, fail_codes: { 486: 1 } },
+      ] }),
+    })
+    vi.useFakeTimers()
+    try {
+      const s = useTestStore()
+      s.config.mode = 'agent'
+      s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'p', domain: '', status: 'idle' }]
+      await s.startTest('agent')
+      await vi.advanceTimersByTimeAsync(1500)
+      const msgs = s.logs.map(l => l.msg)
+      expect(msgs.some(m => m.includes('座席撥碼累計：成功 2  失敗 1'))).toBe(true)
+      expect(msgs.some(m => m.includes('撥碼 就緒（*96）：成功 2  失敗 0'))).toBe(true)
+      expect(msgs.some(m => m.includes('撥碼 未就緒（*97）：成功 0  失敗 1  486×1'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

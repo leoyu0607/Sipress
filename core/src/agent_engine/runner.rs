@@ -1,14 +1,16 @@
 //! 單一座席帳號的 runner：一個 socket、一個註冊 dialog、進行中的通話與響鈴中的來電
 //!
 //! 每個帳號只有一個 task 存取這些狀態，所以都不需要上鎖。主迴圈等待下列事件之一，
-//! 交給對應的方法處理：收到 SIP 訊息、註冊刷新、REGISTER 重傳、響鈴 / 通話計時器、停止訊號。
+//! 交給對應的方法處理：收到 SIP 訊息、註冊刷新、REGISTER 重傳、響鈴 / 通話計時器、
+//! 座席流程（撥碼 / 等待）計時器、手動撥碼、停止訊號。
 use super::call::{
     build_bye_from_dialog, build_response_with_sdp, pick_dummy_rtp_port, random_secs, short,
     DialogCtx, PendingInvite, RingOutcome,
 };
+use super::flow::{DialState, Endpoint, FlowQueue, Next, OutDial};
 use super::register::{Registration, INITIAL_EXPIRES, MAX_AUTH_RETRIES};
 use super::{trace_key, Shared};
-use crate::config::{AgentAccount, AgentBehavior};
+use crate::config::{AgentAccount, AgentBehavior, FlowStep};
 use crate::rtp::session::{RtpSession, RtpSessionConfig};
 use crate::sip::{
     register::{DigestChallenge, RegisterMessage},
@@ -21,7 +23,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio::time;
 
 pub(super) struct AccountRunner {
@@ -39,6 +41,14 @@ pub(super) struct AccountRunner {
     pending: HashMap<String, PendingInvite>,
     /// wrap-up：此時間之前的新來電一律 486
     wrap_until: Option<Instant>,
+    /// 座席流程（撥碼 / 等待）
+    flow: FlowQueue,
+    /// 已執行過註冊後的流程（只在第一次註冊成功時執行）
+    flow_started: bool,
+    /// 這個帳號在分批註冊中的延遲；結束流程與手動撥碼也依此錯開
+    start_delay: Duration,
+    /// 收到停止訊號、正在執行結束流程：此時間之後不論流程是否完成都解除註冊
+    stopping_until: Option<Instant>,
 }
 
 /// 沒有排程時的等待上限
@@ -81,15 +91,23 @@ impl AccountRunner {
             dialogs: HashMap::new(),
             pending: HashMap::new(),
             wrap_until: None,
+            flow: FlowQueue::default(),
+            flow_started: false,
+            start_delay: Duration::ZERO,
+            stopping_until: None,
         })
     }
 
-    /// `start_delay`：延後多久才送第一個 REGISTER（分批註冊）；等待中收到停止訊號就直接結束
+    /// `start_delay`：延後多久才送第一個 REGISTER（分批註冊）；等待中收到停止訊號就直接結束。
+    /// `manual`：手動撥碼（GUI 的登入 / 就緒等按鈕），每則訊息是一串要執行的步驟
     pub async fn run(
         mut self,
         mut stop: watch::Receiver<bool>,
         start_delay: Duration,
+        manual: broadcast::Receiver<Vec<FlowStep>>,
     ) -> Result<()> {
+        self.start_delay = start_delay;
+        let mut manual = Some(manual);
         if !start_delay.is_zero() {
             tokio::select! {
                 _ = time::sleep(start_delay) => {}
@@ -113,6 +131,20 @@ impl AccountRunner {
                 .next_call_deadline()
                 .map(tokio::time::Instant::from_std)
                 .unwrap_or_else(far_future);
+            let flow_timer = self
+                .flow
+                .deadline()
+                .into_iter()
+                .chain(self.stopping_until)
+                .min()
+                .map(tokio::time::Instant::from_std)
+                .unwrap_or_else(far_future);
+            let manual_steps = async {
+                match manual.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
 
             tokio::select! {
                 res = self.sock.recv() => match res {
@@ -125,8 +157,22 @@ impl AccountRunner {
                 _ = time::sleep_until(refresh_at) => self.refresh_registration().await,
                 _ = time::sleep_until(retx_at) => self.retransmit_register().await,
                 _ = time::sleep_until(call_timer) => self.on_call_timers().await,
-                _ = stop.changed() => {
-                    self.shutdown().await;
+                _ = time::sleep_until(flow_timer) => self.on_flow_timer().await,
+                msg = manual_steps => match msg {
+                    Ok(steps) => self.on_manual_steps(steps).await,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => manual = None,
+                },
+                _ = stop.changed(), if self.stopping_until.is_none() => {
+                    if self.begin_stop().await {
+                        break;
+                    }
+                }
+            }
+            // 結束流程跑完（或超過時限）→ 解除註冊並結束
+            if let Some(until) = self.stopping_until {
+                if self.flow.is_idle() || Instant::now() >= until {
+                    self.deregister().await;
                     break;
                 }
             }
@@ -207,10 +253,9 @@ impl AccountRunner {
         }
     }
 
-    /// 結束：響鈴中的來電回 480、停止 RTP、送 REGISTER Expires=0
-    async fn shutdown(&mut self) {
-        self.event("收到停止訊號，發送 REGISTER Expires=0");
-        self.reg.gauge.set(false);
+    /// 收到停止訊號：響鈴中的來電回 480、停止 RTP；有結束流程時先執行它（回傳 false），
+    /// 否則直接解除註冊（回傳 true，runner 結束）
+    async fn begin_stop(&mut self) -> bool {
         for (_, p) in std::mem::take(&mut self.pending) {
             self.fail_invite(
                 &p.invite_raw,
@@ -225,6 +270,26 @@ impl AccountRunner {
                 .stop_call_rtp(call_id, ctx, &self.account.extension)
                 .await;
         }
+        let flow = &self.sh.cfg.agent_flow;
+        if flow.on_stop.is_empty() || !self.reg.gauge.is_on() {
+            self.event("收到停止訊號");
+            self.deregister().await;
+            return true;
+        }
+        // 還沒執行的流程（例如註冊後流程）不再執行；結束流程依分批註冊的順序錯開
+        self.event("收到停止訊號，執行結束流程");
+        let budget = flow.stop_budget() + Duration::from_secs(1);
+        let steps = flow.on_stop.clone();
+        self.stopping_until = Some(Instant::now() + self.start_delay + budget);
+        self.flow.clear_pending();
+        self.enqueue_staggered(steps).await;
+        false
+    }
+
+    /// 送 REGISTER Expires=0 解除註冊
+    async fn deregister(&mut self) {
+        self.event("發送 REGISTER Expires=0");
+        self.reg.gauge.set(false);
         let _ = self.send_register(0).await;
         let _ = time::timeout(Duration::from_millis(300), self.sock.recv()).await;
     }
@@ -240,10 +305,19 @@ impl AccountRunner {
         }
     }
 
-    /// 只處理 REGISTER 的回應（座席端不主動發 INVITE）
+    /// REGISTER 的回應，以及座席流程撥碼的回應
     async fn on_response(&mut self, raw: &str) {
         let code = SipParser::status_code(raw).unwrap_or(0);
-        if SipParser::cseq_method(raw).as_deref() != Some("REGISTER") {
+        let method = SipParser::cseq_method(raw);
+        if SipParser::call_id(raw).is_some_and(|c| self.flow.is_dial(&c)) {
+            self.on_dial_response(raw, code, method.as_deref()).await;
+            return;
+        }
+        if method.as_deref() != Some("REGISTER") {
+            // 已結束的撥碼收到重傳的錯誤回應（例如 CANCEL 後的 487）：照樣 ACK，對方才會停止重傳
+            if method.as_deref() == Some("INVITE") && code >= 300 {
+                let _ = self.send(&SipMessage::ack_for_non2xx(raw)).await;
+            }
             return;
         }
         if code >= 200 {
@@ -260,6 +334,12 @@ impl AccountRunner {
                     self.reg.expires = exp;
                 }
                 self.reg.gauge.on_ok(expires);
+                // 第一次註冊成功 → 執行註冊後的流程（例如登入座席、就緒）
+                if !self.flow_started && expires != Some(0) && self.stopping_until.is_none() {
+                    self.flow_started = true;
+                    let steps = self.sh.cfg.agent_flow.on_start.clone();
+                    self.enqueue(steps).await;
+                }
             }
             401 | 407 => {
                 let Some(chal) = DigestChallenge::parse(raw) else {
@@ -307,6 +387,17 @@ impl AccountRunner {
             "INVITE" if self.dialogs.contains_key(&call_id) => {
                 self.on_reinvite(raw, &call_id).await
             }
+            "INVITE" if self.flow.is_dial(&call_id) => {
+                // 撥碼中的 RE-INVITE（例如交換機切換提示音的媒體）：照樣接受，不當成新來電
+                let ok = SipMessage::ok_for_server_reinvite(
+                    raw,
+                    &self.local_addr,
+                    pick_dummy_rtp_port(),
+                    &self.account.username,
+                    self.sh.cfg.codec.payload_type(),
+                );
+                let _ = self.send(&ok).await;
+            }
             "INVITE" => {
                 if let Some(p) = self.pending.get(&call_id) {
                     // 響鈴中收到重傳的 INVITE → 重送 180
@@ -328,6 +419,11 @@ impl AccountRunner {
                     self.end_call(&call_id, ctx).await;
                     self.event(&format!("[{}] 通話結束", short(&call_id)));
                     return true;
+                }
+                if self.flow.is_dial(&call_id) {
+                    // 交換機掛斷撥碼（例如播完提示音）
+                    self.event("[撥碼] 交換機掛斷");
+                    self.finish_dial().await;
                 }
             }
             "CANCEL" => self.on_cancel(raw, &call_id).await,
@@ -359,6 +455,13 @@ impl AccountRunner {
 
         let local_to_tag = SipMessage::new_tag();
         let behavior = &self.sh.cfg.agent_behavior;
+
+        if self.stopping_until.is_some() {
+            self.event(&format!("[{}] 結束流程中 → 480", short(&call_id)));
+            self.fail_invite(raw, &local_to_tag, "480 Temporarily Unavailable", 480)
+                .await;
+            return;
+        }
 
         // wrap-up 休息中，或通話中忙線（已有通話 / 響鈴中）→ 直接忙線
         let busy_reason = if self.wrap_until.is_some_and(|t| Instant::now() < t) {
@@ -739,6 +842,229 @@ impl AccountRunner {
         if self.sh.cfg.agent_reregister_after_call {
             let _ = self.send_register(self.reg.expires).await;
             self.event("通話結束 → re-REGISTER");
+        }
+        if self.stopping_until.is_none() {
+            let steps = self.sh.cfg.agent_flow.after_call.clone();
+            self.enqueue(steps).await;
+        }
+    }
+
+    // ─── 座席流程：撥特殊碼（登入 / 就緒 / 未就緒 / 登出）────────
+
+    fn endpoint(&self) -> Endpoint<'_> {
+        Endpoint {
+            username: &self.account.username,
+            server: &self.sh.cfg.server_addr,
+            local_addr: &self.local_addr,
+            transport: self.sh.cfg.transport_str(),
+            codec_pt: self.sh.cfg.codec.payload_type(),
+        }
+    }
+
+    async fn enqueue(&mut self, steps: Vec<FlowStep>) {
+        if steps.is_empty() {
+            return;
+        }
+        self.flow.push(steps);
+        self.advance_flow().await;
+    }
+
+    /// 依這個帳號在分批註冊中的順序延後執行（大量座席時避免同時撥進交換機）
+    async fn enqueue_staggered(&mut self, steps: Vec<FlowStep>) {
+        if steps.is_empty() {
+            return;
+        }
+        if !self.start_delay.is_zero() {
+            self.flow.push([FlowStep::Wait {
+                secs: self.start_delay.as_secs_f64(),
+            }]);
+        }
+        self.enqueue(steps).await;
+    }
+
+    /// 手動撥碼：只對已註冊、不在結束流程中的帳號執行
+    async fn on_manual_steps(&mut self, steps: Vec<FlowStep>) {
+        if self.reg.gauge.is_on() && self.stopping_until.is_none() {
+            self.enqueue_staggered(steps).await;
+        }
+    }
+
+    /// 沒有撥碼進行中時，執行下一個步驟
+    async fn advance_flow(&mut self) {
+        let Next::Dial {
+            code: template,
+            label,
+        } = self.flow.next(Instant::now())
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let code = self
+            .sh
+            .cfg
+            .agent_flow
+            .expand(&template, &self.account.extension);
+        let mut dial = OutDial::new(template, label, code, pick_dummy_rtp_port(), now);
+        let invite = dial.invite(&self.endpoint(), None);
+        dial.arm_retx(invite.clone(), self.sock.is_reliable(), now);
+        self.event(&format!("[撥碼] {}：撥出", dial.name()));
+        self.flow.dial = Some(dial);
+        let _ = self.send(&invite).await;
+    }
+
+    async fn on_dial_response(&mut self, raw: &str, code: u16, method: Option<&str>) {
+        let now = Instant::now();
+        let Some(dial) = self.flow.dial.as_ref() else {
+            return;
+        };
+        let state = dial.state;
+        match method {
+            Some("INVITE") => {
+                // 上一個 transaction（帶認證重送前）重傳的回應
+                if SipParser::cseq_number(raw) != Some(dial.cseq) {
+                    if code >= 300 {
+                        let _ = self.send(&SipMessage::ack_for_non2xx(raw)).await;
+                    }
+                    return;
+                }
+                match code {
+                    100..=199 => {
+                        if let Some(d) = self.flow.dial.as_mut() {
+                            d.provisional = true;
+                            d.stop_retx();
+                        }
+                    }
+                    200..=299 => self.on_dial_answered(raw, code, now).await,
+                    401 | 407 if !dial.auth_tried && state == DialState::Calling => {
+                        let _ = self.send(&SipMessage::ack_for_non2xx(raw)).await;
+                        match DigestChallenge::parse(raw) {
+                            Some(chal) => self.resend_dial_with_auth(&chal, now).await,
+                            None => self.fail_dial(code, "無法解析認證要求").await,
+                        }
+                    }
+                    300.. => {
+                        let _ = self.send(&SipMessage::ack_for_non2xx(raw)).await;
+                        if state == DialState::Calling {
+                            self.fail_dial(code, "").await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("BYE") if state == DialState::Terminating && code >= 200 => {
+                self.finish_dial().await;
+            }
+            _ => {}
+        }
+    }
+
+    /// 撥碼接通：送 ACK，保持 `hold_secs` 後掛斷（200 OK 重傳時只重送 ACK）
+    async fn on_dial_answered(&mut self, raw: &str, code: u16, now: Instant) {
+        let hold = Duration::from_secs_f64(self.sh.cfg.agent_flow.hold_secs);
+        let Some(dial) = self.flow.dial.as_mut() else {
+            return;
+        };
+        if dial.state == DialState::Calling {
+            dial.on_answered(raw, hold, now);
+            let (name, template, label) = (
+                dial.name().to_string(),
+                dial.template.clone(),
+                dial.label.clone(),
+            );
+            self.event(&format!("[撥碼] {}：成功（SIP {}）", name, code));
+            self.sh.record_dial(&template, &label, None);
+        }
+        if let Some(ack) = self.flow.dial.as_ref().map(|d| d.ack(&self.endpoint())) {
+            let _ = self.send(&ack).await;
+        }
+    }
+
+    /// 401 / 407：帶座席帳密的 Digest 認證重送一次
+    async fn resend_dial_with_auth(&mut self, chal: &DigestChallenge, now: Instant) {
+        let reliable = self.sock.is_reliable();
+        let Some(dial) = self.flow.dial.as_mut() else {
+            return;
+        };
+        dial.restart(now);
+        let uri = format!("sip:{}@{}", dial.code, self.sh.cfg.server_addr);
+        let auth = chal.authorization_header(
+            &self.account.username,
+            &self.account.password,
+            "INVITE",
+            &uri,
+        );
+        let Some(invite) = self
+            .flow
+            .dial
+            .as_ref()
+            .map(|d| d.invite(&self.endpoint(), Some(&auth)))
+        else {
+            return;
+        };
+        if let Some(d) = self.flow.dial.as_mut() {
+            d.arm_retx(invite.clone(), reliable, now);
+        }
+        let _ = self.send(&invite).await;
+    }
+
+    /// 撥碼失敗（`code` = 0 表示沒有回應）
+    async fn fail_dial(&mut self, code: u16, why: &str) {
+        if let Some(dial) = self.flow.dial.as_ref() {
+            let detail = match (code, why.is_empty()) {
+                (0, _) => "沒有回應".to_string(),
+                (c, true) => format!("SIP {}", c),
+                (c, false) => format!("SIP {}，{}", c, why),
+            };
+            self.event(&format!("[撥碼] {}：失敗（{}）", dial.name(), detail));
+            self.sh.record_dial(&dial.template, &dial.label, Some(code));
+        }
+        self.finish_dial().await;
+    }
+
+    /// 撥碼結束（成功或失敗），繼續下一個步驟
+    async fn finish_dial(&mut self) {
+        self.flow.dial = None;
+        self.advance_flow().await;
+    }
+
+    /// 等待結束、撥碼重傳 / 逾時、保持時間到要掛斷
+    async fn on_flow_timer(&mut self) {
+        let now = Instant::now();
+        let Some(dial) = self.flow.dial.as_mut() else {
+            self.advance_flow().await;
+            return;
+        };
+        if let Some(invite) = dial.due_retx(now) {
+            let _ = self.send(&invite).await;
+            return;
+        }
+        match dial.state {
+            DialState::Calling if now >= dial.give_up_at => {
+                let provisional = dial.provisional;
+                if provisional {
+                    let cancel = self.flow.dial.as_ref().map(|d| d.cancel(&self.endpoint()));
+                    if let Some(cancel) = cancel {
+                        let _ = self.send(&cancel).await;
+                    }
+                }
+                self.fail_dial(0, "").await;
+            }
+            DialState::Answered { hangup_at } if now >= hangup_at => {
+                // Endpoint 只借用帳號 / 設定欄位，與 self.flow 不重疊
+                let ep = Endpoint {
+                    username: &self.account.username,
+                    server: &self.sh.cfg.server_addr,
+                    local_addr: &self.local_addr,
+                    transport: self.sh.cfg.transport_str(),
+                    codec_pt: self.sh.cfg.codec.payload_type(),
+                };
+                let bye = dial.bye(&ep, now);
+                let _ = self.send(&bye).await;
+            }
+            DialState::Terminating if now >= dial.give_up_at => {
+                self.finish_dial().await;
+            }
+            _ => {}
         }
     }
 }

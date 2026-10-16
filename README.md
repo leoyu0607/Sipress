@@ -223,8 +223,9 @@ UAC (sipress)              UAS (軟交換機)
        │       6. BYE timeout（150s → 主動 BYE）
        │       7. 在 Expires/2 計時器到期時 re-REGISTER（最少每 60 秒）
        │       8. （選項 --reregister-after-call）通話結束後立即 re-REGISTER
+       │       9. （選項 --agent-flow）註冊後 / 每通結束後依序撥特殊碼（登入、就緒…）
        │
-       └── 測試時間到 → 通知所有 task 發 REGISTER Expires=0 → 結束
+       └── 測試時間到 → 通知所有 task 執行結束流程（例如未就緒、登出）→ REGISTER Expires=0 → 結束
 ```
 
 ### 帳號清單格式
@@ -279,7 +280,9 @@ extension,username,password,domain
 - 當 `enable_rtp = true` 時，接聽來電時分配真實 RTP port、啟動 G.711A 音訊傳送與品質統計
 - 進度 task 每秒聚合所有活躍 session 的 MOS / 掉包率 / Jitter，前端即時顯示
 - RE-INVITE 時自動更新 RTP 目標地址
-- 註冊只在 Expires 到期前刷新；交換機要求通話後重新註冊才會繼續派話時，開啟 `--reregister-after-call`（GUI「通話後重新註冊」）
+- 註冊只在 Expires 到期前刷新。`--reregister-after-call`（GUI「通話後重新註冊」）會在每通結束後立即重新註冊；**SIPX 環境請勿開啟**：CTI 會把掛線後收到的註冊當成座席重新登入，座席之後不再被派話
+- 座席流程（`--agent-flow`，GUI「座席流程」）：在註冊後、每通結束後、結束前依序撥特殊碼，例如登入 `*94{agent}*{pwd}`、就緒 `*96`、未就緒 `*97`、登出 `*95`；測試中也能用 GUI 的「登入 / 就緒 / 未就緒 / 登出」按鈕手動撥出。撥碼結果寫在 SIP log、即時 log 與最終報告
+- SIPX 環境的響鈴延遲建議 1–2 秒（GUI 預設）：設 0 秒時 100 / 180 / 200 幾乎同時送出，CTI 可能漏掉「接聽」事件
 - 大量分機同時 REGISTER 會有部分失敗時，用 `--register-interval <毫秒>`（GUI「註冊間隔」）讓各帳號依序間隔註冊；GUI 的批次產生 / 匯入 / 重新註冊也套用同一間隔
 
 ### 注意事項
@@ -482,14 +485,15 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--account-domain` | SIP server IP | 帳號未填 domain 時使用的預設值 |
 | `--ack-timeout` | `10` | 接聽後等待 ACK 的逾時秒數（逾時主動 BYE） |
 | `--bye-timeout` | `150` | 通話中等待對方 BYE 的逾時秒數（逾時主動 BYE） |
-| `--ring` | `0` | 響鈴幾秒後才接聽，`N` 或區間 `MIN-MAX`（隨機） |
+| `--ring` | `0` | 響鈴幾秒後才接聽，`N` 或區間 `MIN-MAX`（隨機）；SIPX 環境建議 `1-2`（GUI 預設） |
 | `--talk` | `0` | 接聽幾秒後座席主動掛斷，`N` 或 `MIN-MAX`；0 = 等對方 BYE |
 | `--reject-pct` | `0` | 拒接比例 %（響鈴後回 486 Busy Here） |
 | `--no-answer-pct` | `0` | 不接比例 %（一直響鈴，等 SIPX 逾時 CANCEL 改派；120 秒未取消回 480） |
 | `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
 | `--busy-in-call` | 關閉 | 通話中忙線：已有通話（含響鈴中）時新來電回 486，讓 ACD 改派；關閉時同一帳號可同時接多通 |
-| `--reregister-after-call` | 關閉 | 每通結束後立即重新 REGISTER；預設只在 Expires 到期前刷新，高話務下開啟會對交換機多送大量 REGISTER |
-| `--register-interval` | `0` | 各帳號開始註冊的間隔毫秒（0 = 同時註冊）；大量分機同時註冊會部分失敗時調大，例如 50–200 |
+| `--reregister-after-call` | 關閉 | 每通結束後立即重新 REGISTER；預設只在 Expires 到期前刷新。SIPX 環境請勿開啟（CTI 會讓座席不再被派話） |
+| `--register-interval` | `0` | 各帳號開始註冊的間隔毫秒（0 = 同時註冊；GUI 預設 1000）；座席流程的撥碼也依此錯開 |
+| `--agent-flow` | — | 座席流程檔（JSON，GUI「座席流程」的「匯出」產生）：`on_start` / `after_call` / `on_stop` 三段步驟（`{"type":"dial","code":"*96","label":"就緒"}` 或 `{"type":"wait","secs":2}`），以及 `agent_digits`（`{agent}` 取分機末幾碼，預設 4）、`agent_password`（`{pwd}`）、`hold_secs`（撥通後保持秒數，預設 3） |
 
 ### 端到端對照
 
@@ -754,7 +758,8 @@ RTP 品質統計，所有計算均符合 RFC 3550 標準：
 7. **掛斷**：收到 BYE → 200 OK → 停止 RTP；150s timeout → 主動 BYE
 8. **通話後 re-REGISTER（選項）**：`agent_reregister_after_call` 開啟時，每次通話結束（伺服器 BYE、座席主動掛斷或逾時）都立即 re-REGISTER；預設關閉，只靠第 2 點的定期刷新
 9. **CANCEL / OPTIONS**：自動處理（487 / 200 OK）
-10. **結束**：收到外部停止訊號 → REGISTER Expires=0 → exit
+10. **結束**：收到外部停止訊號 → 執行結束流程（若有）→ REGISTER Expires=0 → exit
+12. **座席流程（`flow.rs`）**：註冊成功後、每通結束後、結束前依序執行撥碼 / 等待步驟。撥碼是座席帳號主動送的 INVITE（`sip:<碼>@server`）：401 / 407 帶帳密重送一次；200 OK → ACK，保持 `hold_secs` 後 BYE（交換機先掛斷就提早結束）；3xx–6xx 或 15 秒沒有最終回應算失敗。手動撥碼經 `AgentEngine::manual_handle()` 送給所有已註冊帳號，依註冊間隔錯開
 11. **完成通知**：主迴圈結束後設定 `engine_finished` → `StatsSnapshot.finished = true`，前端自動停止
 
 ### `core/src/sip/register.rs`

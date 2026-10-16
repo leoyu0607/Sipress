@@ -189,3 +189,22 @@ Node 26 內建的 `localStorage` 蓋掉 happy-dom 的，`freshPinia()` 呼叫 `l
 - `docs/release-notes/v0.5.0.md` 下載表補上 macOS 免安裝檔（arm64 / x86_64，已對照 GitHub release 的實際檔案）與首次執行說明；README、howtouse.md 的下載表補上 macOS Intel。GitHub 上的 release 說明需手動貼上（工具沒有編輯 release 的權限）。
 - CI / 發佈流程的 action 升級為 Node 24 版：`checkout@v5`、`setup-node@v5`、`upload-artifact@v6`、`download-artifact@v7`（只用到 name / path，不受新版行為變更影響）；發佈流程建置 GUI 的 Node 由 20（已停止支援）改為與 CI 相同的 22。
 
+
+### [ ] 23. 測試開始時記錄座席設定（可追查性）
+
+雙端壓測排查時，只能從 SIP log 的結果反推當次設定：GUI 上「通話後重新註冊」看起來已關閉，座席 log 卻仍有「通話結束 → re-REGISTER」，無法確認測試開始時實際送進引擎的值。
+做法：座席引擎啟動時，把主要設定寫進 SIP log 開頭（`# ----` 標頭區）與 GUI 的 log 面板——通話後重新註冊、註冊間隔、響鈴 / 主動掛斷秒數、拒接 / 不接比例、休息時間、通話中忙線、ACK / BYE 逾時、持續時間、傳輸協定、帳號數。民眾端同理記錄 CPS 模式、併發、通話秒數。測試：SIP log 標頭含上述欄位；GUI 啟動時 log 面板出現設定摘要。
+
+### [x] 24. 座席流程：撥特殊碼登入 / 就緒 / 登出（功能）
+
+SIPX 的座席狀態靠話機撥特殊碼切換（登入 `*94<座席號>*<密碼>`、就緒 `*96`、未就緒 `*97`、登出 `*95`），只註冊分機不會讓座席穩定地進入可派話狀態。
+已完成（分支 `feat/agent-flow`）：
+- core：`Config.agent_flow`（`AgentFlow`：`on_start` / `after_call` / `on_stop` 三段 `FlowStep::Dial` / `Wait`，`{agent}` / `{pwd}` 變數、撥通後保持秒數）。`agent_engine/flow.rs` 的撥碼是座席帳號主動送的 INVITE：401 / 407 帶帳密重送、200 OK → ACK → 保持後 BYE（交換機先掛斷就提早結束）、3xx–6xx 或 15 秒無最終回應算失敗、UDP 重傳。結束流程在解除註冊前執行，引擎收尾時間依流程長度延長；結束流程與手動撥碼依註冊間隔錯開。`AgentEngine::manual_handle()` 讓測試中手動撥碼。結果：`StatsSnapshot.agent_dials_ok / failed`、`FinalReport.agent_dials`（每個撥碼範本的成功 / 失敗 / 回應碼）、SIP log 的 `[撥碼]` 事件。
+- CLI：`--agent-flow <JSON>`；報告表格後列出撥碼結果。
+- GUI：「座席流程」彈窗（三個時間點、拖曳排序、常用碼、變數預覽、套用 SIPX 預設）、匯出 JSON、執行中的「登入 / 就緒 / 未就緒 / 登出」手動按鈕（Tauri `agent_run_steps`）。
+- 測試：`core/tests/agent_dial_flow.rs`（認證重送、交換機掛斷、座席掛斷、486、結束流程在解除註冊前、手動撥碼）、`AgentFlow` / `flow.rs` 單元測試、vitest（驗證、預覽、手動撥碼、結果 log、舊設定補預設值）、GUI↔Rust 契約 fixtures。
+
+### [x] 25. SIPX 雙端壓測第 2 輪起座席不再被派話（正確性 / 預設值）
+
+ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 已修）；(2)「通話後重新註冊」讓 CTI 在 `CallCleared` 之後收到 `Register`，座席之後不再被派話；(3) 響鈴 0 秒時 100 / 180 / 200 在 1 ms 內送出，CTI 常漏掉 `Answered`、以 408 收尾。
+已完成（分支 `feat/agent-flow`）：GUI 預設響鈴 1–2 秒、註冊間隔 1000 ms（欄位顯示預估註冊完成時間）；「通話後重新註冊」標示「SIPX 勿開」並在 README / howtouse 說明原因。CLI 預設不變（`--ring 0`、`--register-interval 0`）。
