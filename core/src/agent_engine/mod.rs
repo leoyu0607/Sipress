@@ -186,14 +186,17 @@ impl AgentEngine {
             rtp_registry: Arc::clone(&rtp_registry),
             traces: Arc::clone(&self.traces),
         });
+        // 第 i 個帳號延後 i × 間隔才開始註冊，避免大量 REGISTER 同時湧入交換機
+        let register_interval = Duration::from_millis(cfg.agent_register_interval_ms);
         let mut handles = Vec::new();
-        for acc in &cfg.agent_accounts {
+        for (i, acc) in cfg.agent_accounts.iter().enumerate() {
             let acc = acc.clone();
             let sh = Arc::clone(&shared);
             let stop_rx = self.stop_tx.subscribe();
+            let start_delay = register_interval * i as u32;
             let h = tokio::spawn(async move {
                 let res = match AccountRunner::connect(sh, acc, server).await {
-                    Ok(runner) => runner.run(stop_rx).await,
+                    Ok(runner) => runner.run(stop_rx, start_delay).await,
                     Err(e) => Err(e),
                 };
                 if let Err(e) = res {

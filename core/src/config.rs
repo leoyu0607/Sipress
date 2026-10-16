@@ -433,6 +433,11 @@ pub struct Config {
     /// 只有交換機要求通話後重新註冊才會繼續派話時才需要開啟；高話務下會對交換機多送大量 REGISTER
     #[serde(default)]
     pub agent_reregister_after_call: bool,
+
+    /// Agent 模式：各帳號開始註冊的間隔（毫秒，0 = 同時註冊）。
+    /// 大量座席同時 REGISTER 會有部分被交換機丟掉或拒絕時，拉開間隔分批註冊
+    #[serde(default)]
+    pub agent_register_interval_ms: u64,
 }
 
 fn default_ack_timeout() -> u64 {
@@ -480,6 +485,7 @@ impl Default for Config {
             agent_behavior: AgentBehavior::default(),
             stats_interval_secs: default_stats_interval(),
             agent_reregister_after_call: false,
+            agent_register_interval_ms: 0,
         }
     }
 }

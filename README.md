@@ -280,6 +280,7 @@ extension,username,password,domain
 - 進度 task 每秒聚合所有活躍 session 的 MOS / 掉包率 / Jitter，前端即時顯示
 - RE-INVITE 時自動更新 RTP 目標地址
 - 註冊只在 Expires 到期前刷新；交換機要求通話後重新註冊才會繼續派話時，開啟 `--reregister-after-call`（GUI「通話後重新註冊」）
+- 大量分機同時 REGISTER 會有部分失敗時，用 `--register-interval <毫秒>`（GUI「註冊間隔」）讓各帳號依序間隔註冊；GUI 的批次產生 / 匯入 / 重新註冊也套用同一間隔
 
 ### 注意事項
 
@@ -488,6 +489,7 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--wrap-up` | `0` | 兩通之間休息秒數，期間來電回 486 |
 | `--busy-in-call` | 關閉 | 通話中忙線：已有通話（含響鈴中）時新來電回 486，讓 ACD 改派；關閉時同一帳號可同時接多通 |
 | `--reregister-after-call` | 關閉 | 每通結束後立即重新 REGISTER；預設只在 Expires 到期前刷新，高話務下開啟會對交換機多送大量 REGISTER |
+| `--register-interval` | `0` | 各帳號開始註冊的間隔毫秒（0 = 同時註冊）；大量分機同時註冊會部分失敗時調大，例如 50–200 |
 
 ### 端到端對照
 

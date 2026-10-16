@@ -43,6 +43,7 @@
   "agent_accounts": [],
   "agent_ack_timeout_secs": 10,
   "agent_reregister_after_call": false,
+  "agent_register_interval_ms": 0,
   "agent_bye_timeout_secs": 150,
   "agent_behavior": {
     "ring_min_secs": 0,

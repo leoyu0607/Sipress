@@ -124,6 +124,10 @@ pub struct Args {
     #[arg(long = "reregister-after-call")]
     pub reregister_after_call: bool,
 
+    /// 座席端：各帳號開始註冊的間隔毫秒數（0 = 同時註冊）。大量帳號同時註冊會部分失敗時使用
+    #[arg(long = "register-interval", default_value_t = 0)]
+    pub register_interval: u64,
+
     /// 座席端：通話中忙線——已有通話（含響鈴中）時新來電回 486，讓 ACD 改派
     #[arg(long = "busy-in-call")]
     pub busy_in_call: bool,

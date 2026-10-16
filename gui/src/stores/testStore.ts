@@ -76,6 +76,7 @@ export interface AgentProfile {
   byeTimeout: number
   behavior:   AgentBehaviorConfig
   reregisterAfterCall: boolean   // 每通結束後立即重新 REGISTER（預設只在到期前刷新）
+  registerInterval: number       // 各帳號開始註冊的間隔毫秒（0 = 同時註冊）
   duration:   number   // 壓測持續秒數（0 = 不限）；通常比民眾端長，先開後關
 }
 
@@ -312,6 +313,7 @@ function defaultConfig(): TestConfig {
       byeTimeout: 150,
       behavior: { ringMin: 0, ringMax: 0, rejectPct: 0, noAnswerPct: 0, talkMin: 0, talkMax: 0, wrapUp: 0, busyInCall: false },
       reregisterAfterCall: false,
+      registerInterval: 0,
       duration: 0,
     },
   }
@@ -459,6 +461,8 @@ export const useTestStore = defineStore('test', () => {
         if (b.talkMin > b.talkMax) errs.push('通話秒數最小值不可大於最大值')
       }
       const pctOk = (v: number) => Number.isFinite(v) && v >= 0 && v <= 100
+      if (!(Number.isInteger(c.agent.registerInterval) && c.agent.registerInterval >= 0))
+        errs.push('註冊間隔需為 ≥ 0 的整數毫秒')
       if (!pctOk(b.rejectPct) || !pctOk(b.noAnswerPct)) errs.push('拒接 / 不接比例需介於 0–100%')
       else if (b.rejectPct + b.noAnswerPct > 100) errs.push('拒接 + 不接比例合計不可超過 100%')
     }
@@ -487,6 +491,7 @@ export const useTestStore = defineStore('test', () => {
       if (b.wrapUp > 0)      parts.push(`--wrap-up ${b.wrapUp}`)
       if (b.busyInCall)      parts.push('--busy-in-call')
       if (a.reregisterAfterCall) parts.push('--reregister-after-call')
+      if (a.registerInterval > 0) parts.push(`--register-interval ${a.registerInterval}`)
       parts.push(`--transport ${c.transport.toLowerCase()}`)
     } else {
       parts.push(`--from ${p.accessNumber}`)
@@ -584,6 +589,7 @@ export const useTestStore = defineStore('test', () => {
         : [],
       agent_ack_timeout_secs: c.agent.ackTimeout,
       agent_reregister_after_call: c.agent.reregisterAfterCall,
+      agent_register_interval_ms: c.agent.registerInterval,
       agent_bye_timeout_secs: c.agent.byeTimeout,
       agent_behavior: {
         ring_min_secs: c.agent.behavior.ringMin,
@@ -897,7 +903,7 @@ export const useTestStore = defineStore('test', () => {
     const skipped = opts.count - created.length
     addLog('ok', `生成 ${created.length} 個座席帳號（分機 ${opts.startExt}–${opts.startExt + opts.count - 1}）${skipped > 0 ? `，略過 ${skipped} 個重複分機` : ''}`)
     // 立即註冊每個新建帳號
-    for (const a of created) registerAccount(a.id)
+    registerMany(created)
   }
 
   // ── REGISTER：對單一帳號發 SIP REGISTER ────────────────────────────────
@@ -943,14 +949,18 @@ export const useTestStore = defineStore('test', () => {
     }
   }
 
+  /// 依「註冊間隔」逐一開始註冊（不等前一個完成；間隔 0 = 全部同時）
+  async function registerMany(accounts: SipAccount[]) {
+    const gap = config.value.agent.registerInterval
+    for (const [i, a] of accounts.entries()) {
+      if (i > 0 && gap > 0) await new Promise(r => setTimeout(r, gap))
+      registerAccount(a.id)
+    }
+  }
+
   /// 重新註冊所有 idle/failed 帳號（手動觸發用）
   async function registerAll() {
-    for (const a of config.value.agent.accounts) {
-      if (a.status !== 'registered') {
-        // 並行：每個帳號獨立 socket，互不干擾
-        registerAccount(a.id)
-      }
-    }
+    await registerMany(config.value.agent.accounts.filter(a => a.status !== 'registered'))
   }
 
   function removeAccount(id: string) {
@@ -1019,7 +1029,7 @@ export const useTestStore = defineStore('test', () => {
       config.value.agent.accounts.push(...fresh)
       config.value.agent.count = config.value.agent.accounts.length
       // 匯入後立即註冊
-      for (const a of fresh) registerAccount(a.id)
+      registerMany(fresh)
     }
     if (parsed.length > 0)
       addLog('ok', `匯入 ${fresh.length} 個 SIP 帳號${dup > 0 ? `（略過 ${dup} 個重複分機）` : ''}`)

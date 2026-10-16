@@ -84,7 +84,18 @@ impl AccountRunner {
         })
     }
 
-    pub async fn run(mut self, mut stop: watch::Receiver<bool>) -> Result<()> {
+    /// `start_delay`：延後多久才送第一個 REGISTER（分批註冊）；等待中收到停止訊號就直接結束
+    pub async fn run(
+        mut self,
+        mut stop: watch::Receiver<bool>,
+        start_delay: Duration,
+    ) -> Result<()> {
+        if !start_delay.is_zero() {
+            tokio::select! {
+                _ = time::sleep(start_delay) => {}
+                _ = stop.changed() => return Ok(()),
+            }
+        }
         self.event("開始 REGISTER");
         if let Err(e) = self.send_register(INITIAL_EXPIRES).await {
             self.event(&format!("初始 REGISTER 送出失敗: {}", e));

@@ -65,6 +65,7 @@ const SCENARIOS: Scenario[] = [
       c.agent.defaultDomain = 'pbx.example'
       c.agent.behavior = { ringMin: 1, ringMax: 3, rejectPct: 10, noAnswerPct: 5, talkMin: 30, talkMax: 30, wrapUp: 2, busyInCall: true }
       c.agent.reregisterAfterCall = true
+      c.agent.registerInterval = 100
       c.agent.accounts = [
         { id: 'a', extension: '1001', username: 'u1001', password: 'p1', domain: '', status: 'idle' },
         { id: 'b', extension: '1002', username: 'u1002', password: 'p2', domain: 'other.example', status: 'registered' },
