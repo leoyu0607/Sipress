@@ -499,6 +499,21 @@ describe('雙端啟動等待座席註冊', () => {
     expect(s.logs.some(l => l.level === 'warn' && l.msg.includes('僅 1/2 個座席註冊成功'))).toBe(true)
   })
 
+  it('分批註冊時等待上限加上 (帳號數 - 1) × 註冊間隔', async () => {
+    const calls = routeAgents(1, 3)
+    const s = useTestStore()
+    s.config.agent.accounts = ['1001', '1002', '1003'].map(ext => (
+      { id: ext, extension: ext, username: ext, password: 'p', domain: '', status: 'idle' as const }))
+    s.config.agent.registerInterval = 2000
+    const done = s.startBoth()
+    await vi.advanceTimersByTimeAsync(AGENT_REGISTER_TIMEOUT_MS + 500)
+    expect(startedModes(calls)).toEqual(['agent'])       // 固定上限已過，但最後一個帳號才剛開始註冊
+    await vi.advanceTimersByTimeAsync(2 * 2000)
+    await done
+    expect(startedModes(calls)).toEqual(['agent', 'caller'])
+    expect(s.logs.some(l => l.msg.includes('最多 14s'))).toBe(true)
+  })
+
   it('逾時且沒有任何座席註冊成功 → 不撥號，座席端繼續執行', async () => {
     const calls = routeAgents(0, 2)
     const s = useTestStore()
