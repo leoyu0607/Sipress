@@ -43,3 +43,6 @@ core/target/
 gui/src-tauri/target/
 .claude/
 dist/
+
+# JetBrains IDE
+.idea/
