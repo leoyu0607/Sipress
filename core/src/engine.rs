@@ -10,7 +10,7 @@ use crate::sip::{
 };
 use crate::sip_logger::{Direction, SipLogger, SipRole};
 use crate::stats::{DetailedStats, FinalReport, LiveStats, StatsSnapshot};
-use crate::timeline::TimelineRecorder;
+use crate::timeline::Timelines;
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::Result;
 use rand::Rng;
@@ -336,12 +336,19 @@ impl Engine {
             }
         });
 
+        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
+        let timeline = Arc::new(std::sync::Mutex::new(Some(Timelines::new(
+            cfg.stats_interval_secs,
+            start,
+        ))));
+
         // ── Task 2：進度回報（含即時 RTP 品質） ──
         let engine_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(ref cb) = on_progress {
             let cb = Arc::clone(cb);
             let live = Arc::clone(&live);
             let rtp_sess = Arc::clone(&rtp_sessions);
+            let tl = Arc::clone(&timeline);
             let detail = Arc::clone(&detail);
             let finished = Arc::clone(&engine_finished);
             let duration = cfg.duration_secs as f64;
@@ -375,6 +382,9 @@ impl Engine {
                             snap.rtp_recv_packets = Some(agg.recv_packets);
                         }
                     }
+                    if let Some(t) = tl.lock().unwrap().as_ref() {
+                        fill_latest_rtp(&mut snap, t);
+                    }
                     snap.finished = finished.load(std::sync::atomic::Ordering::Relaxed);
                     let done = snap.finished;
                     cb(snap, progress);
@@ -388,11 +398,7 @@ impl Engine {
             });
         }
 
-        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
-        let timeline = Arc::new(std::sync::Mutex::new(Some(TimelineRecorder::new(
-            cfg.stats_interval_secs,
-        ))));
-        if cfg.stats_interval_secs > 0 {
+        {
             let tl = Arc::clone(&timeline);
             let live = Arc::clone(&live);
             let detail = Arc::clone(&detail);
@@ -401,14 +407,23 @@ impl Engine {
                 let mut interval = time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    let mos = {
+                    let elapsed = start.elapsed().as_secs_f64();
+                    let Some(due) = tl.lock().unwrap().as_ref().map(|t| t.fine_due(elapsed)) else {
+                        break;
+                    };
+                    let (mos, rtp) = {
                         let sessions = src.lock().await;
                         let snaps: Vec<_> = sessions.values().map(|s| s.stats.snapshot()).collect();
-                        aggregate_snapshots(&snaps).map(|a| a.mos)
+                        let rtp = if due {
+                            sessions.values().map(|s| s.stats.take_interval()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        (aggregate_snapshots(&snaps).map(|a| a.mos), rtp)
                     };
                     let mut guard = tl.lock().unwrap();
                     let Some(rec) = guard.as_mut() else { break };
-                    rec.tick(start.elapsed().as_secs_f64(), &live, &detail, mos);
+                    rec.tick(elapsed, &live, &detail, mos, rtp);
                 }
             });
         }
@@ -610,6 +625,7 @@ impl Engine {
                                             &mut rtp_snapshots,
                                             &live,
                                             &traces,
+                                            &timeline,
                                         )
                                         .await;
                                     }
@@ -753,6 +769,7 @@ impl Engine {
                                             &mut rtp_snapshots,
                                             &live,
                                             &traces,
+                                            &timeline,
                                         )
                                         .await;
                                     }
@@ -840,6 +857,7 @@ impl Engine {
                                             &mut rtp_snapshots,
                                             &live,
                                             &traces,
+                                            &timeline,
                                         )
                                         .await;
                                     }
@@ -1098,9 +1116,11 @@ impl Engine {
             elapsed,
         ));
 
+        let mut last_rtp = Vec::new();
         let rtp_agg = if cfg.enable_rtp {
             for (call_id, s) in rtp_sessions.lock().await.drain() {
                 let snap = s.stop();
+                last_rtp.push(s.stats.take_interval());
                 traces.update(&call_id, |t| t.set_rtp(&snap));
                 rtp_snapshots.push(snap);
             }
@@ -1109,15 +1129,21 @@ impl Engine {
             None
         };
 
-        let timeline = timeline
-            .lock()
-            .unwrap()
-            .take()
-            .map(|r| r.finish(elapsed, &live, &detail))
-            .unwrap_or_default();
         let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_agg.as_ref());
-        report.timeline = timeline;
+        if let Some(t) = timeline.lock().unwrap().take() {
+            t.finish(elapsed, &live, &detail, last_rtp, &mut report);
+        }
         Ok(report)
+    }
+}
+
+/// 即時快照填入「近 10 秒」的 RTP 品質（兩端引擎共用）
+pub(crate) fn fill_latest_rtp(snap: &mut StatsSnapshot, timelines: &Timelines) {
+    if let Some(r) = timelines.latest_rtp() {
+        snap.rtp_mos_10s = Some(r.mos_avg);
+        snap.rtp_mos_jb200_10s = Some(r.mos_jb200_avg);
+        snap.rtp_loss_pct_10s = Some(r.loss_pct);
+        snap.rtp_jitter_ms_10s = Some(r.jitter_avg_ms);
     }
 }
 
@@ -1128,10 +1154,14 @@ async fn stop_rtp_session(
     snapshots: &mut Vec<RtpStatsSnapshot>,
     live: &LiveStats,
     traces: &TraceLog,
+    timeline: &std::sync::Mutex<Option<Timelines>>,
 ) {
     let session = sessions.lock().await.remove(call_id);
     if let Some(session) = session {
         let snap = session.stop();
+        if let Some(t) = timeline.lock().unwrap().as_mut() {
+            t.add_rtp(session.stats.take_interval());
+        }
         live.on_rtp_stop();
         traces.update(call_id, |t| t.set_rtp(&snap));
         snapshots.push(snap);

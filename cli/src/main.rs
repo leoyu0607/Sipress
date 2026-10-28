@@ -12,6 +12,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     reporter::{OutputFormat, Reporter},
+    result_file::ResultFile,
     stats::{FinalReport, StatsSnapshot},
     trace::{TraceFile, TraceLog},
 };
@@ -50,6 +51,7 @@ async fn main() -> Result<()> {
     }
     config.validate()?;
 
+    let result_config = config.clone();
     let engine = AnyEngine::new(config);
     let traces = engine.trace_log();
     // Ctrl-C → graceful stop（座席端會先解除註冊再結束）
@@ -128,6 +130,11 @@ async fn main() -> Result<()> {
         match HtmlReporter::save(&report, &args.report_dir, &ts, &args.server) {
             Ok(path) => tracing::info!("HTML 報告 → {}", path.display()),
             Err(e) => tracing::warn!("HTML 報告失敗：{}", e),
+        }
+        // 原始數據：之後產生整合報告時讀取
+        match ResultFile::new(&result_config, &report).save(&args.report_dir, &ts) {
+            Ok(path) => tracing::info!("壓測數據 → {}", path.display()),
+            Err(e) => tracing::warn!("壓測數據寫入失敗：{}", e),
         }
     }
 

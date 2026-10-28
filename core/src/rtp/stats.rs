@@ -40,6 +40,119 @@ pub struct RtpStats {
     /// SSRC 切換前累積的 (expected, received) — 避免跨 SSRC 序號空間造成假掉包
     prior_expected: AtomicU64,
     prior_received: AtomicU64,
+    /// jitter buffer 模擬（晚到封包數）
+    jb: Mutex<JitterBufferSim>,
+    /// 上次 `take_interval` 時的累計值
+    interval_mark: Mutex<IntervalMark>,
+}
+
+/// 固定 jitter buffer 的大小（ms）：50 = 小緩衝、200 = 一般話機
+pub const JB_SMALL_MS: u64 = 50;
+pub const JB_LARGE_MS: u64 = 200;
+/// 基準延遲的視窗長度：取最近一到兩個視窗內最小的延遲，讓基準跟著時鐘漂移移動
+const JB_WINDOW_US: u64 = 30_000_000;
+
+/// 固定 jitter buffer 模擬：延遲比基準多出緩衝大小的封包，話機播放時已來不及，視同遺失
+#[derive(Default)]
+struct JitterBufferSim {
+    /// 延伸後的 RTP 時間戳記（處理 u32 回繞）
+    ext_ts: Option<(u32, i64)>,
+    /// 目前視窗的起點（µs）與最小延遲、上一個視窗的最小延遲（µs）
+    window_start_us: u64,
+    cur_min: Option<i64>,
+    prev_min: Option<i64>,
+    late_small: u64,
+    late_large: u64,
+}
+
+impl JitterBufferSim {
+    fn on_packet(&mut self, rtp_ts: u32, recv_us: u64) {
+        let ext = match self.ext_ts {
+            Some((last, ext)) => ext + rtp_ts.wrapping_sub(last) as i32 as i64,
+            None => 0,
+        };
+        self.ext_ts = Some((rtp_ts, ext));
+        // 8 kHz：一個 timestamp 單位 = 125 µs
+        let transit = recv_us as i64 - ext * 125;
+
+        if self.cur_min.is_none() || recv_us.saturating_sub(self.window_start_us) >= JB_WINDOW_US {
+            self.prev_min = self.cur_min;
+            self.cur_min = Some(transit);
+            self.window_start_us = recv_us;
+        } else {
+            self.cur_min = self.cur_min.map(|m| m.min(transit));
+        }
+        let base = match (self.cur_min, self.prev_min) {
+            (Some(c), Some(p)) => c.min(p),
+            (Some(c), None) => c,
+            _ => transit,
+        };
+        let delay_us = (transit - base).max(0) as u64;
+        if delay_us > JB_SMALL_MS * 1000 {
+            self.late_small += 1;
+        }
+        if delay_us > JB_LARGE_MS * 1000 {
+            self.late_large += 1;
+        }
+    }
+
+    /// 換 SSRC：時間戳記與延遲基準重新計算，晚到計數保留
+    fn reset_reference(&mut self) {
+        self.ext_ts = None;
+        self.cur_min = None;
+        self.prev_min = None;
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct IntervalMark {
+    expected: u64,
+    lost: u64,
+    late_small: u64,
+    late_large: u64,
+}
+
+/// 一通電話在一個時段內新增的 RTP 數據（`RtpStats::take_interval`）
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RtpInterval {
+    pub expected: u64,
+    pub lost: u64,
+    pub late_small: u64,
+    pub late_large: u64,
+    /// 時段結束當下的 jitter（ms）
+    pub jitter_ms: f64,
+}
+
+impl RtpInterval {
+    /// 這段的掉包率（0.0 ~ 1.0）
+    pub fn loss_rate(&self) -> f64 {
+        ratio(self.lost, self.expected)
+    }
+
+    pub fn mos(&self) -> f64 {
+        estimate_mos(self.loss_rate(), self.jitter_ms)
+    }
+
+    pub fn mos_jb_small(&self) -> f64 {
+        mos_with_late(self.lost, self.late_small, self.expected)
+    }
+
+    pub fn mos_jb_large(&self) -> f64 {
+        mos_with_late(self.lost, self.late_large, self.expected)
+    }
+}
+
+fn ratio(a: u64, b: u64) -> f64 {
+    if b == 0 {
+        0.0
+    } else {
+        (a as f64 / b as f64).min(1.0)
+    }
+}
+
+/// 含 jitter buffer 的 MOS：晚到封包併入掉包，jitter 的影響已反映在晚到封包，不再另外扣分
+fn mos_with_late(lost: u64, late: u64, expected: u64) -> f64 {
+    estimate_mos(ratio(lost + late, expected), 0.0)
 }
 
 impl RtpStats {
@@ -82,6 +195,7 @@ impl RtpStats {
                     }
                     self.seq_cycles.store(0, Ordering::Relaxed);
                     self.jitter_x16_us.store(0, Ordering::Relaxed);
+                    self.jb.lock().unwrap().reset_reference();
                     *self.last_rtp_ts.lock().unwrap() = None;
                     *self.last_recv_us.lock().unwrap() = None;
                     *self.last_seq.lock().unwrap() = None;
@@ -95,6 +209,10 @@ impl RtpStats {
         let mut last_ts = self.last_rtp_ts.lock().unwrap();
         let mut last_us = self.last_recv_us.lock().unwrap();
         let mut last_seq = self.last_seq.lock().unwrap();
+
+        if *last_seq != Some(seq) {
+            self.jb.lock().unwrap().on_packet(rtp_ts, recv_us);
+        }
 
         if let (Some(prev_ts), Some(prev_us), Some(prev_seq)) = (*last_ts, *last_us, *last_seq) {
             let seq_diff = seq.wrapping_sub(prev_seq);
@@ -158,6 +276,11 @@ impl RtpStats {
         let (lost, loss_rate) = self.loss_details();
         let jitter_ms = self.jitter_ms();
         let mos = estimate_mos(loss_rate, jitter_ms);
+        let (expected, _) = self.totals();
+        let (late_small, late_large) = {
+            let jb = self.jb.lock().unwrap();
+            (jb.late_small, jb.late_large)
+        };
 
         RtpStatsSnapshot {
             sent_packets: sent,
@@ -168,10 +291,39 @@ impl RtpStats {
             mos,
             out_of_order: self.out_of_order.load(Ordering::Relaxed),
             duplicates: self.duplicates.load(Ordering::Relaxed),
+            late50_packets: late_small,
+            late200_packets: late_large,
+            mos_jb50: mos_with_late(lost, late_small, expected),
+            mos_jb200: mos_with_late(lost, late_large, expected),
         }
     }
 
-    fn loss_details(&self) -> (u64, f64) {
+    /// 上次呼叫以後新增的封包數（第一次呼叫 = 從通話開始）；每通電話只能有一個呼叫端
+    pub fn take_interval(&self) -> RtpInterval {
+        let (expected, lost) = self.totals();
+        let (late_small, late_large) = {
+            let jb = self.jb.lock().unwrap();
+            (jb.late_small, jb.late_large)
+        };
+        let mut mark = self.interval_mark.lock().unwrap();
+        let prev = *mark;
+        *mark = IntervalMark {
+            expected,
+            lost,
+            late_small,
+            late_large,
+        };
+        RtpInterval {
+            expected: expected.saturating_sub(prev.expected),
+            lost: lost.saturating_sub(prev.lost),
+            late_small: late_small.saturating_sub(prev.late_small),
+            late_large: late_large.saturating_sub(prev.late_large),
+            jitter_ms: self.jitter_ms(),
+        }
+    }
+
+    /// 累計 (應收, 掉包)；還沒收到任何封包時以送出數當應收、全部算掉包
+    fn totals(&self) -> (u64, u64) {
         let sent = self.sent_packets.load(Ordering::Relaxed);
         let recv = self.recv_packets.load(Ordering::Relaxed);
         let first = *self.first_seq.lock().unwrap();
@@ -189,13 +341,15 @@ impl RtpStats {
         let total_recv = prior_r + cur_recv;
 
         if total_expected > 0 {
-            let lost = total_expected.saturating_sub(total_recv);
-            (lost, lost as f64 / total_expected as f64)
-        } else if sent > 0 {
-            (sent, 1.0)
+            (total_expected, total_expected.saturating_sub(total_recv))
         } else {
-            (0, 0.0)
+            (sent, sent)
         }
+    }
+
+    fn loss_details(&self) -> (u64, f64) {
+        let (expected, lost) = self.totals();
+        (lost, ratio(lost, expected))
     }
 }
 
@@ -214,6 +368,16 @@ pub struct RtpStatsSnapshot {
     pub mos: f64,
     pub out_of_order: u64,
     pub duplicates: u64,
+    /// 延遲超過 50 / 200 ms jitter buffer 的封包數（話機已來不及播放）
+    #[serde(default)]
+    pub late50_packets: u64,
+    #[serde(default)]
+    pub late200_packets: u64,
+    /// 含 jitter buffer 模擬的 MOS：晚到封包併入掉包計算
+    #[serde(default)]
+    pub mos_jb50: f64,
+    #[serde(default)]
+    pub mos_jb200: f64,
 }
 
 impl RtpStatsSnapshot {
@@ -226,7 +390,8 @@ impl RtpStatsSnapshot {
 ///
 /// - 掉包率：依封包數加權（Σ掉包 / Σ(收到 + 掉包)），與 `lost_packets` 加總一致
 /// - Jitter：依收到的封包數加權，未收到封包的通話不會拉低平均
-/// - MOS：每通電話平均（每通通話的體驗各占一票）
+/// - MOS（含 jitter buffer 模擬）：每通電話平均（每通通話的體驗各占一票）
+/// - 晚到封包數：加總
 pub fn aggregate_snapshots(snapshots: &[RtpStatsSnapshot]) -> Option<RtpStatsSnapshot> {
     if snapshots.is_empty() {
         return None;
@@ -258,6 +423,10 @@ pub fn aggregate_snapshots(snapshots: &[RtpStatsSnapshot]) -> Option<RtpStatsSna
         mos: snapshots.iter().map(|s| s.mos).sum::<f64>() / n,
         out_of_order: snapshots.iter().map(|s| s.out_of_order).sum(),
         duplicates: snapshots.iter().map(|s| s.duplicates).sum(),
+        late50_packets: snapshots.iter().map(|s| s.late50_packets).sum(),
+        late200_packets: snapshots.iter().map(|s| s.late200_packets).sum(),
+        mos_jb50: snapshots.iter().map(|s| s.mos_jb50).sum::<f64>() / n,
+        mos_jb200: snapshots.iter().map(|s| s.mos_jb200).sum::<f64>() / n,
     })
 }
 
@@ -383,6 +552,7 @@ mod tests {
             mos: 4.0,
             out_of_order: 2,
             duplicates: 1,
+            ..Default::default()
         };
         let agg = aggregate_snapshots(std::slice::from_ref(&snap)).unwrap();
         assert_eq!(agg.sent_packets, 100);
@@ -401,6 +571,7 @@ mod tests {
             mos: 3.0,
             out_of_order: 2,
             duplicates: 0,
+            ..Default::default()
         };
         let b = RtpStatsSnapshot {
             sent_packets: 200,
@@ -411,6 +582,7 @@ mod tests {
             mos: 4.5,
             out_of_order: 0,
             duplicates: 1,
+            ..Default::default()
         };
         let agg = aggregate_snapshots(&[a, b]).unwrap();
         assert_eq!(agg.sent_packets, 300);
@@ -445,6 +617,7 @@ mod tests {
             mos: 4.0,
             out_of_order: 0,
             duplicates: 0,
+            ..Default::default()
         };
         // 送出但完全沒收到（單向）：掉包 100%，沒有 jitter 樣本
         let one_way = RtpStatsSnapshot {
@@ -456,6 +629,7 @@ mod tests {
             mos: 1.0,
             out_of_order: 0,
             duplicates: 0,
+            ..Default::default()
         };
         let agg = aggregate_snapshots(&[talking, one_way]).unwrap();
         assert!(
@@ -511,5 +685,87 @@ mod tests {
             j1,
             j2
         );
+    }
+
+    /// 每 20 ms 送一個封包；`extra_us(i)` = 第 i 個封包額外的網路延遲，依到達時間順序餵入
+    fn feed(stats: &RtpStats, n: u16, extra_us: impl Fn(u16) -> u64) {
+        let mut pkts: Vec<(u64, u16)> = (0..n)
+            .map(|i| (i as u64 * 20_000 + extra_us(i), i))
+            .collect();
+        pkts.sort();
+        for (at, i) in pkts {
+            stats.on_recv(1, i, i as u32 * 160, at);
+        }
+    }
+
+    #[test]
+    fn jb_steady_stream_has_no_late_packets() {
+        let stats = RtpStats::new();
+        feed(&stats, 500, |_| 0);
+        let s = stats.snapshot();
+        assert_eq!((s.late50_packets, s.late200_packets), (0, 0));
+        assert!((s.mos_jb200 - s.mos).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jb_counts_packets_late_for_each_buffer() {
+        let stats = RtpStats::new();
+        // 第 100–109 個延遲 100 ms（超過 50 ms 緩衝），第 200–204 個延遲 300 ms（超過兩種緩衝）
+        feed(&stats, 500, |i| match i {
+            100..=109 => 100_000,
+            200..=204 => 300_000,
+            _ => 0,
+        });
+        let s = stats.snapshot();
+        assert_eq!(s.late50_packets, 15);
+        assert_eq!(s.late200_packets, 5);
+        assert_eq!(s.lost_packets, 0);
+        // 晚到的越多 MOS 越低：原本 MOS（jitter 未超過 150 ms 不扣分）≥ jb200 ≥ jb50
+        assert!(s.mos >= s.mos_jb200 && s.mos_jb200 > s.mos_jb50, "{:?}", s);
+    }
+
+    #[test]
+    fn jb_follows_clock_drift() {
+        let stats = RtpStats::new();
+        // 兩端時鐘差 100 ppm，10 分鐘累積 60 ms：基準跟著移動，不應被當成晚到
+        feed(&stats, 30_000, |i| i as u64 * 20_000 / 10_000);
+        assert_eq!(stats.snapshot().late50_packets, 0);
+    }
+
+    #[test]
+    fn jb_resets_reference_on_ssrc_change() {
+        let stats = RtpStats::new();
+        for i in 0..50u16 {
+            stats.on_recv(1, i, i as u32 * 160, i as u64 * 20_000);
+        }
+        // 新的 SSRC 時間戳記從別的值開始，延遲基準要重算
+        for i in 0..50u16 {
+            stats.on_recv(
+                2,
+                9000 + i,
+                3_000_000 + i as u32 * 160,
+                (50 + i) as u64 * 20_000,
+            );
+        }
+        assert_eq!(stats.snapshot().late50_packets, 0);
+    }
+
+    #[test]
+    fn take_interval_returns_deltas() {
+        let stats = RtpStats::new();
+        // 序號 0–99，掉 10–19
+        for i in (0..100u16).filter(|i| !(10..20).contains(i)) {
+            stats.on_recv(1, i, i as u32 * 160, i as u64 * 20_000);
+        }
+        let a = stats.take_interval();
+        assert_eq!((a.expected, a.lost), (100, 10));
+        for i in 100..200u16 {
+            stats.on_recv(1, i, i as u32 * 160, i as u64 * 20_000);
+        }
+        let b = stats.take_interval();
+        assert_eq!((b.expected, b.lost), (100, 0));
+        assert!((b.loss_rate() - 0.0).abs() < 1e-9);
+        assert!((a.loss_rate() - 0.1).abs() < 1e-9);
+        assert_eq!(stats.take_interval().expected, 0);
     }
 }

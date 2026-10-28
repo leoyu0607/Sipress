@@ -7,6 +7,7 @@ pub mod html_reporter;
 pub mod net;
 pub mod registrar;
 pub mod reporter;
+pub mod result_file;
 pub mod rtp;
 pub mod sip;
 pub mod sip_logger;

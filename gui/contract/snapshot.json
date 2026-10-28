@@ -16,8 +16,12 @@
   "pdd_avg_ms": 150.0,
   "pdd_p50_ms": 120.0,
   "rtp_jitter_ms": 12.5,
+  "rtp_jitter_ms_10s": 10.0,
   "rtp_loss_pct": 0.5,
+  "rtp_loss_pct_10s": 0.3,
   "rtp_mos": 4.1,
+  "rtp_mos_10s": 4.2,
+  "rtp_mos_jb200_10s": 4.0,
   "rtp_recv_packets": 4975,
   "rtp_sent_packets": 5000,
   "rtp_sessions": 10

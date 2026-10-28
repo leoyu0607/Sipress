@@ -118,13 +118,14 @@ describe('Rust 輸出 fixtures', () => {
       'calls_initiated', 'calls_answered', 'calls_completed', 'calls_failed', 'calls_timeout',
       'calls_concurrent', 'rtp_sessions', 'asr', 'error_rate', 'rtp_mos', 'rtp_loss_pct',
       'rtp_jitter_ms', 'rtp_sent_packets', 'rtp_recv_packets', 'pdd_avg_ms', 'finished',
-      'agents_registered', 'agents_total',
+      'agents_registered', 'agents_total', 'rtp_mos_10s', 'rtp_mos_jb200_10s', 'rtp_loss_pct_10s',
+      'rtp_jitter_ms_10s',
     ]
     for (const k of snapKeys) expect(snap, `snapshot.${k}`).toHaveProperty(k)
     const reportKeys: (keyof RustReport)[] = [
       'calls_initiated', 'calls_answered', 'calls_completed', 'calls_failed', 'calls_timeout',
       'asr', 'ccr', 'actual_cps', 'acd_secs', 'pdd_p50_ms', 'pdd_p95_ms', 'mos', 'loss_rate_pct',
-      'jitter_ms', 'rtp_sent', 'rtp_recv', 'rtp_out_of_order', 'fail_codes',
+      'jitter_ms', 'rtp_sent', 'rtp_recv', 'rtp_out_of_order', 'mos_jb200', 'fail_codes',
     ]
     for (const k of reportKeys) expect(report, `report.${k}`).toHaveProperty(k)
   })

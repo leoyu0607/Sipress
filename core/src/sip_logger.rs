@@ -161,6 +161,20 @@ impl SipLogger {
         format!("{:02}:{:02}:{:02}.{:03}", hh, mm, ss, millis)
     }
 
+    /// Unix 秒 → RFC 3339（UTC，例如 `2026-10-28T05:48:20Z`）
+    pub fn rfc3339_utc(secs: u64) -> String {
+        let s = Self::secs_to_datetime(secs);
+        format!(
+            "{}-{}-{}T{}:{}:{}Z",
+            &s[0..4],
+            &s[4..6],
+            &s[6..8],
+            &s[9..11],
+            &s[11..13],
+            &s[13..15]
+        )
+    }
+
     /// Unix 秒 → YYYYMMDD_HHMMSS（UTC，不依賴外部 crate）
     fn secs_to_datetime(secs: u64) -> String {
         // 計算日期（Gregorian calendar）
@@ -255,6 +269,7 @@ mod tests {
         // 2024-05-01 14:30:22 UTC = 1714573822
         let ts2 = SipLogger::secs_to_datetime(1714573822);
         assert_eq!(ts2, "20240501_143022");
+        assert_eq!(SipLogger::rfc3339_utc(1714573822), "2024-05-01T14:30:22Z");
     }
 
     #[test]

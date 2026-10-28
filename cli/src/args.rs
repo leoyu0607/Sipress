@@ -170,7 +170,7 @@ pub struct Args {
     #[arg(long = "format", default_value = "table")]
     pub format: String,
 
-    /// 額外輸出 HTML 報告
+    /// 額外輸出 HTML 報告（同時寫出原始數據 `<時間>_result.json`，供整合報告使用）
     #[arg(long)]
     pub html: bool,
 

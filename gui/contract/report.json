@@ -17,9 +17,12 @@
     "486": 5,
     "503": 2
   },
+  "fine_timeline": [],
   "jitter_ms": 8.0,
   "loss_rate_pct": 1.1,
   "mos": 3.9,
+  "mos_jb200": 3.8,
+  "mos_jb50": 3.4,
   "pdd_max_ms": 200.063,
   "pdd_p50_ms": 150.015,
   "pdd_p95_ms": 200.063,
@@ -31,5 +34,6 @@
   "setup_p50_ms": 300.031,
   "setup_p95_ms": 400.127,
   "setup_p99_ms": 400.127,
+  "started_at": "2026-10-28T05:00:00Z",
   "timeline": []
 }

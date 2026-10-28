@@ -44,9 +44,11 @@ impl HtmlReporter {
         // RTP 區塊
         let rtp_section = match (r.mos, r.loss_rate_pct, r.jitter_ms) {
             (Some(mos), Some(loss), Some(jitter)) => {
-                let mos_cls = mos_badge_cls(mos);
-                let mos_label = mos_label_str(mos);
-                let loss_cls = kpi_cls(100.0 - loss, 97.0, 94.0); // 反向：越低越好
+                // 判定用含 jitter buffer 200 ms 模擬的 MOS（舊版數據沒有時退回 E-Model MOS）
+                let judged = r.mos_jb200.filter(|v| *v > 0.0).unwrap_or(mos);
+                let mos_cls = mos_badge_cls(judged);
+                let mos_label = mos_label_str(judged);
+                let loss_cls = loss_val_cls(loss);
                 let jitter_cls = kpi_cls(150.0 - jitter.min(150.0), 100.0, 50.0);
                 let sent = r.rtp_sent.unwrap_or(0);
                 let recv = r.rtp_recv.unwrap_or(0);
@@ -55,24 +57,29 @@ impl HtmlReporter {
                     r#"<div class="card">
   <div class="section-title">聲音品質 — RTP 分析</div>
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-    <span style="font-size:13px;color:var(--text-muted)">整體評分</span>
-    <div class="mos-badge {mos_cls}">MOS {mos:.2} — {mos_label}</div>
+    <span style="font-size:13px;color:var(--text-muted)">整體評分（MOS，jitter buffer 200 ms 模擬）</span>
+    <div class="mos-badge {mos_cls}">MOS {judged:.2} — {mos_label}</div>
   </div>
   <div class="quality-grid">
     <div class="q-item">
-      <div class="q-label">MOS 值</div>
-      <div class="q-val {mos_cls2}">{mos:.2}<span style="font-size:12px;color:var(--text-muted);margin-left:4px">/ 5.0</span></div>
-      <div class="q-sub">E-Model ITU-T G.107</div>
+      <div class="q-label">MOS（jitter buffer 200 ms 模擬）</div>
+      <div class="q-val {judged_cls}">{judged:.2}<span style="font-size:12px;color:var(--text-muted);margin-left:4px">/ 4.41</span></div>
+      <div class="q-sub">判定用；每通電話平均</div>
     </div>
     <div class="q-item">
-      <div class="q-label">掉包率</div>
-      <div class="q-val {loss_cls}">{loss:.1}<span style="font-size:13px;color:var(--text-muted)"> %</span></div>
-      <div class="q-sub">Lost / Expected packets</div>
+      <div class="q-label">MOS（E-Model 估算）</div>
+      <div class="q-val {mos_cls2}">{mos:.2}<span style="font-size:12px;color:var(--text-muted);margin-left:4px">/ 4.41</span></div>
+      <div class="q-sub">ITU-T G.107；每通電話平均</div>
+    </div>
+    <div class="q-item">
+      <div class="q-label">掉包率（整體）</div>
+      <div class="q-val {loss_cls}">{loss:.2}<span style="font-size:13px;color:var(--text-muted)"> %</span></div>
+      <div class="q-sub">所有通話的掉包數 ÷ 應收封包數</div>
     </div>
     <div class="q-item">
       <div class="q-label">Jitter</div>
       <div class="q-val {jitter_cls}">{jitter:.1}<span style="font-size:13px;color:var(--text-muted)"> ms</span></div>
-      <div class="q-sub">RFC 3550 §A.8</div>
+      <div class="q-sub">RFC 3550；依接收封包數加權</div>
     </div>
   </div>
   <div class="rtp-meta">
@@ -83,6 +90,8 @@ impl HtmlReporter {
 </div>"#,
                     mos_cls = mos_cls,
                     mos = mos,
+                    judged = judged,
+                    judged_cls = mos_to_val_cls(judged),
                     mos_label = mos_label,
                     mos_cls2 = mos_to_val_cls(mos),
                     loss_cls = loss_cls,
@@ -170,13 +179,16 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
 .mos-good{{background:var(--green-bg);color:var(--green)}}
 .mos-warn{{background:var(--yellow-bg);color:var(--yellow)}}
 .mos-bad{{background:var(--red-bg);color:var(--red)}}
-.quality-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:4px}}
+.quality-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:4px}}
 .q-item{{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}}
 .q-label{{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px}}
 .q-val{{font-family:var(--mono);font-size:22px;font-weight:500}}
 .q-sub{{font-size:11px;color:var(--text-light);margin-top:4px}}
 .rtp-meta{{display:flex;gap:24px;margin-top:14px;font-size:12px;color:var(--text-muted);flex-wrap:wrap}}
 .rtp-meta strong{{color:var(--text);font-family:var(--mono)}}
+.defs dl{{margin:0;font-size:13px;line-height:1.7}}
+.defs dt{{font-weight:600;margin-top:10px}}
+.defs dd{{margin:2px 0 0;color:var(--text-muted)}}
 .data-table{{width:100%;border-collapse:collapse;font-size:13px}}
 .data-table th{{text-align:left;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-muted);padding:8px 14px;border-bottom:2px solid var(--border)}}
 .data-table td{{padding:9px 14px;border-bottom:1px solid var(--border)}}
@@ -281,6 +293,8 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
   </table>
 </div>
 
+{definitions}
+
 </main>
 <footer class="footer">sipress v{ver} &nbsp;·&nbsp; 報告產生時間 {ts} &nbsp;·&nbsp; 測試時長 {dur:.1}s</footer>
 </body></html>"#,
@@ -318,6 +332,7 @@ body{{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:1
             setup_bars = setup_bars,
             rtp_section = rtp_section,
             timeline_section = timeline_section,
+            definitions = DEFINITIONS,
             p4 = pct(r.fail_4xx, fail_total),
             p5 = pct(r.fail_5xx, fail_total),
             p6 = pct(r.fail_6xx, fail_total),
@@ -518,6 +533,34 @@ fn ring_color(v: f64, good: f64, warn: f64) -> String {
     }
 }
 
+/// 掉包率：0.5% 以內正常、1% 以內注意
+fn loss_val_cls(loss_pct: f64) -> &'static str {
+    if loss_pct <= 0.5 {
+        "val-good"
+    } else if loss_pct <= 1.0 {
+        "val-warn"
+    } else {
+        "val-bad"
+    }
+}
+
+/// 報告最後的「指標說明」（與 METRICS.md 一致）
+const DEFINITIONS: &str = r#"<div class="card defs">
+  <div class="section-title">指標說明</div>
+  <dl>
+    <dt>MOS（E-Model 估算）</dt>
+    <dd>ITU-T G.107 簡化版，以 G.711 加封包遺失補償計算：R = 93.2 − 掉包損傷 − Jitter 損傷，再換算成 MOS。Jitter 低於 150 ms 不扣分，所以這個值主要反映掉包。完全不掉包時最高 4.41，不會到 5。每通電話算出一個值，報告列的是每通電話的平均。</dd>
+    <dt>MOS（jitter buffer 200 ms 模擬）</dt>
+    <dd>模擬話機的固定 200 ms 緩衝：封包延遲比基準（最近 30 至 60 秒內最小的延遲）多出 200 ms 以上就來不及播放，視同遺失，再用同一個公式計算。這是判定用的 MOS。另有 50 ms 緩衝的版本，對 Jitter 更敏感。這是近似值，和 VoIPmonitor 等工具的數字不會完全一致。</dd>
+    <dt>掉包率（整體）</dt>
+    <dd>所有通話的掉包封包數加總 ÷ 應收封包數加總，依 RTP 序號計算（RFC 3550 §A.3）。不是每通電話掉包率的平均，也不是最高值；長的通話占比較大。</dd>
+    <dt>Jitter</dt>
+    <dd>RFC 3550 §A.8 的到達間隔變異（平滑值），每通電話取結束時的值，再依接收封包數加權平均。</dd>
+    <dt>分時段的 MOS</dt>
+    <dd>依 <code>--interval</code> 分段的表格與趨勢圖中，MOS 是該段每秒即時 MOS 的平均；即時 MOS 為進行中通話從接通到當下的累計值。</dd>
+  </dl>
+</div>"#;
+
 fn mos_badge_cls(mos: f64) -> &'static str {
     if mos >= 4.0 {
         "mos-good"
@@ -640,4 +683,31 @@ fn dist_bar(r: &FinalReport) -> String {
             c=col, lbl=lbl, cnt=cnt, p=*cnt as f64/total*100.0));
     }
     format!("{}</div>{}</div>", bar, leg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stats::{DetailedStats, LiveStats};
+
+    #[test]
+    fn rtp_section_shows_judged_mos_and_precise_loss() {
+        let mut r = FinalReport::build(
+            &LiveStats::default().snapshot(),
+            &DetailedStats::default(),
+            60.0,
+            None,
+        );
+        r.mos = Some(4.3);
+        r.mos_jb200 = Some(3.9);
+        r.loss_rate_pct = Some(0.46);
+        r.jitter_ms = Some(12.0);
+        let html = HtmlReporter::render(&r, "20261028_050000", "127.0.0.1:5060");
+        assert!(
+            html.contains("MOS 3.90"),
+            "整體評分用 jitter buffer 200 ms 的 MOS"
+        );
+        assert!(html.contains("0.46<span"), "掉包率顯示到小數 2 位");
+        assert!(html.contains("指標說明"));
+    }
 }

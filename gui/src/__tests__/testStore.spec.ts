@@ -210,11 +210,24 @@ describe('測試執行流程', () => {
     expect(s.series.cps).toEqual([10, 7.5])
     expect(s.series.fail).toEqual([2, 3])
     expect(s.callStates).toEqual({ initiated: 25, answered: 20, completed: 10, failed: 2, timeout: 1 })
+    // 有近 10 秒的值時優先顯示（只算該段新增的封包）
     expect(s.rtpMetrics).toMatchObject({
-      enabled: true, mos: baseSnap.rtp_mos, packetLoss: baseSnap.rtp_loss_pct,
-      jitter: baseSnap.rtp_jitter_ms, packetsSent: baseSnap.rtp_sent_packets,
+      enabled: true, mos: baseSnap.rtp_mos_10s, mosJb200: baseSnap.rtp_mos_jb200_10s,
+      packetLoss: baseSnap.rtp_loss_pct_10s, jitter: baseSnap.rtp_jitter_ms_10s,
+      packetsSent: baseSnap.rtp_sent_packets, scope: 'recent',
     })
     expect(s.elapsedSec).toBe(2)
+  })
+
+  it('第一個 10 秒時段結算前，RTP 品質用進行中通話的累計值', async () => {
+    const { s } = await startWith([
+      snap({ rtp_mos_10s: null, rtp_mos_jb200_10s: null, rtp_loss_pct_10s: null, rtp_jitter_ms_10s: null }),
+    ])
+    await tick()
+    expect(s.rtpMetrics).toMatchObject({
+      mos: baseSnap.rtp_mos, mosJb200: null, packetLoss: baseSnap.rtp_loss_pct,
+      jitter: baseSnap.rtp_jitter_ms, scope: 'active',
+    })
   })
 
   it('引擎結束後改用最終報告的數字', async () => {
@@ -239,6 +252,7 @@ describe('測試執行流程', () => {
       '408': baseReport.calls_timeout,
     })
     expect(s.rtpMetrics.outOfOrder).toBe(baseReport.rtp_out_of_order)
+    expect(s.rtpMetrics).toMatchObject({ mos: baseReport.mos, mosJb200: baseReport.mos_jb200, scope: 'total' })
 
     // 結束後輪詢停止
     await tick()

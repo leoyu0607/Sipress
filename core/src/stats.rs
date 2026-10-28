@@ -120,6 +120,10 @@ impl LiveStats {
             rtp_jitter_ms: None,
             rtp_sent_packets: None,
             rtp_recv_packets: None,
+            rtp_mos_10s: None,
+            rtp_mos_jb200_10s: None,
+            rtp_loss_pct_10s: None,
+            rtp_jitter_ms_10s: None,
             pdd_avg_ms: None,
             pdd_p50_ms: None,
             cps: 0.0,
@@ -190,6 +194,15 @@ pub struct StatsSnapshot {
     pub rtp_jitter_ms: Option<f64>,
     pub rtp_sent_packets: Option<u64>,
     pub rtp_recv_packets: Option<u64>,
+    /// 近 10 秒的 RTP 品質（最近一個結算的 10 秒時段；只算該段新增的封包）
+    #[serde(default)]
+    pub rtp_mos_10s: Option<f64>,
+    #[serde(default)]
+    pub rtp_mos_jb200_10s: Option<f64>,
+    #[serde(default)]
+    pub rtp_loss_pct_10s: Option<f64>,
+    #[serde(default)]
+    pub rtp_jitter_ms_10s: Option<f64>,
     /// 目前為止的平均 PDD（ms；None = 尚無樣本）
     #[serde(default)]
     pub pdd_avg_ms: Option<f64>,
@@ -368,6 +381,11 @@ pub struct FinalReport {
     pub rtp_recv: Option<u64>,
     /// 亂序封包數
     pub rtp_out_of_order: Option<u64>,
+    /// MOS（jitter buffer 50 / 200 ms 模擬，每通平均）；判定用 200 ms
+    #[serde(default)]
+    pub mos_jb50: Option<f64>,
+    #[serde(default)]
+    pub mos_jb200: Option<f64>,
 
     // ── 具體失敗回應碼（key = SIP 狀態碼，value = 次數）──
     pub fail_codes: HashMap<u16, u64>,
@@ -375,6 +393,14 @@ pub struct FinalReport {
     /// 分時段統計（`stats_interval_secs` 一段；0 = 不分段時為空）
     #[serde(default)]
     pub timeline: Vec<crate::timeline::TimelineBucket>,
+
+    /// 測試開始時間（RFC 3339，UTC），用來和主機監控資料對齊
+    #[serde(default)]
+    pub started_at: String,
+
+    /// 固定 10 秒一段的時間軸（含每段的 RTP 品質），供整合報告使用
+    #[serde(default)]
+    pub fine_timeline: Vec<crate::timeline::TimelineBucket>,
 
     /// 座席端：座席流程每個撥碼的結果（沒有流程時為空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -446,7 +472,11 @@ impl FinalReport {
             rtp_sent: rtp.map(|r| r.sent_packets),
             rtp_recv: rtp.map(|r| r.recv_packets),
             rtp_out_of_order: rtp.map(|r| r.out_of_order),
+            mos_jb50: rtp.map(|r| r.mos_jb50),
+            mos_jb200: rtp.map(|r| r.mos_jb200),
             timeline: Vec::new(),
+            started_at: String::new(),
+            fine_timeline: Vec::new(),
             agent_dials: Vec::new(),
         }
     }

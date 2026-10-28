@@ -5,10 +5,11 @@
  * 1. 通話統計：發起 / 接通 / 完成 / 失敗 / 逾時（來自即時 snapshot）
  * 2. RTP 聲音品質（MOS / 掉包率 / Jitter / 封包統計），codec 依設定顯示
  * 3. MOS 分級使用 store 的 mosGrade()（全 App 一致）
- * 4. 掉包率顏色：<1% 優 / <3% 普通 / ≥3% 差；Jitter：<30ms / <60ms / ≥60ms
+ * 4. 掉包率顏色：≤0.5% 優 / ≤1% 普通 / >1% 差；Jitter：<30ms / <60ms / ≥60ms
+ * 5. 測試中顯示近 10 秒的值，結束後顯示整場的值（標在標題旁）
  */
 import { computed } from 'vue'
-import { useTestStore, mosGrade } from '../stores/testStore'
+import { useTestStore, mosGrade, type RtpScope } from '../stores/testStore'
 
 const store = useTestStore()
 
@@ -44,11 +45,19 @@ const rtpConfigured = computed(() =>
 )
 
 const mos = computed(() => mosGrade(rtp.value.mos))
+const mosJb = computed(() => rtp.value.mosJb200 === null ? null : mosGrade(rtp.value.mosJb200))
+
+const SCOPE_LABEL: Record<RtpScope, { text: string; title: string }> = {
+  recent: { text: '近 10 秒', title: '最近一個 10 秒時段：只算這段時間新增的封包' },
+  active: { text: '進行中通話', title: '第一個 10 秒時段結算前：進行中通話從接通到現在的累計值' },
+  total:  { text: '整場', title: '整場測試：掉包率為所有通話的掉包數 ÷ 應收封包數；MOS 為每通電話平均' },
+}
+const scope = computed(() => SCOPE_LABEL[rtp.value.scope])
 
 const lossColor = computed(() => {
   const p = rtp.value.packetLoss
-  if (p < 1)  return 'var(--accent)'
-  if (p < 3)  return 'var(--warn)'
+  if (p <= 0.5) return 'var(--accent)'
+  if (p <= 1)   return 'var(--warn)'
   return 'var(--danger)'
 })
 
@@ -82,13 +91,28 @@ const jitterColor = computed(() => {
       <div class="rp-title">
         RTP 聲音品質
         <span v-if="rtp.enabled" class="rtp-on">{{ store.codecLabel.short }}</span>
+        <span v-if="rtp.enabled" class="rtp-scope" :title="scope.title">{{ scope.text }}</span>
         <span v-else-if="rtpConfigured && store.isRunning" class="rtp-active">啟用中</span>
         <span v-else-if="!rtpConfigured" class="rtp-off">未啟用</span>
       </div>
 
       <template v-if="rtp.enabled">
-        <!-- MOS -->
-        <div class="rtp-row">
+        <!-- MOS（jitter buffer 200 ms 模擬，判定用） -->
+        <div v-if="mosJb" class="rtp-row" title="MOS（jitter buffer 200 ms 模擬）：延遲超過 200 ms 的封包視同遺失；判定用">
+          <div class="rtp-key">MOS·JB</div>
+          <div class="rtp-bar-wrap">
+            <div class="rtp-bar"
+                 :style="{ width: Math.max(0, (rtp.mosJb200! - 1) / 4 * 100) + '%', background: mosJb.color }">
+            </div>
+          </div>
+          <div class="rtp-val" :style="{ color: mosJb.color }">
+            {{ rtp.mosJb200!.toFixed(2) }}
+            <span class="rtp-tag">{{ mosJb.label }}</span>
+          </div>
+        </div>
+
+        <!-- MOS（E-Model） -->
+        <div class="rtp-row" title="MOS（E-Model 估算，ITU-T G.107）：每通電話平均，最高 4.41">
           <div class="rtp-key">MOS</div>
           <div class="rtp-bar-wrap">
             <div class="rtp-bar"
@@ -102,7 +126,7 @@ const jitterColor = computed(() => {
         </div>
 
         <!-- 掉包率 -->
-        <div class="rtp-row">
+        <div class="rtp-row" title="掉包率：所有通話的掉包數 ÷ 應收封包數（不是每通電話的平均）">
           <div class="rtp-key">掉包</div>
           <div class="rtp-bar-wrap">
             <div class="rtp-bar"
@@ -226,6 +250,14 @@ const jitterColor = computed(() => {
   border: 1px solid var(--accent);
   padding: 1px 5px;
   border-radius: 3px;
+}
+.rtp-scope {
+  font-size: 10px;
+  color: var(--text2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: help;
 }
 
 /* ── State bars ─────────────────────────── */

@@ -107,6 +107,10 @@ function toggleTest() {
               :disabled="!hasReport"
               :title="hasReport ? '匯出 HTML 報告' : '測試完成後可匯出'">↓ HTML</button>
       <button class="btn btn-sm"
+              @click="store.exportResult()"
+              :disabled="!hasReport"
+              :title="hasReport ? '匯出壓測數據（含 10 秒時間軸，供整合報告使用；不含密碼）' : '測試完成後可匯出'">↓ 數據</button>
+      <button class="btn btn-sm"
               @click="store.exportE2eHtml()"
               :disabled="!store.canExportE2e"
               :title="store.canExportE2e ? '匯出端到端對照報告（民眾端 ↔ 座席端配對：漏接率、分配延遲、雙向音質）' : '民眾端完成且座席端執行過後可匯出（例如雙端啟動）'">↓ 對照</button>

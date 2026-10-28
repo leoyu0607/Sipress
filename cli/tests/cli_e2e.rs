@@ -346,6 +346,28 @@ fn html_report_is_written_to_report_dir() {
         content.contains("<html") && content.contains("ASR"),
         "HTML 報告內容不完整"
     );
+
+    // 原始數據檔：和 HTML 同一個時間戳記，含 10 秒時間軸與測試開始時間
+    let result = html[0]
+        .to_string_lossy()
+        .replace("_report.html", "_result.json");
+    let file = sipress_core::result_file::ResultFile::load(std::path::Path::new(&result))
+        .expect("應產生 result.json");
+    assert!(file.report.started_at.ends_with('Z'));
+    assert!(!file.report.fine_timeline.is_empty());
+    assert!(file
+        .report
+        .fine_timeline
+        .iter()
+        .all(|b| b.end_secs - b.start_secs <= 10.0 + 1e-9));
+    assert_eq!(
+        file.report
+            .fine_timeline
+            .iter()
+            .map(|b| b.initiated)
+            .sum::<u64>(),
+        file.report.calls_initiated
+    );
 }
 
 // ── 座席模式（--mode agent）────────────────────────────────────────

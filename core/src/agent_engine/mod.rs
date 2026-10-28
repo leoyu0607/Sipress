@@ -24,10 +24,10 @@ mod runner;
 
 use crate::config::{Config, FlowStep};
 use crate::engine::ProgressCallback;
-use crate::rtp::stats::{aggregate_snapshots, RtpStats, RtpStatsSnapshot};
+use crate::rtp::stats::{aggregate_snapshots, RtpInterval, RtpStats, RtpStatsSnapshot};
 use crate::sip_logger::{SipLogger, SipRole};
 use crate::stats::{DetailedStats, DialStat, FinalReport, LiveStats};
-use crate::timeline::TimelineRecorder;
+use crate::timeline::Timelines;
 use crate::trace::TraceLog;
 use anyhow::{Context, Result};
 use call::DialogCtx;
@@ -123,6 +123,12 @@ impl AgentEngine {
         // RTP 統計登記表（進行中 → 即時品質；已結束 → 最終報告）
         let rtp_registry: SharedRtpRegistry = Arc::default();
 
+        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
+        let timeline = Arc::new(std::sync::Mutex::new(Some(Timelines::new(
+            cfg.stats_interval_secs,
+            start,
+        ))));
+
         // ── 進度回報 task ──
         let engine_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(cb) = on_progress {
@@ -135,6 +141,7 @@ impl AgentEngine {
             let drain_grace = 3.0 + stop_grace.as_secs_f64();
             let unlimited = cfg.duration_secs == 0;
             let registry = Arc::clone(&rtp_registry);
+            let tl = Arc::clone(&timeline);
             tokio::spawn(async move {
                 let mut interval = time::interval(Duration::from_secs(1));
                 let mut cps_meter = crate::stats::RateMeter::new(start);
@@ -161,6 +168,9 @@ impl AgentEngine {
                         snap.rtp_sent_packets = Some(agg.sent_packets);
                         snap.rtp_recv_packets = Some(agg.recv_packets);
                     }
+                    if let Some(t) = tl.lock().unwrap().as_ref() {
+                        crate::engine::fill_latest_rtp(&mut snap, t);
+                    }
                     let done = snap.finished;
                     cb(snap, progress);
                     if !unlimited && elapsed >= duration + drain_grace {
@@ -173,11 +183,7 @@ impl AgentEngine {
             });
         }
 
-        // ── 分時段統計：每秒取樣，跨過時段邊界時結算（收尾時取出結算最後一段）──
-        let timeline = Arc::new(std::sync::Mutex::new(Some(TimelineRecorder::new(
-            cfg.stats_interval_secs,
-        ))));
-        if cfg.stats_interval_secs > 0 {
+        {
             let tl = Arc::clone(&timeline);
             let live = Arc::clone(&live);
             let detail = Arc::clone(&detail);
@@ -186,10 +192,22 @@ impl AgentEngine {
                 let mut interval = time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    let mos = src.lock().await.live_aggregate().map(|a| a.mos);
+                    let elapsed = start.elapsed().as_secs_f64();
+                    let Some(due) = tl.lock().unwrap().as_ref().map(|t| t.fine_due(elapsed)) else {
+                        break;
+                    };
+                    let (mos, rtp) = {
+                        let reg = src.lock().await;
+                        let rtp = if due {
+                            reg.take_intervals()
+                        } else {
+                            Vec::new()
+                        };
+                        (reg.live_aggregate().map(|a| a.mos), rtp)
+                    };
                     let mut guard = tl.lock().unwrap();
                     let Some(rec) = guard.as_mut() else { break };
-                    rec.tick(start.elapsed().as_secs_f64(), &live, &detail, mos);
+                    rec.tick(elapsed, &live, &detail, mos, rtp);
                 }
             });
         }
@@ -209,6 +227,7 @@ impl AgentEngine {
             rtp_registry: Arc::clone(&rtp_registry),
             traces: Arc::clone(&self.traces),
             dials: std::sync::Mutex::default(),
+            timeline: Arc::clone(&timeline),
         });
         // 第 i 個帳號延後 i × 間隔才開始註冊，避免大量 REGISTER 同時湧入交換機
         let mut handles = Vec::new();
@@ -256,7 +275,10 @@ impl AgentEngine {
         engine_finished.store(true, std::sync::atomic::Ordering::Relaxed);
 
         // ── 收集 RTP 統計（已結束 + 收尾時仍在進行的通話）──
-        let rtp_final = rtp_registry.lock().await.final_aggregate();
+        let (rtp_final, last_rtp) = {
+            let reg = rtp_registry.lock().await;
+            (reg.final_aggregate(), reg.take_intervals())
+        };
 
         // ── 產生最終報告 ──
         let snap = live.snapshot();
@@ -271,14 +293,10 @@ impl AgentEngine {
             elapsed,
         ));
 
-        let timeline = timeline
-            .lock()
-            .unwrap()
-            .take()
-            .map(|r| r.finish(elapsed, &live, &detail))
-            .unwrap_or_default();
         let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_final.as_ref());
-        report.timeline = timeline;
+        if let Some(t) = timeline.lock().unwrap().take() {
+            t.finish(elapsed, &live, &detail, last_rtp, &mut report);
+        }
         report.agent_dials = shared.dials.lock().unwrap().clone();
         Ok(report)
     }
@@ -297,6 +315,8 @@ struct Shared {
     traces: Arc<TraceLog>,
     /// 座席流程每個撥碼範本的結果（依第一次出現的順序）
     dials: std::sync::Mutex<Vec<DialStat>>,
+    /// 分時段統計：通話結束時送入最後一段 RTP 增量
+    timeline: Arc<std::sync::Mutex<Option<Timelines>>>,
 }
 
 impl Shared {
@@ -329,6 +349,9 @@ impl Shared {
     async fn stop_call_rtp(&self, call_id: &str, ctx: &mut DialogCtx, ext: &str) {
         if let Some(rtp) = ctx.rtp_session.take() {
             let snap = rtp.stop();
+            if let Some(t) = self.timeline.lock().unwrap().as_mut() {
+                t.add_rtp(rtp.stats.take_interval());
+            }
             self.traces
                 .update(&trace_key(ext, call_id), |t| t.set_rtp(&snap));
             let mut reg = self.rtp_registry.lock().await;
@@ -355,6 +378,11 @@ impl RtpRegistry {
     fn live_aggregate(&self) -> Option<RtpStatsSnapshot> {
         let snaps: Vec<_> = self.active.values().map(|s| s.snapshot()).collect();
         aggregate_snapshots(&snaps)
+    }
+
+    /// 進行中通話各自取出上次以後的 RTP 增量（只有分時段統計會呼叫）
+    fn take_intervals(&self) -> Vec<RtpInterval> {
+        self.active.values().map(|s| s.take_interval()).collect()
     }
 
     /// 最終報告：已結束通話 + 仍在進行的通話

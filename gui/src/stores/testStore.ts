@@ -213,12 +213,18 @@ export interface Metrics {
 export interface RtpMetrics {
   enabled: boolean
   mos: number
+  /** MOS（jitter buffer 200 ms 模擬，判定用）；沒有時為 null */
+  mosJb200: number | null
   packetLoss: number
   jitter: number
   packetsSent: number
   packetsRecv: number
   outOfOrder: number
+  /** 數值的範圍：recent = 近 10 秒、active = 進行中通話累計（第一個 10 秒前）、total = 整場 */
+  scope: RtpScope
 }
+
+export type RtpScope = 'recent' | 'active' | 'total'
 
 export interface CallStates {
   initiated: number
@@ -277,6 +283,11 @@ export interface RustSnapshot {
   rtp_jitter_ms:     number | null
   rtp_sent_packets:  number | null
   rtp_recv_packets:  number | null
+  // 近 10 秒的 RTP 品質（最近一個結算的 10 秒時段；null = 尚未結算或該段沒有 RTP）
+  rtp_mos_10s?:       number | null
+  rtp_mos_jb200_10s?: number | null
+  rtp_loss_pct_10s?:  number | null
+  rtp_jitter_ms_10s?: number | null
   // 目前為止的 PDD 平均 / 中位數（null = 尚無樣本）；畫面使用中位數，與最終報告的 p50 同口徑
   pdd_avg_ms:        number | null
   pdd_p50_ms:        number | null
@@ -311,6 +322,8 @@ export interface RustReport {
   rtp_sent:         number | null
   rtp_recv:         number | null
   rtp_out_of_order: number | null
+  mos_jb50?:        number | null
+  mos_jb200?:       number | null
   fail_codes:       Record<string, number>
   // 座席端：座席流程每個撥碼的結果（沒有流程時不存在）
   agent_dials?:     { code: string; label: string; ok: number; failed: number; fail_codes: Record<string, number> }[]
@@ -361,7 +374,7 @@ function newSession(): RunSession {
     seriesTick: 0,
     callStates: { initiated:0, answered:0, completed:0, failed:0, timeout:0 },
     respCodes: {},
-    rtpMetrics: { enabled:false, mos:0, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0 },
+    rtpMetrics: { enabled:false, mos:0, mosJb200:null, packetLoss:0, jitter:0, packetsSent:0, packetsRecv:0, outOfOrder:0, scope:'active' },
     agents: { registered: 0, total: 0 },
   }
 }
@@ -810,17 +823,21 @@ export const useTestStore = defineStore('test', () => {
     }
 
     // 即時 RTP 品質更新
+    // 優先用近 10 秒（只算該段新增的封包）；第一個 10 秒時段結算前用進行中通話的累計值
     if (snap.rtp_mos !== null && snap.rtp_mos !== undefined) {
+      const recent = snap.rtp_mos_10s !== null && snap.rtp_mos_10s !== undefined
       r.rtpMetrics = {
         enabled:     true,
-        mos:         snap.rtp_mos,
-        packetLoss:  snap.rtp_loss_pct ?? 0,
-        jitter:      snap.rtp_jitter_ms ?? 0,
+        mos:         recent ? snap.rtp_mos_10s! : snap.rtp_mos,
+        mosJb200:    recent ? snap.rtp_mos_jb200_10s ?? null : null,
+        packetLoss:  (recent ? snap.rtp_loss_pct_10s : snap.rtp_loss_pct) ?? 0,
+        jitter:      (recent ? snap.rtp_jitter_ms_10s : snap.rtp_jitter_ms) ?? 0,
         packetsSent: snap.rtp_sent_packets ?? 0,
         packetsRecv: snap.rtp_recv_packets ?? 0,
         outOfOrder:  0,
+        scope:       recent ? 'recent' : 'active',
       }
-      pushSeries(r, 'mos', snap.rtp_mos)
+      pushSeries(r, 'mos', r.rtpMetrics.mos)
     }
   }
 
@@ -857,11 +874,13 @@ export const useTestStore = defineStore('test', () => {
         r.rtpMetrics = {
           enabled:     true,
           mos:         report.mos ?? 0,
+          mosJb200:    report.mos_jb200 ?? null,
           packetLoss:  report.loss_rate_pct ?? 0,
           jitter:      report.jitter_ms ?? 0,
           packetsSent: report.rtp_sent ?? 0,
           packetsRecv: report.rtp_recv ?? 0,
           outOfOrder:  report.rtp_out_of_order ?? 0,
+          scope:       'total',
         }
         pushSeries(r, 'mos', report.mos ?? 0)
       }
@@ -1275,6 +1294,16 @@ export const useTestStore = defineStore('test', () => {
     })
   }
 
+  /** 壓測數據檔（整合報告讀取；同 CLI 的 <時間>_result.json，不含密碼與帳號清單） */
+  function exportResult() {
+    return exportWith('壓測數據', async () => {
+      const ts   = fileTs()
+      const mode = config.value.mode
+      const json = await invoke<string>('get_result_json', { mode })
+      return saveTextFile(`sipress_${mode}_${ts}_result.json`, 'json', 'JSON', json + '\n')
+    })
+  }
+
   function exportHtml() {
     return exportWith('HTML 報告', async () => {
       const ts   = fileTs()
@@ -1295,7 +1324,7 @@ export const useTestStore = defineStore('test', () => {
     importAccountText, parseAccountText,
     registerAccount, registerAll,
     startTest, stopTest, startBoth, stopAll,
-    exportJson, exportCsv, exportHtml, exportAccountsCsv, exportE2eHtml, canExportE2e,
+    exportJson, exportCsv, exportHtml, exportResult, exportAccountsCsv, exportE2eHtml, canExportE2e,
     exportFlowJson, runAgentCode,
   }
 })

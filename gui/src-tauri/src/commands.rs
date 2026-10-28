@@ -7,6 +7,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
     registrar::{register_once, RegisterResult},
+    result_file::ResultFile,
     rtp::audio::AudioSource,
     stats::{FinalReport, StatsSnapshot},
     trace::TraceLog,
@@ -34,6 +35,8 @@ pub struct Session {
     pub running: AtomicBool,
     /// 最近一次執行的每通追蹤紀錄（端到端對照用；執行中即時更新，下次啟動時換新）
     pub traces: Mutex<Option<Arc<TraceLog>>>,
+    /// 最近一次執行的設定（匯出壓測數據檔用）
+    pub config: Mutex<Option<Config>>,
 }
 
 impl Session {
@@ -117,6 +120,7 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
     *state.report.lock().unwrap() = None;
     *state.error.lock().unwrap() = None;
     *state.traces.lock().unwrap() = None;
+    *state.config.lock().unwrap() = Some(config.clone());
 
     let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
     *state.stop_tx.lock().unwrap() = Some(stop_tx);
@@ -266,6 +270,20 @@ pub fn get_html_report(
         .clone()
         .ok_or_else(|| "尚無測試結果，請先完成或停止一次壓測".to_string())?;
     Ok(HtmlReporter::render(&report, &timestamp, &server_addr))
+}
+
+/// 壓測數據檔（`ResultFile` 的 JSON，整合報告讀取；不含密碼與帳號清單）
+#[tauri::command]
+pub fn get_result_json(state: State<'_, Arc<AppState>>, mode: Mode) -> Result<String, String> {
+    let session = state.session(&mode);
+    let report = session
+        .report
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "尚無測試結果，請先完成或停止一次壓測".to_string())?;
+    let config = session.config.lock().unwrap().clone().unwrap_or_default();
+    serde_json::to_string_pretty(&ResultFile::new(&config, &report)).map_err(|e| e.to_string())
 }
 
 /// 將文字內容寫入使用者在「另存新檔」對話框選定的路徑
@@ -680,6 +698,10 @@ mod tests {
         snap.rtp_recv_packets = Some(4975);
         snap.pdd_avg_ms = Some(150.0);
         snap.pdd_p50_ms = Some(120.0);
+        snap.rtp_mos_10s = Some(4.2);
+        snap.rtp_mos_jb200_10s = Some(4.0);
+        snap.rtp_loss_pct_10s = Some(0.3);
+        snap.rtp_jitter_ms_10s = Some(10.0);
         snap.cps = 9.5;
         check_fixture("snapshot.json", serde_json::to_value(&snap).unwrap());
     }
@@ -724,8 +746,13 @@ mod tests {
             mos: 3.9,
             out_of_order: 3,
             duplicates: 1,
+            late50_packets: 40,
+            late200_packets: 5,
+            mos_jb50: 3.4,
+            mos_jb200: 3.8,
         };
-        let report = FinalReport::build(&live.snapshot(), &detail, 20.0, Some(&rtp));
+        let mut report = FinalReport::build(&live.snapshot(), &detail, 20.0, Some(&rtp));
+        report.started_at = "2026-10-28T05:00:00Z".into();
         check_fixture("report.json", serde_json::to_value(&report).unwrap());
     }
 }
