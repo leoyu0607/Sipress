@@ -694,6 +694,12 @@ impl HostView<'_> {
         for e in &h.errors {
             out.push_str(&format!(r#"<p class="note">{}</p>"#, esc(e)));
         }
+        if h.invalid_values > 0 {
+            out.push_str(&format!(
+                r#"<p class="note">略過 {} 個不合理的數值（非數字、負數或使用率超過 100%），當作沒有資料。</p>"#,
+                h.invalid_values
+            ));
+        }
         if self.samples.is_empty() {
             out.push_str(r#"<p class="note">測試期間沒有這台主機的效能資料：請確認匯出的時間範圍涵蓋測試時間。</p>"#);
             return out;
@@ -1557,5 +1563,43 @@ mod tests {
         assert!(html.contains("Disk Queue（db_01 sda）"));
         assert!(html.contains("agent 版本不支援"));
         assert!(html.contains("測試期間沒有這台主機的效能資料"));
+    }
+
+    #[test]
+    fn host_text_is_escaped() {
+        use crate::host_metrics::HostSystem;
+        let f = file((0..3).map(|i| bucket(i, 4.3, 0.1)).collect(), &[]);
+        let t0 = parse_rfc3339(&f.report.started_at).unwrap();
+        let evil = "<script>alert(1)</script>";
+        let hm = HostMetrics {
+            hosts: vec![Host {
+                name: evil.into(),
+                agent_version: evil.into(),
+                system: Some(HostSystem {
+                    os: evil.into(),
+                    collected_at: evil.into(),
+                    ..Default::default()
+                }),
+                errors: vec![evil.into()],
+                samples: vec![HostSample {
+                    time: t0 + 10,
+                    cpu_pct: Some(10.0),
+                    disk_queue: [(evil.to_string(), 0.5)].into(),
+                    ..Default::default()
+                }],
+                invalid_values: 3,
+            }],
+        };
+        let html = IntegratedReport::render(
+            &f,
+            &ReportOptions {
+                hosts: Some(hm),
+                notes: evil.into(),
+                ..Default::default()
+            },
+        );
+        assert!(!html.contains(evil), "外部資料的文字都要跳脫");
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("略過 3 個不合理的數值"));
     }
 }

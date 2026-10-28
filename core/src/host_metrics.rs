@@ -3,12 +3,30 @@
 //! 格式見主機 agent 的匯出文件：`manifest.json`（主機規格）+ `metrics.csv`（10 秒一列，
 //! 欄位 `<主機>_<指標>`，空白 = 沒有資料）。只取整合報告用到的指標：
 //! `host_cpu`、`host_mem_pct`、`disk_queue_<磁碟>`、`disk_util_<磁碟>`（新版 agent 才有）。
+//!
+//! 檔案來自使用者，可能是錯的或惡意的：
+//! - ZIP 只把兩個檔案讀進記憶體，不解壓到磁碟（路徑穿越、符號連結、執行檔都碰不到）
+//! - 讀取時限制實際讀到的大小（不信任 ZIP 標頭寫的大小），擋壓縮炸彈與超大檔案
+//! - 限制主機、磁碟、欄位、列數；不合理的數值（NaN、超出範圍）當缺值並計數
+//! - 文字欄位放進 HTML 前由整合報告跳脫
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
+
+/// 讀取上限：檔案本身與解壓後的內容（超過就拒絕，不截斷）
+const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_CSV_BYTES: u64 = 256 * 1024 * 1024;
+/// 數量上限：一份匯出的主機數、每台主機的磁碟數、CSV 欄位數與資料列數
+const MAX_HOSTS: usize = 50;
+const MAX_DISKS_PER_HOST: usize = 32;
+const MAX_COLUMNS: usize = 5_000;
+const MAX_ROWS: usize = 1_000_000;
+/// 支援的匯出格式版本
+const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Default)]
 pub struct HostMetrics {
@@ -25,6 +43,8 @@ pub struct Host {
     /// 取得規格或效能紀錄失敗的原因
     pub errors: Vec<String>,
     pub samples: Vec<HostSample>,
+    /// 不合理而略過的數值個數（NaN、無限大、超出範圍）
+    pub invalid_values: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,6 +98,8 @@ pub struct Filesystem {
 #[derive(Deserialize)]
 struct Manifest {
     #[serde(default)]
+    format_version: Option<u32>,
+    #[serde(default)]
     hosts: Vec<ManifestHost>,
 }
 
@@ -95,7 +117,20 @@ struct ManifestHost {
 impl HostMetrics {
     /// 讀 ZIP（含 manifest.json）或單台主機的 metrics.csv（欄位沒有主機前綴）
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path).with_context(|| format!("無法讀取 {}", path.display()))?;
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("無法讀取 {}", path.display()))?
+            .len();
+        if size > MAX_FILE_BYTES {
+            bail!(
+                "{} 太大（{} MB，上限 {} MB）",
+                path.display(),
+                size / 1024 / 1024,
+                MAX_FILE_BYTES / 1024 / 1024
+            );
+        }
+        let file =
+            std::fs::File::open(path).with_context(|| format!("無法讀取 {}", path.display()))?;
+        let bytes = read_limited(file, MAX_FILE_BYTES, "檔案")?;
         if bytes.starts_with(b"PK") {
             Self::from_zip(&bytes).with_context(|| format!("{} 格式錯誤", path.display()))
         } else {
@@ -108,17 +143,36 @@ impl HostMetrics {
     }
 
     fn from_zip(bytes: &[u8]) -> Result<Self> {
-        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-        let mut read = |name: &str| -> Result<String> {
-            let mut f = zip
-                .by_name(name)
-                .with_context(|| format!("ZIP 內沒有 {}", name))?;
-            let mut s = String::new();
-            f.read_to_string(&mut s)?;
-            Ok(s)
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("不是有效的 ZIP 檔")?;
+        // 只讀這兩個檔案，其他內容一律忽略；不解壓到磁碟
+        let mut read = |name: &str, limit: u64| -> Result<String> {
+            let f = zip.by_name(name).with_context(|| {
+                format!("ZIP 內沒有 {}（請用主機 agent 的「匯出分析資料」）", name)
+            })?;
+            if f.size() > limit {
+                bail!("{} 太大（解壓後 {} bytes，上限 {}）", name, f.size(), limit);
+            }
+            let bytes = read_limited(f, limit, name)?;
+            String::from_utf8(bytes).with_context(|| format!("{} 不是 UTF-8 文字", name))
         };
-        let manifest: Manifest = serde_json::from_str(&read("manifest.json")?)?;
-        let csv = read("metrics.csv")?;
+        let manifest: Manifest = serde_json::from_str(&read("manifest.json", MAX_MANIFEST_BYTES)?)
+            .context("manifest.json 格式錯誤")?;
+        if let Some(v) = manifest.format_version.filter(|v| *v > FORMAT_VERSION) {
+            bail!(
+                "匯出格式版本 {} 比這個 sipress 支援的 {} 新，請更新 sipress",
+                v,
+                FORMAT_VERSION
+            );
+        }
+        if manifest.hosts.len() > MAX_HOSTS {
+            bail!(
+                "主機太多（{} 台，上限 {} 台），請在主控台只勾選受測主機再匯出",
+                manifest.hosts.len(),
+                MAX_HOSTS
+            );
+        }
+        let csv = read("metrics.csv", MAX_CSV_BYTES)?;
         let mut hosts: Vec<Host> = manifest
             .hosts
             .into_iter()
@@ -127,27 +181,53 @@ impl HostMetrics {
                 agent_version: h.agent_version,
                 system: h.system,
                 errors: h.errors,
-                samples: Vec::new(),
+                ..Default::default()
             })
             .collect();
         let names: Vec<String> = hosts.iter().map(|h| h.name.clone()).collect();
         let mut by_host = parse_csv(&csv, |col| split_prefixed(col, &names))?;
         for h in &mut hosts {
-            h.samples = by_host.remove(&h.name).unwrap_or_default();
+            (h.samples, h.invalid_values) = by_host.remove(&h.name).unwrap_or_default();
         }
         Ok(Self { hosts })
     }
 
     fn from_single_csv(csv: &str, name: &str) -> Result<Self> {
         let mut by_host = parse_csv(csv, |col| Some((String::new(), col.to_string())))?;
+        let (samples, invalid_values) = by_host.remove("").unwrap_or_default();
         Ok(Self {
             hosts: vec![Host {
                 name: name.to_string(),
-                samples: by_host.remove("").unwrap_or_default(),
+                samples,
+                invalid_values,
                 ..Default::default()
             }],
         })
     }
+}
+
+/// 最多讀 `limit` bytes；實際內容超過就拒絕（ZIP 標頭寫的大小可以造假，所以邊讀邊算）
+fn read_limited(r: impl Read, limit: u64, what: &str) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    r.take(limit + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > limit {
+        bail!("{} 太大（超過 {} MB）", what, limit / 1024 / 1024);
+    }
+    Ok(buf)
+}
+
+/// 數值的合理範圍；超出範圍視為錯誤資料
+fn valid(field_is_pct: bool, v: f64) -> bool {
+    v.is_finite() && v >= 0.0 && if field_is_pct { v <= 100.0 } else { v < 1e6 }
+}
+
+/// 錯誤訊息中引用的內容只取開頭，避免超長的一列塞滿訊息
+fn snippet(s: &str) -> String {
+    let mut out: String = s.chars().take(80).collect();
+    if out.len() < s.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// `<主機>_<指標>` → (主機, 指標)；主機名稱本身可能含 `_`，所以用最長的已知名稱比對前綴
@@ -160,16 +240,23 @@ fn split_prefixed(col: &str, names: &[String]) -> Option<(String, String)> {
         .map(|n| (n.clone(), col[n.len() + 1..].to_string()))
 }
 
-fn parse_csv(
-    csv: &str,
-    split: impl Fn(&str) -> Option<(String, String)>,
-) -> Result<BTreeMap<String, Vec<HostSample>>> {
+/// 每台主機的（樣本, 略過的不合理數值個數）
+type ParsedHosts = BTreeMap<String, (Vec<HostSample>, u64)>;
+
+fn parse_csv(csv: &str, split: impl Fn(&str) -> Option<(String, String)>) -> Result<ParsedHosts> {
     let mut lines = csv.trim_start_matches('\u{feff}').lines();
     let header: Vec<&str> = lines
         .next()
         .context("metrics.csv 是空的")?
         .split(',')
         .collect();
+    if header.len() > MAX_COLUMNS {
+        bail!(
+            "metrics.csv 欄位太多（{} 欄，上限 {} 欄）",
+            header.len(),
+            MAX_COLUMNS
+        );
+    }
     let time_col = header
         .iter()
         .position(|h| h.trim() == "time")
@@ -205,17 +292,46 @@ fn parse_csv(
     if cols.is_empty() {
         bail!("metrics.csv 沒有 host_cpu / host_mem_pct / disk_queue_* 欄位");
     }
+    let mut disks: BTreeMap<&str, std::collections::BTreeSet<&str>> = BTreeMap::new();
+    for (_, host, field) in &cols {
+        if let Field::Queue(d) | Field::Util(d) = field {
+            disks.entry(host).or_default().insert(d);
+        }
+    }
+    if let Some((host, d)) = disks.iter().find(|(_, d)| d.len() > MAX_DISKS_PER_HOST) {
+        bail!(
+            "主機 {} 的磁碟太多（{} 顆，上限 {} 顆）",
+            snippet(host),
+            d.len(),
+            MAX_DISKS_PER_HOST
+        );
+    }
 
-    let mut out: BTreeMap<String, Vec<HostSample>> = BTreeMap::new();
-    for line in lines.filter(|l| !l.trim().is_empty()) {
+    let mut out = ParsedHosts::new();
+    for (n, line) in lines.filter(|l| !l.trim().is_empty()).enumerate() {
+        if n >= MAX_ROWS {
+            bail!(
+                "metrics.csv 資料太多（超過 {} 列），請縮短匯出的時間範圍",
+                MAX_ROWS
+            );
+        }
         let cells: Vec<&str> = line.split(',').collect();
         let time = parse_rfc3339(cells.get(time_col).copied().unwrap_or(""))
-            .with_context(|| format!("時間格式錯誤：{}", line))?;
+            .with_context(|| format!("時間格式錯誤：{}", snippet(line)))?;
         let mut row: BTreeMap<&str, HostSample> = BTreeMap::new();
         for (i, host, field) in &cols {
-            let Some(v) = cells.get(*i).and_then(|c| c.trim().parse::<f64>().ok()) else {
+            let Some(v) = cells
+                .get(*i)
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .and_then(|c| c.parse::<f64>().ok())
+            else {
                 continue;
             };
+            if !valid(matches!(field, Field::Cpu | Field::Mem | Field::Util(_)), v) {
+                out.entry(host.clone()).or_default().1 += 1;
+                continue;
+            }
             let s = row.entry(host.as_str()).or_insert_with(|| HostSample {
                 time,
                 ..Default::default()
@@ -232,7 +348,7 @@ fn parse_csv(
             }
         }
         for (host, s) in row {
-            out.entry(host.to_string()).or_default().push(s);
+            out.entry(host.to_string()).or_default().0.push(s);
         }
     }
     Ok(out)
@@ -355,5 +471,83 @@ mod tests {
         );
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1709164800));
         assert_eq!(parse_rfc3339("not a time"), None);
+    }
+
+    #[test]
+    fn rejects_oversized_content_without_reading_it_all() {
+        // 讀取上限以實際讀到的內容為準
+        assert!(read_limited(&[0u8; 10][..], 10, "x").is_ok());
+        assert!(read_limited(&[0u8; 11][..], 10, "x").is_err());
+        // manifest.json 解壓後 2 MB（超過 1 MB），壓縮後只有幾 KB
+        let padded = format!(r#"{{"hosts":[]{}}}"#, " ".repeat(2 * 1024 * 1024));
+        let z = zip(&[("manifest.json", &padded), ("metrics.csv", CSV)]);
+        assert!(z.len() < 64 * 1024);
+        let err = HostMetrics::from_zip(&z).unwrap_err().to_string();
+        assert!(err.contains("manifest.json 太大"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_unexpected_structure() {
+        let err =
+            |files: &[(&str, &str)]| HostMetrics::from_zip(&zip(files)).unwrap_err().to_string();
+        assert!(err(&[("metrics.csv", CSV)]).contains("ZIP 內沒有 manifest.json"));
+        assert!(err(&[
+            ("manifest.json", r#"{"format_version":2,"hosts":[]}"#),
+            ("metrics.csv", CSV)
+        ])
+        .contains("格式版本 2"));
+        let many_hosts = format!(
+            r#"{{"hosts":[{}]}}"#,
+            (0..51)
+                .map(|i| format!(r#"{{"name":"h{}"}}"#, i))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(err(&[("manifest.json", &many_hosts), ("metrics.csv", CSV)]).contains("主機太多"));
+        assert!(HostMetrics::from_zip(b"PK\x03\x04 not a zip").is_err());
+
+        let wide = format!(
+            "time,{}\n",
+            (0..5001)
+                .map(|i| format!("c{}", i))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(HostMetrics::from_single_csv(&wide, "h")
+            .unwrap_err()
+            .to_string()
+            .contains("欄位太多"));
+        let disks = format!(
+            "time,{}\n",
+            (0..33)
+                .map(|i| format!("disk_queue_d{}", i))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(HostMetrics::from_single_csv(&disks, "h")
+            .unwrap_err()
+            .to_string()
+            .contains("磁碟太多"));
+        let long_line = format!("time,host_cpu\n{},1\n", "x".repeat(10_000));
+        let msg = HostMetrics::from_single_csv(&long_line, "h")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.len() < 400, "錯誤訊息不應包含整列內容");
+    }
+
+    #[test]
+    fn skips_unreasonable_values() {
+        let csv = "time,host_cpu,host_mem_pct,disk_queue_sda,disk_util_sda
+2026-10-28T12:48:20+08:00,NaN,inf,-1,101
+2026-10-28T12:48:30+08:00,150,50,3.5,40
+2026-10-28T12:48:40+08:00,,,,
+";
+        let m = HostMetrics::from_single_csv(csv, "h").unwrap();
+        let h = &m.hosts[0];
+        assert_eq!(h.invalid_values, 5);
+        assert_eq!(h.samples.len(), 1, "第一列全部不合理、第三列全空");
+        let s = &h.samples[0];
+        assert_eq!((s.cpu_pct, s.mem_pct), (None, Some(50.0)));
+        assert_eq!((s.disk_queue["sda"], s.disk_util["sda"]), (3.5, 40.0));
     }
 }
