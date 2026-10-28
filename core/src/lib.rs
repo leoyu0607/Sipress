@@ -3,6 +3,7 @@ pub mod config;
 pub mod correlate;
 pub mod correlation_html;
 pub mod engine;
+pub mod host_metrics;
 pub mod html_reporter;
 pub mod integrated_report;
 pub mod net;

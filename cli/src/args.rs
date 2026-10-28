@@ -218,6 +218,11 @@ pub struct Args {
     #[arg(long = "integrate", value_name = "RESULT_JSON")]
     pub integrate: Option<std::path::PathBuf>,
 
+    /// 整合報告：受測主機的效能資料（主機 agent 主控台「匯出分析資料」的 ZIP，
+    /// 或單台主機的 metrics.csv）；加入 CPU、記憶體、Disk Queue 圖表與主機規格
+    #[arg(long = "host-metrics", value_name = "ZIP_OR_CSV")]
+    pub host_metrics: Option<std::path::PathBuf>,
+
     /// 整合報告的判定門檻（JSON，未寫的欄位用預設值）：
     /// `{"cpu_pct":70,"mem_pct":80,"disk_queue":2,"jitter_ms":30,"loss_pct":0.5,"mos":4.0}`
     #[arg(long = "thresholds", value_name = "JSON")]

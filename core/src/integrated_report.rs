@@ -4,6 +4,7 @@
 //! 點數過多時合併相鄰時段；合併時品質指標取較差的值（MOS 取低、掉包與 Jitter 取高）。
 
 use crate::correlation_html::esc;
+use crate::host_metrics::{parse_rfc3339, Host, HostMetrics, HostSample};
 use crate::result_file::ResultFile;
 use crate::rtp::stats::CallQuality;
 use crate::thresholds::Thresholds;
@@ -29,19 +30,25 @@ impl IntegratedReport {
     pub fn save(
         file: &ResultFile,
         th: &Thresholds,
+        hosts: Option<&HostMetrics>,
         output_dir: &str,
         timestamp: &str,
     ) -> Result<PathBuf> {
         fs::create_dir_all(output_dir)?;
         let path = PathBuf::from(output_dir).join(format!("{}_integrated_report.html", timestamp));
-        fs::write(&path, Self::render(file, th))?;
+        fs::write(&path, Self::render(file, th, hosts))?;
         Ok(path)
     }
 
-    pub fn render(file: &ResultFile, th: &Thresholds) -> String {
+    /// `hosts` = 主機 agent 匯出的效能資料（沒有時不列主機資源）
+    pub fn render(file: &ResultFile, th: &Thresholds, hosts: Option<&HostMetrics>) -> String {
         let r = &file.report;
         let points = merge(&r.fine_timeline);
-        let checks = checks(file, th);
+        let hosts: Vec<HostView> = hosts.map_or(Vec::new(), |h| host_views(file, h));
+        let mut checks = checks(file, th);
+        for h in &hosts {
+            checks.extend(h.checks(th));
+        }
         let mut out = String::with_capacity(128 * 1024);
         let _ = write!(
             out,
@@ -117,7 +124,7 @@ impl IntegratedReport {
 "#,
             bucket = duration_label(bucket),
             c1 = Chart {
-                title: "並發通話數",
+                title: "並發通話數".into(),
                 unit: "通",
                 y_min: 0.0,
                 y_max: None,
@@ -127,10 +134,12 @@ impl IntegratedReport {
                     points.iter().map(|p| Some(p.active)).collect()
                 )],
                 limit: None,
+                right: None,
+                summary: None,
             }
             .svg(&x),
             c2 = Chart {
-                title: "每秒發起通話數（CPS）",
+                title: "每秒發起通話數（CPS）".into(),
                 unit: "",
                 y_min: 0.0,
                 y_max: None,
@@ -140,10 +149,12 @@ impl IntegratedReport {
                     points.iter().map(|p| Some(p.cps)).collect()
                 )],
                 limit: None,
+                right: None,
+                summary: None,
             }
             .svg(&x),
             c3 = Chart {
-                title: "接通率（ASR）",
+                title: "接通率（ASR）".into(),
                 unit: "%",
                 y_min: 0.0,
                 y_max: Some(100.0),
@@ -153,6 +164,8 @@ impl IntegratedReport {
                     points.iter().map(|p| p.asr).collect()
                 )],
                 limit: None,
+                right: None,
+                summary: None,
             }
             .svg(&x),
         );
@@ -171,7 +184,7 @@ impl IntegratedReport {
 </section>
 "#,
                 c1 = Chart {
-                    title: "MOS",
+                    title: "MOS".into(),
                     unit: "",
                     y_min: 1.0,
                     y_max: Some(5.0),
@@ -189,10 +202,12 @@ impl IntegratedReport {
                         Series::new("MOS（E-Model）平均", C_SUB2, rtp(|r| r.mos_avg)),
                     ],
                     limit: Some(Limit::Min(th.mos)),
+                    right: None,
+                    summary: None,
                 }
                 .svg(&x),
                 c2 = Chart {
-                    title: "掉包率",
+                    title: "掉包率".into(),
                     unit: "%",
                     y_min: 0.0,
                     y_max: None,
@@ -201,10 +216,12 @@ impl IntegratedReport {
                         Series::new("最嚴重的單通電話", C_SUB2, rtp(|r| r.loss_max_pct)),
                     ],
                     limit: Some(Limit::Max(th.loss_pct)),
+                    right: None,
+                    summary: None,
                 }
                 .svg(&x),
                 c3 = Chart {
-                    title: "Jitter",
+                    title: "Jitter".into(),
                     unit: "ms",
                     y_min: 0.0,
                     y_max: None,
@@ -213,6 +230,8 @@ impl IntegratedReport {
                         Series::new("每通電話的 P95", C_SUB, rtp(|r| r.jitter_p95_ms)),
                     ],
                     limit: Some(Limit::Max(th.jitter_ms)),
+                    right: None,
+                    summary: None,
                 }
                 .svg(&x),
             );
@@ -223,16 +242,31 @@ impl IntegratedReport {
             );
         }
 
+        // ── 5. 主機資源 ──
+        if !hosts.is_empty() {
+            out.push_str(
+                r#"<section class="card">
+<h2>5. 受測主機資源</h2>
+<p class="hint">資料來源：主機 agent 匯出的效能紀錄（10 秒取樣），只取測試期間的資料。判定看 10 秒取樣的 P95；10 秒的短暫尖峰沒有被平均掉，最高值通常比 1 分鐘取樣的監控工具（例如 Zabbix）高。</p>
+"#,
+            );
+            for h in &hosts {
+                out.push_str(&h.section(th));
+            }
+            out.push_str("</section>\n");
+        }
+
         let _ = write!(
             out,
             r#"<section class="card defs">
-<h2>5. 指標說明</h2>
+<h2>{n}. 指標說明</h2>
 {DEFINITIONS}
 </section>
 </main>
 <footer class="footer">sipress v{ver}（數據由 v{src} 產生）</footer>
 <script>{SCRIPT}</script>
 </body></html>"#,
+            n = if hosts.is_empty() { 5 } else { 6 },
             ver = env!("CARGO_PKG_VERSION"),
             src = esc(&file.sipress_version),
         );
@@ -268,7 +302,7 @@ impl Verdict {
 }
 
 struct Check {
-    name: &'static str,
+    name: String,
     value: Option<f64>,
     unit: &'static str,
     limit: Limit,
@@ -316,14 +350,14 @@ fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
     });
     vec![
         Check {
-            name: "MOS（jitter buffer 200 ms 模擬）",
+            name: "MOS（jitter buffer 200 ms 模擬）".into(),
             value: mos_p5,
             unit: "",
             limit: Limit::Min(th.mos),
             note: mos_note,
         },
         Check {
-            name: "掉包率（整體）",
+            name: "掉包率（整體）".into(),
             value: r.loss_rate_pct,
             unit: "%",
             limit: Limit::Max(th.loss_pct),
@@ -332,7 +366,7 @@ fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
             }),
         },
         Check {
-            name: "Jitter",
+            name: "Jitter".into(),
             value: q.map(|q| q.jitter_p95_ms),
             unit: " ms",
             limit: Limit::Max(th.jitter_ms),
@@ -453,6 +487,267 @@ fn conditions(file: &ResultFile) -> Vec<(&'static str, String)> {
     rows
 }
 
+// ── 主機資源 ──────────────────────────────────────────────────────
+
+/// 一台主機在測試期間的資料
+struct HostView<'a> {
+    host: &'a Host,
+    /// 測試期間的樣本與相對測試開始的秒數
+    samples: Vec<(f64, &'a HostSample)>,
+    disks: Vec<String>,
+}
+
+fn host_views<'a>(file: &ResultFile, hm: &'a HostMetrics) -> Vec<HostView<'a>> {
+    let start = parse_rfc3339(&file.report.started_at);
+    let dur = file.report.duration_secs;
+    hm.hosts
+        .iter()
+        .map(|host| {
+            let samples: Vec<(f64, &HostSample)> = match start {
+                Some(t0) => host
+                    .samples
+                    .iter()
+                    .map(|s| ((s.time - t0) as f64, s))
+                    .filter(|(t, _)| *t >= -10.0 && *t <= dur + 10.0)
+                    .collect(),
+                None => Vec::new(),
+            };
+            let mut disks: Vec<String> = samples
+                .iter()
+                .flat_map(|(_, s)| s.disk_queue.keys().chain(s.disk_util.keys()))
+                .cloned()
+                .collect();
+            disks.sort();
+            disks.dedup();
+            HostView {
+                host,
+                samples,
+                disks,
+            }
+        })
+        .collect()
+}
+
+/// 依點數上限把 10 秒樣本分組
+fn host_groups<'a, 'b>(samples: &'b [(f64, &'a HostSample)]) -> Vec<&'b [(f64, &'a HostSample)]> {
+    let k = samples.len().div_ceil(MAX_POINTS).max(1);
+    samples.chunks(k).collect()
+}
+
+fn mean(v: impl Iterator<Item = f64>) -> Option<f64> {
+    let (n, sum) = v.fold((0usize, 0.0), |(n, s), x| (n + 1, s + x));
+    (n > 0).then(|| sum / n as f64)
+}
+
+/// 原始樣本的（平均, 最高, P95）
+fn stats(v: &[f64]) -> Option<(f64, f64, f64)> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let rank = ((0.95 * s.len() as f64).ceil() as usize).clamp(1, s.len());
+    Some((
+        s.iter().sum::<f64>() / s.len() as f64,
+        s[s.len() - 1],
+        s[rank - 1],
+    ))
+}
+
+impl HostView<'_> {
+    fn values(&self, f: impl Fn(&HostSample) -> Option<f64>) -> Vec<f64> {
+        self.samples.iter().filter_map(|(_, s)| f(s)).collect()
+    }
+
+    fn checks(&self, th: &Thresholds) -> Vec<Check> {
+        let name = &self.host.name;
+        let mut out = Vec::new();
+        let mut push = |label: String, v: Vec<f64>, unit: &'static str, limit: f64| {
+            if let Some((avg, max, p95)) = stats(&v) {
+                out.push(Check {
+                    name: label,
+                    value: Some(p95),
+                    unit,
+                    limit: Limit::Max(limit),
+                    note: format!(
+                        "10 秒取樣的 P95；平均 {}{}，最高 {}{}",
+                        fmt_num(avg),
+                        unit,
+                        fmt_num(max),
+                        unit
+                    ),
+                });
+            }
+        };
+        push(
+            format!("CPU 使用率（{}）", esc(name)),
+            self.values(|s| s.cpu_pct),
+            "%",
+            th.cpu_pct,
+        );
+        push(
+            format!("記憶體使用率（{}）", esc(name)),
+            self.values(|s| s.mem_pct),
+            "%",
+            th.mem_pct,
+        );
+        for d in &self.disks {
+            push(
+                format!("Disk Queue（{} {}）", esc(name), esc(d)),
+                self.values(|s| s.disk_queue.get(d).copied()),
+                "",
+                th.disk_queue,
+            );
+        }
+        out
+    }
+
+    fn section(&self, th: &Thresholds) -> String {
+        let h = self.host;
+        let mut out = format!(r#"<h3>{}</h3>"#, esc(&h.name));
+        // 規格
+        if let Some(sys) = &h.system {
+            let mut rows = vec![
+                ("作業系統", esc(&sys.os)),
+                ("核心", esc(&format!("{} {}", sys.kernel, sys.arch))),
+                (
+                    "CPU",
+                    esc(&format!(
+                        "{}（{} 核心，實體 {}）",
+                        sys.cpu_model, sys.cores, sys.physical_cores
+                    )),
+                ),
+                (
+                    "記憶體",
+                    format!("{}，swap {}", bytes(sys.mem_total), bytes(sys.swap_total)),
+                ),
+            ];
+            if !sys.virt.is_empty() {
+                rows.push(("虛擬化", esc(&sys.virt)));
+            }
+            if !sys.disks.is_empty() {
+                rows.push((
+                    "磁碟",
+                    sys.disks
+                        .iter()
+                        .map(|d| format!("{} {}", esc(&d.name), bytes(d.size)))
+                        .collect::<Vec<_>>()
+                        .join("、"),
+                ));
+            }
+            for fs in &sys.filesystems {
+                rows.push((
+                    "檔案系統",
+                    format!(
+                        "{}（{}）已用 {} / {}（{}%）",
+                        esc(&fs.mount),
+                        esc(&fs.fstype),
+                        bytes(fs.used),
+                        bytes(fs.total),
+                        fmt_num(fs.used_pct)
+                    ),
+                ));
+            }
+            out.push_str(r#"<table class="tbl kv"><tbody>"#);
+            for (k, v) in rows {
+                out.push_str(&format!("<tr><th>{}</th><td>{}</td></tr>", k, v));
+            }
+            out.push_str("</tbody></table>");
+            out.push_str(&format!(
+                r#"<p class="hint">規格為主機 agent {} 匯出當下（{}）的狀態。</p>"#,
+                esc(&h.agent_version),
+                esc(&sys.collected_at)
+            ));
+        }
+        for e in &h.errors {
+            out.push_str(&format!(r#"<p class="note">{}</p>"#, esc(e)));
+        }
+        if self.samples.is_empty() {
+            out.push_str(r#"<p class="note">測試期間沒有這台主機的效能資料：請確認匯出的時間範圍涵蓋測試時間。</p>"#);
+            return out;
+        }
+
+        let groups = host_groups(&self.samples);
+        let x: Vec<f64> = groups
+            .iter()
+            .map(|g| (g[0].0 + g[g.len() - 1].0) / 2.0)
+            .collect();
+        let series = |f: &dyn Fn(&HostSample) -> Option<f64>| -> Vec<Option<f64>> {
+            groups
+                .iter()
+                .map(|g| mean(g.iter().filter_map(|(_, s)| f(s))))
+                .collect()
+        };
+        let summary = |v: Vec<f64>| stats(&v).map(|(a, m, _)| (a, m));
+        out.push_str(
+            &Chart {
+                title: "CPU 使用率".into(),
+                unit: "%",
+                y_min: 0.0,
+                y_max: Some(100.0),
+                series: vec![Series::new("CPU", C_MAIN, series(&|s| s.cpu_pct))],
+                limit: Some(Limit::Max(th.cpu_pct)),
+                right: None,
+                summary: summary(self.values(|s| s.cpu_pct)),
+            }
+            .svg(&x),
+        );
+        out.push_str(
+            &Chart {
+                title: "記憶體使用率".into(),
+                unit: "%",
+                y_min: 0.0,
+                y_max: Some(100.0),
+                series: vec![Series::new("記憶體", C_MAIN, series(&|s| s.mem_pct))],
+                limit: Some(Limit::Max(th.mem_pct)),
+                right: None,
+                summary: summary(self.values(|s| s.mem_pct)),
+            }
+            .svg(&x),
+        );
+        for d in &self.disks {
+            let size = h
+                .system
+                .as_ref()
+                .and_then(|s| s.disks.iter().find(|x| &x.name == d))
+                .map_or(String::new(), |x| format!(" {}", bytes(x.size)));
+            let util = series(&|s| s.disk_util.get(d).copied());
+            out.push_str(
+                &Chart {
+                    title: format!("磁碟 {}{}", esc(d), size),
+                    unit: "",
+                    y_min: 0.0,
+                    y_max: None,
+                    series: vec![Series::new(
+                        "Disk Queue（平均 I/O 佇列長度）",
+                        C_MAIN,
+                        series(&|s| s.disk_queue.get(d).copied()),
+                    )],
+                    limit: Some(Limit::Max(th.disk_queue)),
+                    right: util.iter().any(Option::is_some).then(|| RightAxis {
+                        unit: "%",
+                        y_max: Some(100.0),
+                        series: vec![Series::new("忙碌率（utilization）", C_SUB2, util)],
+                    }),
+                    summary: summary(self.values(|s| s.disk_queue.get(d).copied())),
+                }
+                .svg(&x),
+            );
+        }
+        out
+    }
+}
+
+/// bytes → GB / TB（1024 進位）
+fn bytes(b: u64) -> String {
+    let gb = b as f64 / 1024f64.powi(3);
+    if gb >= 1024.0 {
+        format!("{} TB", fmt_num((gb / 1024.0 * 10.0).round() / 10.0))
+    } else {
+        format!("{} GB", fmt_num(gb.round()))
+    }
+}
+
 // ── 時段合併 ──────────────────────────────────────────────────────
 
 struct RtpPoint {
@@ -570,12 +865,23 @@ impl Series {
 
 /// 一張折線圖：第一條線為主線（畫平均線、標示超過門檻的時段，下方列平均與最高 / 最低）
 struct Chart {
-    title: &'static str,
+    title: String,
     unit: &'static str,
     y_min: f64,
     y_max: Option<f64>,
     series: Vec<Series>,
     limit: Option<Limit>,
+    /// 右側 Y 軸的線（例如磁碟忙碌率）
+    right: Option<RightAxis>,
+    /// 下方統計的（平均, 最高 / 最低）：圖上的點是合併後的值時，改用原始資料算
+    summary: Option<(f64, f64)>,
+}
+
+/// 右側 Y 軸：從 0 開始
+struct RightAxis {
+    unit: &'static str,
+    y_max: Option<f64>,
+    series: Vec<Series>,
 }
 
 impl Chart {
@@ -583,14 +889,14 @@ impl Chart {
         const W: f64 = 720.0;
         const H: f64 = 220.0;
         const L: f64 = 48.0;
-        const R: f64 = 14.0;
         const T: f64 = 12.0;
         const B: f64 = 26.0;
+        let rm = if self.right.is_some() { 44.0 } else { 14.0 };
         let main = &self.series[0];
         let vals: Vec<f64> = main.y.iter().flatten().copied().collect();
         if x.len() < 2 || vals.is_empty() {
             return format!(
-                r#"<figure class="chart"><figcaption>{}</figcaption><p class="hint">資料不足，無法繪圖。</p></figure>"#,
+                r#"<figure class="chart"><figcaption>{}</figcaption><p class="hint">沒有這段時間的資料，無法繪圖。</p></figure>"#,
                 self.title
             );
         }
@@ -610,7 +916,7 @@ impl Chart {
                 m * 1.1
             })
         });
-        let px = |v: f64| L + (v - x0) / (x1 - x0).max(1e-9) * (W - L - R);
+        let px = |v: f64| L + (v - x0) / (x1 - x0).max(1e-9) * (W - L - rm);
         let py =
             |v: f64| H - B - ((v - self.y_min) / (top - self.y_min)).clamp(0.0, 1.0) * (H - T - B);
 
@@ -624,7 +930,7 @@ impl Chart {
                 g,
                 r##"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="#e6e9ef"/><text x="{tx}" y="{ty:.1}" class="ax" text-anchor="end">{v}</text>"##,
                 y = py(v),
-                x2 = W - R,
+                x2 = W - rm,
                 tx = L - 6.0,
                 ty = py(v) + 4.0,
                 v = fmt_num(v),
@@ -639,7 +945,7 @@ impl Chart {
         .unwrap_or(43200.0);
         let mut t = (x0 / step).ceil() * step;
         while t <= x1 + 1e-9 {
-            let anchor = if px(t) > W - R - 30.0 {
+            let anchor = if px(t) > W - rm - 30.0 {
                 "end"
             } else {
                 "middle"
@@ -703,20 +1009,56 @@ impl Chart {
             }
             flush(&mut seg, &mut g);
         }
+        // 右側 Y 軸
+        if let Some(ra) = &self.right {
+            let rtop = ra.y_max.unwrap_or_else(|| {
+                let m = ra
+                    .series
+                    .iter()
+                    .flat_map(|s| s.y.iter().flatten())
+                    .copied()
+                    .fold(0.0, f64::max);
+                nice_ceil((m * 1.1).max(1.0))
+            });
+            let pyr = |v: f64| H - B - (v / rtop).clamp(0.0, 1.0) * (H - T - B);
+            for i in 0..=rows {
+                let v = rtop * i as f64 / rows as f64;
+                let _ = write!(
+                    g,
+                    r#"<text x="{tx}" y="{ty:.1}" class="ax" text-anchor="start">{v}</text>"#,
+                    tx = W - rm + 6.0,
+                    ty = pyr(v) + 4.0,
+                    v = fmt_num(v),
+                );
+            }
+            for s in &ra.series {
+                let pts: Vec<String> = x
+                    .iter()
+                    .zip(&s.y)
+                    .filter_map(|(xi, yi)| yi.map(|v| format!("{:.1},{:.1}", px(*xi), pyr(v))))
+                    .collect();
+                let _ = write!(
+                    g,
+                    r#"<polyline fill="none" stroke="{}" stroke-width="1.4" stroke-linejoin="round" points="{}"/>"#,
+                    s.color,
+                    pts.join(" ")
+                );
+            }
+        }
         // 平均線、門檻線
         let avg = vals.iter().sum::<f64>() / vals.len() as f64;
         let _ = write!(
             g,
             r#"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_AVG}" stroke-width="1.2" stroke-dasharray="3 3"/>"#,
             y = py(avg),
-            x2 = W - R,
+            x2 = W - rm,
         );
         if let Some(limit) = self.limit {
             let _ = write!(
                 g,
                 r#"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_LIMIT}" stroke-width="1.8" stroke-dasharray="7 4"/>"#,
                 y = py(limit.value()),
-                x2 = W - R,
+                x2 = W - rm,
             );
         }
 
@@ -731,6 +1073,15 @@ impl Chart {
                 )
             })
             .collect();
+        if let Some(ra) = &self.right {
+            for s in &ra.series {
+                let _ = write!(
+                    legend,
+                    r#"<span><i style="background:{}"></i>{}（右軸，{}）</span>"#,
+                    s.color, s.name, ra.unit
+                );
+            }
+        }
         legend.push_str(r#"<span><i class="dash avg"></i>平均</span>"#);
         if self.limit.is_some() {
             legend.push_str(r#"<span><i class="dash limit"></i>門檻</span>"#);
@@ -739,10 +1090,17 @@ impl Chart {
             Some(Limit::Min(_)) => ("最低", vals.iter().copied().fold(f64::MAX, f64::min)),
             _ => ("最高", vals.iter().copied().fold(f64::MIN, f64::max)),
         };
+        let (avg_txt, worst) = match self.summary {
+            Some((a, w)) => (a, (worst.0, w)),
+            None => (avg, worst),
+        };
         let mut stats = format!(
             "{}：平均 <b>{}{}</b> · {} <b>{}{}</b>",
-            main.name.trim_end_matches("平均"),
-            fmt_num(avg),
+            match main.name.trim_end_matches("平均") {
+                "" => self.title.as_str(),
+                n => n,
+            },
+            fmt_num(avg_txt),
             self.unit,
             worst.0,
             fmt_num(worst.1),
@@ -792,7 +1150,7 @@ fn fmt_num(v: f64) -> String {
         format!("{:.0}", v)
     } else {
         let s = format!("{:.2}", v);
-        s.trim_end_matches('0').to_string()
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -844,6 +1202,8 @@ const DEFINITIONS: &str = r#"<dl>
 <dd>RFC 3550 的到達間隔變異（平滑值）。判定看每通電話的 P95。</dd>
 <dt>時段統計</dt>
 <dd>每 10 秒一個時段，每個時段只計算該時段內新增的封包，短暫的品質下降不會被整通電話平均掉。測試很長時，圖表會合併相鄰時段，合併後的 MOS P5 取最低、掉包與 Jitter P95 取最高。</dd>
+<dt>主機資源</dt>
+<dd>CPU、記憶體使用率與 Disk Queue（該磁碟 10 秒內的平均 I/O 佇列長度，同 iostat 的 aqu-sz）取自主機 agent 的 10 秒取樣，判定看測試期間的 P95：95% 的時間不超過這個值。磁碟忙碌率（utilization）為 I/O 進行中的時間比例，只有新版 agent 有。圖表點數過多時以平均合併，下方的平均與最高用原始 10 秒資料計算。</dd>
 <dt>限制</dt>
 <dd>MOS 為依封包統計的估算值，沒有分析實際聲音內容；jitter buffer 為固定緩衝的近似，數字不會與 VoIPmonitor 等工具完全一致。</dd>
 </dl>"#;
@@ -875,6 +1235,8 @@ h2{font-size:16px;margin-bottom:12px}
 .verdict{display:inline-block;font-size:18px;font-weight:700;padding:4px 16px;border-radius:6px;margin-bottom:12px}
 .verdict.good{background:var(--green-bg);color:var(--green)}.verdict.bad{background:var(--red-bg);color:var(--red)}.verdict.info{background:var(--blue-bg);color:var(--accent)}
 .summary p{margin-bottom:6px}
+h3{font-size:15px;margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--border)}
+.note{background:var(--yellow-bg);border:1px solid #f0d9a8;color:#6b4a00;border-radius:6px;padding:8px 12px;font-size:13px;margin:8px 0}
 .tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
 .tbl th{text-align:left;font-size:12px;color:var(--muted);padding:7px 10px;border-bottom:2px solid var(--border)}
 .tbl td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
@@ -966,7 +1328,7 @@ mod tests {
             (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
             &[(4.4, 4.3); 20],
         );
-        let html = IntegratedReport::render(&f, &Thresholds::default());
+        let html = IntegratedReport::render(&f, &Thresholds::default(), None);
         assert!(html.contains(r#"<div class="verdict good">通過</div>"#));
         assert!(html.contains("每個時段的聲音品質都在門檻內"));
         assert!(html.contains("@page{size:A4"));
@@ -980,7 +1342,7 @@ mod tests {
         b[13] = bucket(13, 3.0, 2.5);
         let mut calls = vec![(4.4, 4.3); 18];
         calls.extend([(3.4, 3.0), (3.5, 3.1)]);
-        let html = IntegratedReport::render(&file(b, &calls), &Thresholds::default());
+        let html = IntegratedReport::render(&file(b, &calls), &Thresholds::default(), None);
         assert!(html.contains(r#"<div class="verdict bad">未通過</div>"#));
         // 20 通的 P5 = 最低的一通（3.0）
         assert!(html.contains("判定未達標"));
@@ -1013,7 +1375,7 @@ mod tests {
             .collect();
         let mut f = file(b, &[]);
         f.report.loss_rate_pct = None;
-        let html = IntegratedReport::render(&f, &Thresholds::default());
+        let html = IntegratedReport::render(&f, &Thresholds::default(), None);
         assert!(html.contains("無法判定"));
         assert!(html.contains("未啟用 RTP，沒有聲音品質數據"));
     }
@@ -1023,8 +1385,67 @@ mod tests {
         assert_eq!(fmt_num(4.0), "4");
         assert_eq!(fmt_num(0.5), "0.5");
         assert_eq!(fmt_num(4.214), "4.21");
+        assert_eq!(fmt_num(48.004), "48");
         assert_eq!(nice_ceil(0.55), 1.0);
         assert_eq!(nice_ceil(33.0), 50.0);
         assert_eq!(duration_label(7260.0), "2 小時 1 分");
+    }
+
+    #[test]
+    fn host_section_judges_p95_and_lists_specs() {
+        use crate::host_metrics::{DiskInfo, HostSystem};
+        let f = file(
+            (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
+            &[(4.4, 4.3); 20],
+        );
+        let t0 = parse_rfc3339(&f.report.started_at).unwrap();
+        // 測試 300 秒：CPU 多數 50%、偶爾 95%（P95 仍為 50）；Disk Queue 持續 3（超過門檻 2）
+        let samples = (-30..=330)
+            .step_by(10)
+            .map(|t| HostSample {
+                time: t0 + t,
+                cpu_pct: Some(if t == 100 { 95.0 } else { 50.0 }),
+                mem_pct: Some(60.0),
+                disk_queue: [("sda".to_string(), 3.0)].into(),
+                disk_util: [("sda".to_string(), 40.0)].into(),
+            })
+            .collect();
+        let hm = HostMetrics {
+            hosts: vec![
+                Host {
+                    name: "db_01".into(),
+                    agent_version: "v1.9.0".into(),
+                    system: Some(HostSystem {
+                        os: "Rocky Linux 9.4".into(),
+                        cores: 8,
+                        mem_total: 32 * 1024u64.pow(3),
+                        disks: vec![DiskInfo {
+                            name: "sda".into(),
+                            size: 200 * 1024u64.pow(3),
+                        }],
+                        ..Default::default()
+                    }),
+                    samples,
+                    ..Default::default()
+                },
+                Host {
+                    name: "old".into(),
+                    errors: vec!["效能紀錄:agent 版本不支援效能紀錄 (請升級)".into()],
+                    ..Default::default()
+                },
+            ],
+        };
+        let html = IntegratedReport::render(&f, &Thresholds::default(), Some(&hm));
+        assert!(html.contains("5. 受測主機資源") && html.contains("6. 指標說明"));
+        assert!(html.contains("Rocky Linux 9.4") && html.contains("32 GB"));
+        assert!(html.contains("磁碟 sda 200 GB"));
+        assert!(html.contains("右軸"), "有 utilization 時畫右軸");
+        // CPU P95 = 50 → 通過；Disk Queue P95 = 3 → 未通過
+        assert!(html.contains("CPU 使用率（db_01）"));
+        assert!(html.contains("最高 95%"));
+        assert!(html.contains(r#"<div class="verdict bad">未通過</div>"#));
+        assert!(html.contains("Disk Queue（db_01 sda）"));
+        assert!(html.contains("agent 版本不支援"));
+        assert!(html.contains("測試期間沒有這台主機的效能資料"));
     }
 }

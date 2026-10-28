@@ -10,6 +10,7 @@ use sipress_core::{
     correlate::{correlate, CorrelateOptions, CorrelationReport, MatchKind},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
+    host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
     integrated_report::IntegratedReport,
     reporter::{OutputFormat, Reporter},
@@ -277,7 +278,18 @@ fn run_integrate(args: &Args, path: &std::path::Path) -> Result<()> {
         Some(p) => Thresholds::load(p)?,
         None => Thresholds::default(),
     };
-    let out = IntegratedReport::save(&file, &th, &args.report_dir, &report_timestamp())?;
+    let hosts = args
+        .host_metrics
+        .as_deref()
+        .map(HostMetrics::load)
+        .transpose()?;
+    let out = IntegratedReport::save(
+        &file,
+        &th,
+        hosts.as_ref(),
+        &args.report_dir,
+        &report_timestamp(),
+    )?;
     println!("整合報告 → {}", out.display());
     Ok(())
 }

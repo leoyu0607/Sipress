@@ -417,6 +417,7 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
 --integrate <result.json>  讀壓測數據檔產生整合報告（不執行壓測）
+--host-metrics <ZIP|CSV>   整合報告加入受測主機的效能資料（主機 agent 匯出的 ZIP）
 --thresholds <檔案>         整合報告的判定門檻（JSON）
 --ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）
 --talk <秒|最小-最大>       座席端接聽幾秒後主動掛斷（預設：0 = 等對方）
@@ -454,6 +455,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 ./sipress -s 192.168.1.100:5060 --rtp -c 300 --cps 5 -d 2h --html
 # 2. 產生整合報告（可用 --thresholds 調整門檻），用瀏覽器開啟後列印成 PDF
 ./sipress --integrate reports/20261028_100000_result.json
+# 3. 加上受測主機的效能資料：在主機 agent 主控台「效能」頁選涵蓋測試時間的區間，匯出分析資料 (ZIP)
+./sipress --integrate reports/20261028_100000_result.json --host-metrics metrics-20261028-0958-1205.zip
 ```
 
 ---
