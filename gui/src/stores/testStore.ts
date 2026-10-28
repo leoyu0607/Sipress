@@ -365,6 +365,17 @@ export interface IntegratedRequest {
   notes:             string
 }
 
+/** 匯出用的設定副本：移除所有密碼欄位（名稱含 pass 的欄位，例如帳號密碼、撥號認證、座席密碼） */
+export function redactConfig<T>(config: T): T {
+  const strip = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(strip)
+    if (v && typeof v === 'object')
+      return Object.fromEntries(Object.entries(v).filter(([k]) => !/pass/i.test(k)).map(([k, x]) => [k, strip(x)]))
+    return v
+  }
+  return strip(config) as T
+}
+
 /** 門檻與備註記在瀏覽器儲存空間（每台電腦各自記住；讀不到時用預設值） */
 const REPORT_KEY = 'sipress-report'
 
@@ -1309,7 +1320,7 @@ export const useTestStore = defineStore('test', () => {
     return exportWith('JSON 報告', () => {
       const mode = config.value.mode
       const r    = view.value
-      const body = JSON.stringify({ mode, target:config.value.server, elapsed:r.elapsedSec, config:config.value, metrics:r.metrics, callStates:r.callStates, respCodes:r.respCodes, rtp:r.rtpMetrics, series:r.series }, null, 2)
+      const body = JSON.stringify({ mode, target:config.value.server, elapsed:r.elapsedSec, config:redactConfig(config.value), metrics:r.metrics, callStates:r.callStates, respCodes:r.respCodes, rtp:r.rtpMetrics, series:r.series }, null, 2)
       return saveTextFile(`sipress_${mode}_${fileTs()}.json`, 'json', 'JSON', body)
     })
   }

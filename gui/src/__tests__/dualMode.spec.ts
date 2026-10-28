@@ -369,6 +369,10 @@ describe('匯出 (D14)', () => {
     s.sessions.caller.series.asr = [1]; s.sessions.caller.series.ccr = [1]; s.sessions.caller.series.fail = [0]
     s.sessions.agent.series.cps = [22]; s.sessions.agent.series.conc = [2]
     s.sessions.agent.series.asr = [2]; s.sessions.agent.series.ccr = [2]; s.sessions.agent.series.fail = [0]
+    // 密碼不應出現在 JSON 匯出
+    s.config.agent.accounts = [{ id: 'a', extension: '1001', username: 'u', password: 'secret-1', domain: '', status: 'idle' }]
+    s.config.caller.authPass = 'secret-2'
+    s.config.agent.flow.agentPassword = 'secret-3'
     s.sessions.caller.metrics.initiated = 111
     s.sessions.agent.metrics.initiated = 222
     s.config.mode = mode
@@ -383,6 +387,8 @@ describe('匯出 (D14)', () => {
     const writes = calls.filter(c => c.cmd === 'save_text_file').map(c => String(c.args?.contents))
     const json = JSON.parse(writes[0])
     expect(json.mode).toBe(mode)
+    expect(writes[0]).not.toMatch(/secret/)
+    expect(json.config.agent.accounts[0]).toEqual({ id: 'a', extension: '1001', username: 'u', domain: '', status: 'idle' })
     expect(json.metrics.initiated).toBe(mode === 'caller' ? 111 : 222)
     expect(json.series.cps).toEqual([mode === 'caller' ? 11 : 22])
     expect(writes[1].split('\n')[1].split(',')[1]).toBe(mode === 'caller' ? '11.00' : '22.00')
