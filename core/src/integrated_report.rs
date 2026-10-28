@@ -17,11 +17,15 @@ use std::{fs, path::PathBuf};
 /// 每張圖最多的點數
 const MAX_POINTS: usize = 300;
 
-const C_MAIN: &str = "#1a6ef5";
-const C_SUB: &str = "#7b5cd6";
-const C_SUB2: &str = "#9ba3b8";
-const C_AVG: &str = "#6b7591";
-const C_LIMIT: &str = "#e0a800";
+// 配色參考監控工具（Zabbix / VoIPmonitor）：主要指標用填色面積，其他線用高對比色
+const C_GREEN: &str = "#16a34a";
+const C_BLUE: &str = "#1d4ed8";
+const C_RED: &str = "#dc2626";
+const C_ORANGE: &str = "#ea580c";
+const C_GRAY: &str = "#6b7280";
+const C_INK: &str = "#111827";
+const C_AVG: &str = "#374151";
+const C_LIMIT: &str = "#f59e0b";
 
 pub struct IntegratedReport;
 
@@ -130,9 +134,10 @@ impl IntegratedReport {
                 y_max: None,
                 series: vec![Series::new(
                     "時段結束時進行中的通話",
-                    C_MAIN,
+                    C_GREEN,
                     points.iter().map(|p| Some(p.active)).collect()
-                )],
+                )
+                .area()],
                 limit: None,
                 right: None,
                 summary: None,
@@ -145,9 +150,10 @@ impl IntegratedReport {
                 y_max: None,
                 series: vec![Series::new(
                     "CPS",
-                    C_MAIN,
+                    C_BLUE,
                     points.iter().map(|p| Some(p.cps)).collect()
-                )],
+                )
+                .area()],
                 limit: None,
                 right: None,
                 summary: None,
@@ -160,9 +166,10 @@ impl IntegratedReport {
                 y_max: Some(100.0),
                 series: vec![Series::new(
                     "本時段接通 ÷ 有結果的通話",
-                    C_MAIN,
+                    C_GREEN,
                     points.iter().map(|p| p.asr).collect()
-                )],
+                )
+                .area()],
                 limit: None,
                 right: None,
                 summary: None,
@@ -179,7 +186,7 @@ impl IntegratedReport {
                 out,
                 r#"<section class="card">
 <h2>4. 聲音品質</h2>
-<p class="hint">每個時段只計算該時段內新增的封包；紅色底色為超過門檻的時段，黃色虛線為門檻，灰色虛線為平均。</p>
+<p class="hint">每個時段只計算該時段內新增的封包；紅色底色為超過門檻的時段，橘黃色虛線為門檻，灰色點線為平均；MOS 圖的黑色虛線為並發通話數（右軸）。</p>
 {c1}{c2}{c3}
 </section>
 "#,
@@ -191,18 +198,27 @@ impl IntegratedReport {
                     series: vec![
                         Series::new(
                             "MOS（jitter buffer 200 ms）平均",
-                            C_MAIN,
+                            C_BLUE,
                             rtp(|r| r.mos_jb200_avg)
                         ),
                         Series::new(
                             "MOS（jitter buffer 200 ms）P5",
-                            C_SUB,
+                            C_RED,
                             rtp(|r| r.mos_jb200_p5)
                         ),
-                        Series::new("MOS（E-Model）平均", C_SUB2, rtp(|r| r.mos_avg)),
+                        Series::new("MOS（E-Model）平均", C_GRAY, rtp(|r| r.mos_avg)),
                     ],
                     limit: Some(Limit::Min(th.mos)),
-                    right: None,
+                    right: Some(RightAxis {
+                        unit: "通",
+                        y_max: None,
+                        series: vec![Series::new(
+                            "並發通話數",
+                            C_INK,
+                            points.iter().map(|p| Some(p.active)).collect(),
+                        )
+                        .dashed()],
+                    }),
                     summary: None,
                 }
                 .svg(&x),
@@ -212,8 +228,8 @@ impl IntegratedReport {
                     y_min: 0.0,
                     y_max: None,
                     series: vec![
-                        Series::new("整體（時段內所有通話）", C_MAIN, rtp(|r| r.loss_pct)),
-                        Series::new("最嚴重的單通電話", C_SUB2, rtp(|r| r.loss_max_pct)),
+                        Series::new("整體（時段內所有通話）", C_GREEN, rtp(|r| r.loss_pct)).area(),
+                        Series::new("最嚴重的單通電話", C_ORANGE, rtp(|r| r.loss_max_pct)),
                     ],
                     limit: Some(Limit::Max(th.loss_pct)),
                     right: None,
@@ -226,8 +242,8 @@ impl IntegratedReport {
                     y_min: 0.0,
                     y_max: None,
                     series: vec![
-                        Series::new("平均", C_MAIN, rtp(|r| r.jitter_avg_ms)),
-                        Series::new("每通電話的 P95", C_SUB, rtp(|r| r.jitter_p95_ms)),
+                        Series::new("平均", C_GREEN, rtp(|r| r.jitter_avg_ms)).area(),
+                        Series::new("每通電話的 P95", C_ORANGE, rtp(|r| r.jitter_p95_ms)),
                     ],
                     limit: Some(Limit::Max(th.jitter_ms)),
                     right: None,
@@ -685,7 +701,7 @@ impl HostView<'_> {
                 unit: "%",
                 y_min: 0.0,
                 y_max: Some(100.0),
-                series: vec![Series::new("CPU", C_MAIN, series(&|s| s.cpu_pct))],
+                series: vec![Series::new("CPU", C_GREEN, series(&|s| s.cpu_pct)).area()],
                 limit: Some(Limit::Max(th.cpu_pct)),
                 right: None,
                 summary: summary(self.values(|s| s.cpu_pct)),
@@ -698,7 +714,7 @@ impl HostView<'_> {
                 unit: "%",
                 y_min: 0.0,
                 y_max: Some(100.0),
-                series: vec![Series::new("記憶體", C_MAIN, series(&|s| s.mem_pct))],
+                series: vec![Series::new("記憶體", C_BLUE, series(&|s| s.mem_pct)).area()],
                 limit: Some(Limit::Max(th.mem_pct)),
                 right: None,
                 summary: summary(self.values(|s| s.mem_pct)),
@@ -720,14 +736,15 @@ impl HostView<'_> {
                     y_max: None,
                     series: vec![Series::new(
                         "Disk Queue（平均 I/O 佇列長度）",
-                        C_MAIN,
+                        C_GREEN,
                         series(&|s| s.disk_queue.get(d).copied()),
-                    )],
+                    )
+                    .area()],
                     limit: Some(Limit::Max(th.disk_queue)),
                     right: util.iter().any(Option::is_some).then(|| RightAxis {
                         unit: "%",
                         y_max: Some(100.0),
-                        series: vec![Series::new("忙碌率（utilization）", C_SUB2, util)],
+                        series: vec![Series::new("忙碌率（utilization）", C_BLUE, util)],
                     }),
                     summary: summary(self.values(|s| s.disk_queue.get(d).copied())),
                 }
@@ -855,11 +872,75 @@ struct Series {
     name: &'static str,
     color: &'static str,
     y: Vec<Option<f64>>,
+    /// 線下填色（面積圖）
+    fill: bool,
+    /// 虛線
+    dash: bool,
 }
 
 impl Series {
     fn new(name: &'static str, color: &'static str, y: Vec<Option<f64>>) -> Self {
-        Self { name, color, y }
+        Self {
+            name,
+            color,
+            y,
+            fill: false,
+            dash: false,
+        }
+    }
+
+    fn area(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
+    fn dashed(mut self) -> Self {
+        self.dash = true;
+        self
+    }
+
+    /// 折線（None 斷開）；`base` = 填色面積的底線 y 座標
+    fn path(&self, pts: &[Option<(f64, f64)>], base: f64, width: f64) -> String {
+        let mut out = String::new();
+        for seg in pts.split(Option::is_none) {
+            let seg: Vec<(f64, f64)> = seg.iter().flatten().copied().collect();
+            let Some(&(x0, y0)) = seg.first() else {
+                continue;
+            };
+            if seg.len() == 1 {
+                let _ = write!(
+                    out,
+                    r#"<circle cx="{x0:.1}" cy="{y0:.1}" r="2" fill="{}"/>"#,
+                    self.color
+                );
+                continue;
+            }
+            let line: Vec<String> = seg
+                .iter()
+                .map(|(x, y)| format!("{:.1},{:.1}", x, y))
+                .collect();
+            if self.fill {
+                let x1 = seg[seg.len() - 1].0;
+                let _ = write!(
+                    out,
+                    r#"<polygon fill="{}" fill-opacity="0.28" stroke="none" points="{x0:.1},{base:.1} {} {x1:.1},{base:.1}"/>"#,
+                    self.color,
+                    line.join(" ")
+                );
+            }
+            let _ = write!(
+                out,
+                r#"<polyline fill="none" stroke="{}" stroke-width="{width}"{} stroke-linejoin="round" points="{}"/>"#,
+                self.color,
+                if self.dash {
+                    r#" stroke-dasharray="6 4""#
+                } else {
+                    ""
+                },
+                line.join(" ")
+            );
+        }
+        out
     }
 }
 
@@ -971,7 +1052,7 @@ impl Chart {
                     let (a, b) = half(i);
                     let _ = write!(
                         g,
-                        r##"<rect x="{x:.1}" y="{T}" width="{w:.1}" height="{h}" fill="#d93025" fill-opacity="0.12"/>"##,
+                        r##"<rect x="{x:.1}" y="{T}" width="{w:.1}" height="{h}" fill="#dc2626" fill-opacity="0.16"/>"##,
                         x = px(a),
                         w = (px(b) - px(a)).max(1.0),
                         h = H - T - B,
@@ -979,35 +1060,16 @@ impl Chart {
                 }
             }
         }
-        // 折線（後面的線先畫，主線在最上層）
+        // 折線（後面的線先畫，主線在最上層；右軸的線畫在主線下面）
+        let mut lines = String::new();
         for s in self.series.iter().rev() {
-            let mut seg: Vec<String> = Vec::new();
-            let flush = |seg: &mut Vec<String>, g: &mut String| {
-                if seg.len() > 1 {
-                    let _ = write!(
-                        g,
-                        r#"<polyline fill="none" stroke="{}" stroke-width="{}" stroke-linejoin="round" points="{}"/>"#,
-                        s.color,
-                        if std::ptr::eq(s, main) { 2.0 } else { 1.4 },
-                        seg.join(" ")
-                    );
-                } else if let Some(p) = seg.first() {
-                    let (cx, cy) = p.split_once(',').unwrap();
-                    let _ = write!(
-                        g,
-                        r#"<circle cx="{cx}" cy="{cy}" r="2" fill="{}"/>"#,
-                        s.color
-                    );
-                }
-                seg.clear();
-            };
-            for (xi, yi) in x.iter().zip(&s.y) {
-                match yi {
-                    Some(v) => seg.push(format!("{:.1},{:.1}", px(*xi), py(*v))),
-                    None => flush(&mut seg, &mut g),
-                }
-            }
-            flush(&mut seg, &mut g);
+            let pts: Vec<Option<(f64, f64)>> = x
+                .iter()
+                .zip(&s.y)
+                .map(|(xi, yi)| yi.map(|v| (px(*xi), py(v))))
+                .collect();
+            let width = if std::ptr::eq(s, main) { 2.2 } else { 1.6 };
+            lines.push_str(&s.path(&pts, py(self.y_min), width));
         }
         // 右側 Y 軸
         if let Some(ra) = &self.right {
@@ -1032,33 +1094,39 @@ impl Chart {
                 );
             }
             for s in &ra.series {
-                let pts: Vec<String> = x
+                let pts: Vec<Option<(f64, f64)>> = x
                     .iter()
                     .zip(&s.y)
-                    .filter_map(|(xi, yi)| yi.map(|v| format!("{:.1},{:.1}", px(*xi), pyr(v))))
+                    .map(|(xi, yi)| yi.map(|v| (px(*xi), pyr(v))))
                     .collect();
-                let _ = write!(
-                    g,
-                    r#"<polyline fill="none" stroke="{}" stroke-width="1.4" stroke-linejoin="round" points="{}"/>"#,
-                    s.color,
-                    pts.join(" ")
-                );
+                g.push_str(&s.path(&pts, pyr(0.0), 1.6));
             }
         }
+        g.push_str(&lines);
         // 平均線、門檻線
         let avg = vals.iter().sum::<f64>() / vals.len() as f64;
         let _ = write!(
             g,
-            r#"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_AVG}" stroke-width="1.2" stroke-dasharray="3 3"/>"#,
+            r#"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_AVG}" stroke-width="1.4" stroke-dasharray="2 3"/><text x="{tx}" y="{ty:.1}" class="tag-l" fill="{C_AVG}" text-anchor="start">平均 {v}</text>"#,
             y = py(avg),
             x2 = W - rm,
+            tx = L + 4.0,
+            ty = py(avg) - 4.0,
+            v = fmt_num(avg),
         );
         if let Some(limit) = self.limit {
             let _ = write!(
                 g,
-                r#"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_LIMIT}" stroke-width="1.8" stroke-dasharray="7 4"/>"#,
+                r##"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_LIMIT}" stroke-width="2" stroke-dasharray="8 4"/><text x="{tx}" y="{ty:.1}" class="tag-l" fill="#b45309" text-anchor="end">門檻 {v}{u}</text>"##,
                 y = py(limit.value()),
                 x2 = W - rm,
+                tx = W - rm - 4.0,
+                ty = match limit {
+                    Limit::Min(_) => py(limit.value()) + 14.0,
+                    Limit::Max(_) => py(limit.value()) - 4.0,
+                },
+                v = fmt_num(limit.value()),
+                u = self.unit.trim(),
             );
         }
 
@@ -1066,19 +1134,16 @@ impl Chart {
         let mut legend: String = self
             .series
             .iter()
-            .map(|s| {
-                format!(
-                    r#"<span><i style="background:{}"></i>{}</span>"#,
-                    s.color, s.name
-                )
-            })
+            .map(|s| format!(r#"<span>{}{}</span>"#, swatch(s), s.name))
             .collect();
         if let Some(ra) = &self.right {
             for s in &ra.series {
                 let _ = write!(
                     legend,
-                    r#"<span><i style="background:{}"></i>{}（右軸，{}）</span>"#,
-                    s.color, s.name, ra.unit
+                    r#"<span>{}{}（右軸，{}）</span>"#,
+                    swatch(s),
+                    s.name,
+                    ra.unit
                 );
             }
         }
@@ -1129,6 +1194,20 @@ impl Chart {
                 format!("（{}）", self.unit.trim())
             },
         )
+    }
+}
+
+/// 圖例的色塊：面積 = 方塊、虛線 = 虛線、其他 = 實線
+fn swatch(s: &Series) -> String {
+    if s.fill {
+        format!(
+            r#"<i class="area" style="background:{}55;border-color:{}"></i>"#,
+            s.color, s.color
+        )
+    } else if s.dash {
+        format!(r#"<i class="dash" style="border-color:{}"></i>"#, s.color)
+    } else {
+        format!(r#"<i style="background:{}"></i>"#, s.color)
     }
 }
 
@@ -1252,7 +1331,9 @@ h3{font-size:15px;margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--
 .ax{font-size:11px;fill:var(--muted);font-family:var(--mono)}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:2px}
 .legend i{display:inline-block;width:14px;height:3px;margin-right:5px;vertical-align:middle}
-.legend i.dash{height:0;border-top:2px dashed}.legend i.avg{border-color:#6b7591}.legend i.limit{border-color:#e0a800}
+.legend i.dash{height:0;border-top:2px dashed}.legend i.avg{border-color:#374151;border-top-style:dotted}.legend i.limit{border-color:#f59e0b}
+.legend i.area{height:10px;border-top:2px solid}
+.tag-l{font-size:11px;font-weight:600;paint-order:stroke;stroke:#fff;stroke-width:3px}
 .stats{font-size:12px;margin-top:4px}.stats b{font-family:var(--mono)}
 .defs dt{font-weight:600;margin-top:10px}.defs dd{color:var(--muted);font-size:13px}
 .footer{text-align:center;font-size:11px;color:var(--light);padding:12px;font-family:var(--mono)}
