@@ -1,7 +1,8 @@
 mod commands;
 use commands::{
-    agent_run_steps, get_correlation_html, get_html_report, get_report, get_result_json,
-    get_snapshot, register_account, save_text_file, start_test, stop_test, AppState,
+    agent_run_steps, export_integrated_pdf, get_correlation_html, get_html_report, get_report,
+    get_result_json, get_snapshot, integrated_report_html, open_integrated_report, pdf_available,
+    register_account, save_text_file, start_test, stop_test, AppState,
 };
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -23,6 +24,10 @@ pub fn run() {
             get_report,
             get_html_report,
             get_result_json,
+            integrated_report_html,
+            export_integrated_pdf,
+            open_integrated_report,
+            pdf_available,
             get_correlation_html,
             register_account,
             agent_run_steps,

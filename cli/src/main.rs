@@ -12,7 +12,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
-    integrated_report::IntegratedReport,
+    integrated_report::{IntegratedReport, ReportOptions},
     reporter::{OutputFormat, Reporter},
     result_file::ResultFile,
     stats::{FinalReport, StatsSnapshot},
@@ -283,14 +283,18 @@ fn run_integrate(args: &Args, path: &std::path::Path) -> Result<()> {
         .as_deref()
         .map(HostMetrics::load)
         .transpose()?;
-    let out = IntegratedReport::save(
-        &file,
-        &th,
-        hosts.as_ref(),
-        &args.report_dir,
-        &report_timestamp(),
-    )?;
+    let opts = ReportOptions {
+        thresholds: th,
+        hosts,
+        notes: args.report_notes.clone().unwrap_or_default(),
+    };
+    let out = IntegratedReport::save(&file, &opts, &args.report_dir, &report_timestamp())?;
     println!("整合報告 → {}", out.display());
+    if args.pdf {
+        let pdf = out.with_extension("pdf");
+        sipress_core::pdf::html_to_pdf(&out, &pdf)?;
+        println!("PDF → {}", pdf.display());
+    }
     Ok(())
 }
 

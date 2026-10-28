@@ -223,6 +223,14 @@ pub struct Args {
     #[arg(long = "host-metrics", value_name = "ZIP_OR_CSV")]
     pub host_metrics: Option<std::path::PathBuf>,
 
+    /// 整合報告：受測環境備註（列在「測試條件」，例如受測系統版本、網路架構）
+    #[arg(long = "report-notes", value_name = "TEXT")]
+    pub report_notes: Option<String>,
+
+    /// 整合報告：另外輸出 PDF（用本機的 Chrome 或 Edge 轉檔）
+    #[arg(long)]
+    pub pdf: bool,
+
     /// 整合報告的判定門檻（JSON，未寫的欄位用預設值）：
     /// `{"cpu_pct":70,"mem_pct":80,"disk_queue":2,"jitter_ms":30,"loss_pct":0.5,"mos":4.0}`
     #[arg(long = "thresholds", value_name = "JSON")]

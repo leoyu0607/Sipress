@@ -135,7 +135,7 @@ sipress/
 執行 `sipress-gui-*-portable.exe` 或安裝後開啟，可看到：
 
 - **左側 Sidebar**：填寫伺服器位址、CPS、並發數、**總通數上限**、持續時間（**0 = 不限時間**）、音檔路徑
-- **頂部 TitleBar**：顯示狀態、進度條，▶ Start / ■ Stop 按鈕，及 **↓ JSON / ↓ CSV / ↓ HTML** 匯出按鈕（HTML 需測試完成後才啟用）
+- **頂部 TitleBar**：顯示狀態、進度條，▶ Start / ■ Stop 按鈕，及 **↓ JSON / ↓ CSV / ↓ HTML / ↓ 數據** 匯出按鈕（HTML 與數據需測試完成後才啟用），以及 **整合報告**（選壓測結果、主機效能資料、門檻與備註，輸出 HTML 或 PDF）
 - **中間 MetricStrip**：即時顯示 CPS、CONCUR、**SUCCESS（成功通數）**、**FAILED（失敗通數）**、**TOTAL（累計發起）**、ASR、**ERR%（Error Rate）**、PDD
 - **圖表區**：折線圖（CPS / ASR / CCR / ERR 趨勢）
 - **右側面板**：回應碼統計、**即時** RTP 品質（**MOS / 掉包率 / Jitter / 封包統計**，測試中即時更新）、SIP flow 時序
@@ -514,9 +514,11 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--html` | 關閉 | 產生 HTML 報告，同時寫出壓測數據檔 `<時間>_result.json`（含 10 秒時間軸、每通電話的品質分布；不含密碼） |
 | `--integrate <result.json>` | — | 讀壓測數據檔，依門檻產生 `<時間>_integrated_report.html` 到 `--report-dir`，不執行壓測 |
 | `--host-metrics <ZIP 或 CSV>` | — | 受測主機的效能資料：主機 agent 主控台「匯出分析資料 (ZIP)」，或單台主機的 `metrics.csv`；加入 CPU、記憶體、Disk Queue（含磁碟忙碌率）圖表與主機規格 |
+| `--report-notes <TEXT>` | — | 受測環境備註，列在報告的「測試條件」 |
+| `--pdf` | 關閉 | 另外輸出 PDF（用本機的 Chrome 或 Edge 轉檔） |
 | `--thresholds <JSON>` | 見說明 | 判定門檻，未寫的欄位用預設值：`{"cpu_pct":70,"mem_pct":80,"disk_queue":2,"jitter_ms":30,"loss_pct":0.5,"mos":4.0}` |
 
-整合報告依 A4 排版，用瀏覽器開啟後「列印 → 另存為 PDF」即可交給客戶。判定看 MOS（jitter buffer 200 ms 模擬）每通電話的 P5、整體掉包率、Jitter 每通電話的 P95，有主機資料時再加上每台主機 CPU、記憶體、每顆磁碟 Disk Queue 的 P95（10 秒取樣）；算法見 [METRICS.md](METRICS.md)。
+整合報告依 A4 排版，加 `--pdf` 直接輸出 PDF，或用瀏覽器開啟後按右上角「列印 / 另存 PDF」。GUI 的 **整合報告** 按鈕提供相同功能。判定看 MOS（jitter buffer 200 ms 模擬）每通電話的 P5、整體掉包率、Jitter 每通電話的 P95，有主機資料時再加上每台主機 CPU、記憶體、每顆磁碟 Disk Queue 的 P95（10 秒取樣）；算法見 [METRICS.md](METRICS.md)。
 
 配對先用 SIPX 的 `P-CIN-CallId`（同一通電話的每一段都相同；SIP Call-ID 每段都不同），拿不到時改用主叫號碼 + 時間窗。報告包含漏接率、排隊與分配延遲、ACD 改派與雙向 MOS，GUI 的 `↓ 對照` 按鈕產生同一份報告。
 

@@ -5,11 +5,14 @@ use sipress_core::{
     correlate::{correlate, CorrelateOptions, CorrelationReport},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
+    host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
+    integrated_report::{IntegratedReport, ReportOptions},
     registrar::{register_once, RegisterResult},
     result_file::ResultFile,
     rtp::audio::AudioSource,
     stats::{FinalReport, StatsSnapshot},
+    thresholds::Thresholds,
     trace::TraceLog,
 };
 use std::sync::{
@@ -286,6 +289,118 @@ pub fn get_result_json(state: State<'_, Arc<AppState>>, mode: Mode) -> Result<St
     serde_json::to_string_pretty(&ResultFile::new(&config, &report)).map_err(|e| e.to_string())
 }
 
+/// 整合報告的來源與選項（前端「整合報告」對話框）
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IntegratedRequest {
+    /// 壓測數據檔（`<時間>_result.json`）；None = 用 `mode` 最近一次執行的結果
+    #[serde(default)]
+    pub result_path: Option<String>,
+    #[serde(default)]
+    pub mode: Option<Mode>,
+    /// 主機 agent 匯出的 ZIP 或 metrics.csv（選填）
+    #[serde(default)]
+    pub host_metrics_path: Option<String>,
+    #[serde(default)]
+    pub thresholds: Thresholds,
+    #[serde(default)]
+    pub notes: String,
+}
+
+fn integrated_html(app: &AppState, req: &IntegratedRequest) -> Result<String, String> {
+    let file = match (&req.result_path, &req.mode) {
+        (Some(p), _) if !p.is_empty() => {
+            ResultFile::load(std::path::Path::new(p)).map_err(|e| format!("{:#}", e))?
+        }
+        (_, Some(mode)) => {
+            let session = app.session(mode);
+            let report = session.report.lock().unwrap().clone().ok_or_else(|| {
+                "這個模式還沒有測試結果，請先完成一次壓測或選擇壓測數據檔".to_string()
+            })?;
+            let config = session.config.lock().unwrap().clone().unwrap_or_default();
+            ResultFile::new(&config, &report)
+        }
+        _ => return Err("請選擇壓測數據檔".into()),
+    };
+    let hosts = match req.host_metrics_path.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => {
+            Some(HostMetrics::load(std::path::Path::new(p)).map_err(|e| format!("{:#}", e))?)
+        }
+        None => None,
+    };
+    let opts = ReportOptions {
+        thresholds: req.thresholds.clone(),
+        hosts,
+        notes: req.notes.clone(),
+    };
+    Ok(IntegratedReport::render(&file, &opts))
+}
+
+/// 整合報告的 HTML（前端負責存檔）
+#[tauri::command]
+pub async fn integrated_report_html(
+    state: State<'_, Arc<AppState>>,
+    req: IntegratedRequest,
+) -> Result<String, String> {
+    let app = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || integrated_html(&app, &req))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 暫存 HTML 的位置（PDF 轉檔與「用瀏覽器開啟」共用）
+fn temp_report_path(timestamp: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join("sipress-reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{}_integrated_report.html", timestamp)))
+}
+
+/// 整合報告轉成 PDF（用本機的 Chrome / Edge），寫到 `path`
+#[tauri::command]
+pub async fn export_integrated_pdf(
+    state: State<'_, Arc<AppState>>,
+    req: IntegratedRequest,
+    path: String,
+    timestamp: String,
+) -> Result<(), String> {
+    let app = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        let html = integrated_html(&app, &req)?;
+        let tmp = temp_report_path(&timestamp)?;
+        std::fs::write(&tmp, html).map_err(|e| e.to_string())?;
+        let r = sipress_core::pdf::html_to_pdf(&tmp, std::path::Path::new(&path))
+            .map_err(|e| format!("{:#}", e));
+        let _ = std::fs::remove_file(&tmp);
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 用系統預設瀏覽器開啟整合報告（沒有 Chrome / Edge 時，讓使用者自己列印成 PDF）
+#[tauri::command]
+pub async fn open_integrated_report(
+    state: State<'_, Arc<AppState>>,
+    req: IntegratedRequest,
+    timestamp: String,
+) -> Result<String, String> {
+    let app = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        let html = integrated_html(&app, &req)?;
+        let tmp = temp_report_path(&timestamp)?;
+        std::fs::write(&tmp, html).map_err(|e| e.to_string())?;
+        tauri_plugin_opener::open_path(&tmp, None::<&str>).map_err(|e| e.to_string())?;
+        Ok(tmp.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 本機是否有可轉 PDF 的瀏覽器（前端據此顯示「匯出 PDF」或提示改用瀏覽器列印）
+#[tauri::command]
+pub fn pdf_available() -> bool {
+    sipress_core::pdf::find_browser().is_some()
+}
+
 /// 將文字內容寫入使用者在「另存新檔」對話框選定的路徑
 /// 用兩端最近一次執行的追蹤紀錄做端到端對照
 fn correlation_report(app: &AppState) -> Result<CorrelationReport, String> {
@@ -333,6 +448,26 @@ mod tests {
             "fail_codes": {}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn integrated_report_uses_latest_session_or_file() {
+        let app = AppState::default();
+        let req = |mode: Option<Mode>, path: Option<String>| IntegratedRequest {
+            result_path: path,
+            mode,
+            host_metrics_path: None,
+            thresholds: Thresholds::default(),
+            notes: "受測方 SIPX".into(),
+        };
+        assert!(integrated_html(&app, &req(Some(Mode::Caller), None)).is_err());
+
+        *app.caller.report.lock().unwrap() = Some(sample_report());
+        let html = integrated_html(&app, &req(Some(Mode::Caller), None)).unwrap();
+        assert!(html.contains("SIP 壓力測試報告") && html.contains("受測方 SIPX"));
+
+        let err = integrated_html(&app, &req(None, Some("/no/such/result.json".into())));
+        assert!(err.unwrap_err().contains("無法讀取"));
     }
 
     #[test]

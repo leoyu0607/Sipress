@@ -29,26 +29,38 @@ const C_LIMIT: &str = "#f59e0b";
 
 pub struct IntegratedReport;
 
+/// 產生整合報告的選項
+#[derive(Debug, Clone, Default)]
+pub struct ReportOptions {
+    pub thresholds: Thresholds,
+    /// 主機 agent 匯出的效能資料（沒有時不列主機資源）
+    pub hosts: Option<HostMetrics>,
+    /// 受測環境備註（列在「測試條件」，可多行）
+    pub notes: String,
+}
+
 impl IntegratedReport {
     /// 寫到 `<dir>/<timestamp>_integrated_report.html`
     pub fn save(
         file: &ResultFile,
-        th: &Thresholds,
-        hosts: Option<&HostMetrics>,
+        opts: &ReportOptions,
         output_dir: &str,
         timestamp: &str,
     ) -> Result<PathBuf> {
         fs::create_dir_all(output_dir)?;
         let path = PathBuf::from(output_dir).join(format!("{}_integrated_report.html", timestamp));
-        fs::write(&path, Self::render(file, th, hosts))?;
+        fs::write(&path, Self::render(file, opts))?;
         Ok(path)
     }
 
-    /// `hosts` = 主機 agent 匯出的效能資料（沒有時不列主機資源）
-    pub fn render(file: &ResultFile, th: &Thresholds, hosts: Option<&HostMetrics>) -> String {
+    pub fn render(file: &ResultFile, opts: &ReportOptions) -> String {
+        let th = &opts.thresholds;
         let r = &file.report;
         let points = merge(&r.fine_timeline);
-        let hosts: Vec<HostView> = hosts.map_or(Vec::new(), |h| host_views(file, h));
+        let hosts: Vec<HostView> = opts
+            .hosts
+            .as_ref()
+            .map_or(Vec::new(), |h| host_views(file, h));
         let mut checks = checks(file, th);
         for h in &hosts {
             checks.extend(h.checks(th));
@@ -65,6 +77,7 @@ impl IntegratedReport {
 <style>{CSS}</style>
 </head>
 <body>
+<button class="print-btn" onclick="window.print()">列印 / 另存 PDF</button>
 <main class="page">
 <header class="cover">
   <div class="brand">sipress</div>
@@ -109,7 +122,7 @@ impl IntegratedReport {
 <table class="tbl kv"><tbody>{rows}</tbody></table>
 </section>
 "#,
-            rows = conditions(file)
+            rows = conditions(file, &opts.notes)
                 .iter()
                 .map(|(k, v)| format!("<tr><th>{}</th><td>{}</td></tr>", k, v))
                 .collect::<String>(),
@@ -466,7 +479,7 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
     )
 }
 
-fn conditions(file: &ResultFile) -> Vec<(&'static str, String)> {
+fn conditions(file: &ResultFile, notes: &str) -> Vec<(&'static str, String)> {
     let c = &file.config;
     let r = &file.report;
     let mode = match cfg_str(c, "mode").as_str() {
@@ -500,6 +513,9 @@ fn conditions(file: &ResultFile) -> Vec<(&'static str, String)> {
         },
     ));
     rows.push(("統計取樣", "10 秒一段".to_string()));
+    if !notes.trim().is_empty() {
+        rows.push(("備註", esc(notes.trim()).replace('\n', "<br>")));
+    }
     rows
 }
 
@@ -1336,9 +1352,11 @@ h3{font-size:15px;margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--
 .tag-l{font-size:11px;font-weight:600;paint-order:stroke;stroke:#fff;stroke-width:3px}
 .stats{font-size:12px;margin-top:4px}.stats b{font-family:var(--mono)}
 .defs dt{font-weight:600;margin-top:10px}.defs dd{color:var(--muted);font-size:13px}
+.print-btn{position:fixed;top:14px;right:16px;z-index:10;font:inherit;font-size:13px;padding:6px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+.print-btn:hover{filter:brightness(1.08)}
 .footer{text-align:center;font-size:11px;color:var(--light);padding:12px;font-family:var(--mono)}
 @page{size:A4;margin:14mm 12mm}
-@media print{body{background:#fff;font-size:12px}.page{max-width:none;padding:0;gap:10px}
+@media print{.print-btn{display:none}body{background:#fff;font-size:12px}.page{max-width:none;padding:0;gap:10px}
 .card{border:none;padding:0;break-inside:auto}.chart,.tbl tr{break-inside:avoid}h2{break-after:avoid}
 section+section{break-before:auto}.footer{padding:6px}}
 "#;
@@ -1409,7 +1427,7 @@ mod tests {
             (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
             &[(4.4, 4.3); 20],
         );
-        let html = IntegratedReport::render(&f, &Thresholds::default(), None);
+        let html = IntegratedReport::render(&f, &ReportOptions::default());
         assert!(html.contains(r#"<div class="verdict good">通過</div>"#));
         assert!(html.contains("每個時段的聲音品質都在門檻內"));
         assert!(html.contains("@page{size:A4"));
@@ -1423,7 +1441,7 @@ mod tests {
         b[13] = bucket(13, 3.0, 2.5);
         let mut calls = vec![(4.4, 4.3); 18];
         calls.extend([(3.4, 3.0), (3.5, 3.1)]);
-        let html = IntegratedReport::render(&file(b, &calls), &Thresholds::default(), None);
+        let html = IntegratedReport::render(&file(b, &calls), &ReportOptions::default());
         assert!(html.contains(r#"<div class="verdict bad">未通過</div>"#));
         // 20 通的 P5 = 最低的一通（3.0）
         assert!(html.contains("判定未達標"));
@@ -1456,7 +1474,7 @@ mod tests {
             .collect();
         let mut f = file(b, &[]);
         f.report.loss_rate_pct = None;
-        let html = IntegratedReport::render(&f, &Thresholds::default(), None);
+        let html = IntegratedReport::render(&f, &ReportOptions::default());
         assert!(html.contains("無法判定"));
         assert!(html.contains("未啟用 RTP，沒有聲音品質數據"));
     }
@@ -1516,7 +1534,18 @@ mod tests {
                 },
             ],
         };
-        let html = IntegratedReport::render(&f, &Thresholds::default(), Some(&hm));
+        let html = IntegratedReport::render(
+            &f,
+            &ReportOptions {
+                hosts: Some(hm),
+                notes: "受測方：SIPX 4.2\n<交換機>".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            html.contains("受測方：SIPX 4.2<br>&lt;交換機&gt;"),
+            "備註跳脫並保留換行"
+        );
         assert!(html.contains("5. 受測主機資源") && html.contains("6. 指標說明"));
         assert!(html.contains("Rocky Linux 9.4") && html.contains("32 GB"));
         assert!(html.contains("磁碟 sda 200 GB"));

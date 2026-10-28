@@ -325,8 +325,28 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 | ↓ JSON | `sipress_<時間戳>.json` | CI/CD 整合、程式讀取 |
 | ↓ CSV | `sipress_<時間戳>.csv` | Excel、Python 分析 |
 | ↓ HTML | `sipress_<時間戳>.html` | 視覺化報告（含環形圖、延遲長條圖、RTP 品質），可用瀏覽器離線開啟 |
+| ↓ 數據 | `sipress_<模式>_<時間戳>_result.json` | 壓測原始數據（10 秒時間軸、每通電話的品質分布；不含密碼），之後可用來產生整合報告 |
 
-> **注意**：`↓ HTML` 按鈕在測試**執行中**或**尚未開始**時為灰色（disabled），需等測試完成或手動停止後才能使用。
+> **注意**：`↓ HTML` 與 `↓ 數據` 按鈕在測試**執行中**或**尚未開始**時為灰色（disabled），需等測試完成或手動停止後才能使用。
+
+### 整合報告（交給客戶的正式報告）
+
+按 TitleBar 的 **整合報告** 開啟設定視窗：
+
+1. **壓測結果**：選「最近一次民眾端 / 座席端測試」，或選一份 `*_result.json`（CLI 加 `--html` 或 GUI `↓ 數據` 產生）。
+2. **受測主機效能資料**（選填）：主機 agent「效能」頁的「匯出分析資料 (ZIP)」，時間範圍需涵蓋測試時間。報告會加上每台主機的規格、CPU、記憶體與每顆磁碟的 Disk Queue／忙碌率圖。
+3. **判定門檻**：預設 MOS ≥ 4、掉包率 ≤ 0.5%、Jitter ≤ 30 ms、CPU ≤ 70%、記憶體 ≤ 80%、Disk Queue ≤ 2，會記住上次的設定。
+4. **受測環境備註**（選填）：列在報告的「測試條件」。
+
+輸出方式：
+
+| 按鈕 | 說明 |
+|---|---|
+| 儲存 HTML | 存成 HTML 檔 |
+| 瀏覽器開啟 | 用預設瀏覽器開啟，按報告右上角「列印 / 另存 PDF」 |
+| 匯出 PDF | 用本機的 Chrome 或 Edge 直接轉成 PDF（找不到瀏覽器時無法使用，請改用「瀏覽器開啟」） |
+
+判定方式與圖表說明見報告最後的「指標說明」，或 [METRICS.md](METRICS.md) 的「整合報告」一節。
 
 ### 端到端對照報告（↓ 對照）
 
@@ -419,6 +439,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 --integrate <result.json>  讀壓測數據檔產生整合報告（不執行壓測）
 --host-metrics <ZIP|CSV>   整合報告加入受測主機的效能資料（主機 agent 匯出的 ZIP）
 --thresholds <檔案>         整合報告的判定門檻（JSON）
+--report-notes <文字>       整合報告的受測環境備註
+--pdf                      整合報告另外輸出 PDF（需要本機的 Chrome 或 Edge）
 --ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）
 --talk <秒|最小-最大>       座席端接聽幾秒後主動掛斷（預設：0 = 等對方）
 --reject-pct <%>           座席端拒接比例（486）
@@ -456,7 +478,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 # 2. 產生整合報告（可用 --thresholds 調整門檻），用瀏覽器開啟後列印成 PDF
 ./sipress --integrate reports/20261028_100000_result.json
 # 3. 加上受測主機的效能資料：在主機 agent 主控台「效能」頁選涵蓋測試時間的區間，匯出分析資料 (ZIP)
-./sipress --integrate reports/20261028_100000_result.json --host-metrics metrics-20261028-0958-1205.zip
+./sipress --integrate reports/20261028_100000_result.json --host-metrics metrics-20261028-0958-1205.zip \
+  --report-notes "受測系統 SIPX 4.2" --pdf
 ```
 
 ---

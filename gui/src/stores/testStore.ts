@@ -340,6 +340,52 @@ const BOTH_POLL_MS = 250
 
 export const MODE_LABEL: Record<CallMode, string> = { caller: '民眾端', agent: '座席端' }
 
+// ── 整合報告 ──────────────────────────────────────────────────────────────────
+/** 整合報告的判定門檻（欄位同 Rust `Thresholds`） */
+export interface ReportThresholds {
+  cpu_pct:    number
+  mem_pct:    number
+  disk_queue: number
+  jitter_ms:  number
+  loss_pct:   number
+  mos:        number
+}
+
+export const DEFAULT_THRESHOLDS: ReportThresholds = {
+  cpu_pct: 70, mem_pct: 80, disk_queue: 2, jitter_ms: 30, loss_pct: 0.5, mos: 4,
+}
+
+/** 整合報告的來源與選項（欄位同 Rust `IntegratedRequest`） */
+export interface IntegratedRequest {
+  /** 壓測數據檔；null = 用 mode 最近一次執行的結果 */
+  result_path:       string | null
+  mode:              CallMode | null
+  host_metrics_path: string | null
+  thresholds:        ReportThresholds
+  notes:             string
+}
+
+/** 門檻與備註記在瀏覽器儲存空間（每台電腦各自記住；讀不到時用預設值） */
+const REPORT_KEY = 'sipress-report'
+
+export function loadReportSettings(): { thresholds: ReportThresholds; notes: string } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(REPORT_KEY) ?? '{}')
+    return {
+      thresholds: { ...DEFAULT_THRESHOLDS, ...(raw.thresholds ?? {}) },
+      notes: typeof raw.notes === 'string' ? raw.notes : '',
+    }
+  } catch {
+    return { thresholds: { ...DEFAULT_THRESHOLDS }, notes: '' }
+  }
+}
+
+export function saveReportSettings(thresholds: ReportThresholds, notes: string) {
+  try {
+    localStorage.setItem(REPORT_KEY, JSON.stringify({ thresholds, notes }))
+  } catch { /* 儲存空間不可用時只是不記住 */ }
+}
+
 export const CODEC_LABEL: Record<CallerProfile['codec'], { short: string; full: string }> = {
   pcma: { short: 'G.711A', full: 'G.711A (PCMA)' },
   pcmu: { short: 'G.711U', full: 'G.711U (PCMU)' },
@@ -1247,12 +1293,15 @@ export const useTestStore = defineStore('test', () => {
     }
   }
 
-  async function exportWith(label: string, fn: () => Promise<string | null>) {
+  /** 執行匯出並記錄結果；失敗時回傳錯誤訊息（成功或取消回傳 null） */
+  async function exportWith(label: string, fn: () => Promise<string | null>): Promise<string | null> {
     try {
       const path = await fn()
       if (path) addLog('ok', `${label} 已匯出 → ${path}`)
+      return null
     } catch (e) {
       addLog('err', `${label} 匯出失敗: ${e}`)
+      return String(e)
     }
   }
 
@@ -1304,6 +1353,31 @@ export const useTestStore = defineStore('test', () => {
     })
   }
 
+  /** 整合報告：存成 HTML */
+  function exportIntegratedHtml(req: IntegratedRequest) {
+    return exportWith('整合報告', async () => {
+      const html = await invoke<string>('integrated_report_html', { req })
+      return saveTextFile(`sipress_integrated_${fileTs()}.html`, 'html', 'HTML', html)
+    })
+  }
+
+  /** 整合報告：用本機的 Chrome / Edge 轉成 PDF */
+  function exportIntegratedPdf(req: IntegratedRequest) {
+    return exportWith('整合報告 PDF', async () => {
+      const ts = fileTs()
+      const path = await save({ defaultPath: `sipress_integrated_${ts}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] })
+      if (!path) return null
+      await invoke('export_integrated_pdf', { req, path, timestamp: ts })
+      return path
+    })
+  }
+
+  /** 整合報告：用預設瀏覽器開啟（可再列印成 PDF） */
+  function openIntegratedReport(req: IntegratedRequest) {
+    return exportWith('整合報告（瀏覽器開啟）', () =>
+      invoke<string>('open_integrated_report', { req, timestamp: fileTs() }))
+  }
+
   function exportHtml() {
     return exportWith('HTML 報告', async () => {
       const ts   = fileTs()
@@ -1324,7 +1398,8 @@ export const useTestStore = defineStore('test', () => {
     importAccountText, parseAccountText,
     registerAccount, registerAll,
     startTest, stopTest, startBoth, stopAll,
-    exportJson, exportCsv, exportHtml, exportResult, exportAccountsCsv, exportE2eHtml, canExportE2e,
+    exportJson, exportCsv, exportHtml, exportResult, exportAccountsCsv,
+    exportIntegratedHtml, exportIntegratedPdf, openIntegratedReport, exportE2eHtml, canExportE2e,
     exportFlowJson, runAgentCode,
   }
 })

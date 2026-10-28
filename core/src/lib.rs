@@ -7,6 +7,7 @@ pub mod host_metrics;
 pub mod html_reporter;
 pub mod integrated_report;
 pub mod net;
+pub mod pdf;
 pub mod registrar;
 pub mod reporter;
 pub mod result_file;

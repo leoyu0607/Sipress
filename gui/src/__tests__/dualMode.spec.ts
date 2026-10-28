@@ -1,7 +1,10 @@
 /// 民眾端 + 座席端同時執行（commit d66aa65）的補充測試：覆蓋 store 的 per-mode 行為與邊界情況
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { save } from '@tauri-apps/plugin-dialog'
-import { useTestStore, AGENT_REGISTER_TIMEOUT_MS, type RustSnapshot, type RustReport, type CallMode } from '../stores/testStore'
+import {
+  useTestStore, AGENT_REGISTER_TIMEOUT_MS, DEFAULT_THRESHOLDS, loadReportSettings, saveReportSettings,
+  type RustSnapshot, type RustReport, type CallMode, type IntegratedRequest,
+} from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -383,6 +386,55 @@ describe('匯出 (D14)', () => {
     expect(json.metrics.initiated).toBe(mode === 'caller' ? 111 : 222)
     expect(json.series.cps).toEqual([mode === 'caller' ? 11 : 22])
     expect(writes[1].split('\n')[1].split(',')[1]).toBe(mode === 'caller' ? '11.00' : '22.00')
+  })
+})
+
+describe('整合報告', () => {
+  const req = (patch: Partial<IntegratedRequest> = {}): IntegratedRequest => ({
+    result_path: null, mode: 'caller', host_metrics_path: '/tmp/metrics.zip',
+    thresholds: { ...DEFAULT_THRESHOLDS, mos: 3.8 }, notes: 'SIPX 4.2', ...patch,
+  })
+
+  it('HTML：後端產生後存到選定的檔案', async () => {
+    vi.mocked(save).mockReset()
+    vi.mocked(save).mockResolvedValue('/tmp/r.html')
+    const calls = routeInvoke({ integrated_report_html: () => '<html>r</html>', save_text_file: () => null })
+    const s = useTestStore()
+    expect(await s.exportIntegratedHtml(req())).toBeNull()
+    expect(calls[0]).toEqual({ cmd: 'integrated_report_html', args: { req: req() } })
+    expect(calls[1].args).toMatchObject({ path: '/tmp/r.html', contents: '<html>r</html>' })
+    expect((vi.mocked(save).mock.calls[0][0] as { defaultPath: string }).defaultPath)
+      .toMatch(/^sipress_integrated_\d{8}_\d{6}\.html$/)
+  })
+
+  it('PDF：選路徑後交給後端轉檔；取消時不呼叫後端', async () => {
+    vi.mocked(save).mockReset()
+    vi.mocked(save).mockResolvedValueOnce(null).mockResolvedValueOnce('/tmp/r.pdf')
+    const calls = routeInvoke({ export_integrated_pdf: () => null })
+    const s = useTestStore()
+    await s.exportIntegratedPdf(req())
+    expect(calls).toHaveLength(0)
+    await s.exportIntegratedPdf(req({ result_path: '/tmp/x_result.json', mode: null }))
+    expect(calls[0].cmd).toBe('export_integrated_pdf')
+    expect(calls[0].args).toMatchObject({ path: '/tmp/r.pdf', req: { result_path: '/tmp/x_result.json', mode: null } })
+    expect(calls[0].args?.timestamp).toMatch(/^\d{8}_\d{6}$/)
+  })
+
+  it('失敗時回傳錯誤訊息並記 log', async () => {
+    routeInvoke({ open_integrated_report: () => { throw '這個模式還沒有測試結果' } })
+    const s = useTestStore()
+    expect(await s.openIntegratedReport(req())).toContain('還沒有測試結果')
+    expect(s.logs.some(l => l.level === 'err' && l.msg.includes('整合報告'))).toBe(true)
+  })
+
+  it('門檻與備註記在儲存空間；欄位缺少或格式錯誤時用預設值', () => {
+    expect(loadReportSettings()).toEqual({ thresholds: DEFAULT_THRESHOLDS, notes: '' })
+    saveReportSettings({ ...DEFAULT_THRESHOLDS, cpu_pct: 60 }, '備註')
+    expect(loadReportSettings()).toEqual({ thresholds: { ...DEFAULT_THRESHOLDS, cpu_pct: 60 }, notes: '備註' })
+    localStorage.setItem('sipress-report', '{"thresholds":{"mos":3.5}}')
+    expect(loadReportSettings().thresholds).toEqual({ ...DEFAULT_THRESHOLDS, mos: 3.5 })
+    localStorage.setItem('sipress-report', 'not json')
+    expect(loadReportSettings().thresholds).toEqual(DEFAULT_THRESHOLDS)
   })
 })
 
