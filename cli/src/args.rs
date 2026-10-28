@@ -213,6 +213,16 @@ pub struct Args {
     #[arg(long = "correlate", num_args = 2, value_names = ["TRACE_A", "TRACE_B"])]
     pub correlate: Option<Vec<std::path::PathBuf>>,
 
+    /// 整合報告：讀取壓測數據檔（`--html` 時寫出的 `<時間>_result.json`），
+    /// 依門檻產生 `<時間>_integrated_report.html` 到 --report-dir（不執行壓測）
+    #[arg(long = "integrate", value_name = "RESULT_JSON")]
+    pub integrate: Option<std::path::PathBuf>,
+
+    /// 整合報告的判定門檻（JSON，未寫的欄位用預設值）：
+    /// `{"cpu_pct":70,"mem_pct":80,"disk_queue":2,"jitter_ms":30,"loss_pct":0.5,"mos":4.0}`
+    #[arg(long = "thresholds", value_name = "JSON")]
+    pub thresholds: Option<std::path::PathBuf>,
+
     /// 端到端對照：以主叫號碼配對時，座席收到來電最晚可在民眾端撥出後幾秒（含排隊時間）
     #[arg(long = "correlate-window", default_value_t = 120)]
     pub correlate_window: u64,

@@ -416,6 +416,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 --timeline-csv <檔案>       結束後把分時段統計寫成 CSV
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
+--integrate <result.json>  讀壓測數據檔產生整合報告（不執行壓測）
+--thresholds <檔案>         整合報告的判定門檻（JSON）
 --ring <秒|最小-最大>       座席端響鈴幾秒後接聽（預設：0）
 --talk <秒|最小-最大>       座席端接聽幾秒後主動掛斷（預設：0 = 等對方）
 --reject-pct <%>           座席端拒接比例（486）
@@ -443,6 +445,15 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 ./sipress -s 192.168.1.100:5060 --from 0912000000 --from-seq --to 168168999 -c 20 --cps 2 -d 60 --trace-file caller.json
 # 3. 座席端 Ctrl-C 結束後合併（檔案順序不拘）；--format json / csv 輸出明細，--html 產生報告
 ./sipress --correlate caller.json agent.json --html
+```
+
+整合報告（交給客戶的正式報告）：
+
+```bash
+# 1. 壓測時加 --html，報告目錄會多一份 <時間>_result.json
+./sipress -s 192.168.1.100:5060 --rtp -c 300 --cps 5 -d 2h --html
+# 2. 產生整合報告（可用 --thresholds 調整門檻），用瀏覽器開啟後列印成 PDF
+./sipress --integrate reports/20261028_100000_result.json
 ```
 
 ---

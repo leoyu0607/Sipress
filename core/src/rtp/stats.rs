@@ -2,6 +2,7 @@
 //! 實作 RFC 3550 §A.8 jitter 計算 + E-Model MOS 估算
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Mutex,
@@ -430,6 +431,76 @@ pub fn aggregate_snapshots(snapshots: &[RtpStatsSnapshot]) -> Option<RtpStatsSna
     })
 }
 
+// ── 每通電話的品質分布（整合報告的判定用）─────────────────────────
+
+/// 每通電話最終值的分布：MOS 以 0.01 為一格計數，門檻可在產生報告時再決定
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CallQuality {
+    /// 有應收封包的通話數
+    pub calls: u64,
+    /// MOS（E-Model）分布：key = MOS × 100，value = 通話數
+    pub mos_hist: BTreeMap<u16, u64>,
+    /// MOS（jitter buffer 200 ms 模擬）分布
+    pub mos_jb200_hist: BTreeMap<u16, u64>,
+    /// 掉包率最高的單通電話（%）
+    pub loss_max_pct: f64,
+    /// 每通電話 Jitter 的 P95（ms）
+    pub jitter_p95_ms: f64,
+}
+
+impl CallQuality {
+    /// 由每通電話的最終快照計算；沒有任何通話收發 RTP 時為 None
+    pub fn from_snapshots(snapshots: &[RtpStatsSnapshot]) -> Option<Self> {
+        let calls: Vec<&RtpStatsSnapshot> = snapshots
+            .iter()
+            .filter(|s| s.recv_packets + s.lost_packets > 0)
+            .collect();
+        if calls.is_empty() {
+            return None;
+        }
+        let hist = |f: fn(&RtpStatsSnapshot) -> f64| {
+            let mut h = BTreeMap::new();
+            for s in &calls {
+                *h.entry((f(s) * 100.0).round() as u16).or_insert(0) += 1;
+            }
+            h
+        };
+        let mut jitter: Vec<f64> = calls.iter().map(|s| s.jitter_ms).collect();
+        jitter.sort_by(f64::total_cmp);
+        let rank = ((0.95 * jitter.len() as f64).ceil() as usize).clamp(1, jitter.len());
+        Some(Self {
+            calls: calls.len() as u64,
+            mos_hist: hist(|s| s.mos),
+            mos_jb200_hist: hist(|s| s.mos_jb200),
+            loss_max_pct: calls.iter().map(|s| s.loss_rate_pct).fold(0.0, f64::max),
+            jitter_p95_ms: jitter[rank - 1],
+        })
+    }
+
+    /// 分布的分位數（最近排名法，`q` = 0.0 ~ 1.0）
+    pub fn quantile(hist: &BTreeMap<u16, u64>, q: f64) -> Option<f64> {
+        let total: u64 = hist.values().sum();
+        if total == 0 {
+            return None;
+        }
+        let rank = ((q * total as f64).ceil() as u64).clamp(1, total);
+        let mut seen = 0;
+        for (&k, &n) in hist {
+            seen += n;
+            if seen >= rank {
+                return Some(k as f64 / 100.0);
+            }
+        }
+        None
+    }
+
+    /// 低於 `threshold` 的通話數
+    pub fn count_below(hist: &BTreeMap<u16, u64>, threshold: f64) -> u64 {
+        let limit = (threshold * 100.0).round() as u16;
+        hist.range(..limit).map(|(_, n)| n).sum()
+    }
+}
+
 // ── MOS 估算（ITU-T E-Model 簡化版）────────────────────────────
 
 /// 由掉包率（0.0~1.0）和 jitter（ms）估算 MOS（1.0~5.0）
@@ -767,5 +838,29 @@ mod tests {
         assert!((b.loss_rate() - 0.0).abs() < 1e-9);
         assert!((a.loss_rate() - 0.1).abs() < 1e-9);
         assert_eq!(stats.take_interval().expected, 0);
+    }
+
+    #[test]
+    fn call_quality_distribution() {
+        let call = |mos: f64, jb: f64, loss: f64, jitter: f64| RtpStatsSnapshot {
+            recv_packets: 1000,
+            mos,
+            mos_jb200: jb,
+            loss_rate_pct: loss,
+            jitter_ms: jitter,
+            ..Default::default()
+        };
+        let mut v: Vec<_> = (0..19).map(|_| call(4.41, 4.35, 0.0, 5.0)).collect();
+        v.push(call(3.2, 2.9, 2.5, 40.0));
+        v.push(RtpStatsSnapshot::default()); // 沒有封包的通話不列入
+        let q = CallQuality::from_snapshots(&v).unwrap();
+        assert_eq!(q.calls, 20);
+        assert_eq!(CallQuality::quantile(&q.mos_jb200_hist, 0.05), Some(2.9));
+        assert_eq!(CallQuality::quantile(&q.mos_jb200_hist, 0.10), Some(4.35));
+        assert_eq!(CallQuality::count_below(&q.mos_jb200_hist, 4.0), 1);
+        assert_eq!(CallQuality::count_below(&q.mos_jb200_hist, 4.35), 1);
+        assert_eq!(q.loss_max_pct, 2.5);
+        assert_eq!(q.jitter_p95_ms, 5.0);
+        assert!(CallQuality::from_snapshots(&[]).is_none());
     }
 }

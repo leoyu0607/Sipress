@@ -463,4 +463,16 @@ ACK 逾時預設 10 秒，BYE 逾時預設 150 秒；逾時後座席主動送 BY
 | `format_version` | 格式版本（目前 1）；只新增欄位時不變，刪除、改名或改變單位時遞增 |
 | `sipress_version` | 產生檔案的 sipress 版本 |
 | `config` | 壓測設定；**移除所有密碼欄位**，座席帳號清單只留數量（`agent_account_count`） |
-| `report` | 完整的最終報告，含 `started_at`（測試開始時間，RFC 3339 UTC）與 `fine_timeline` |
+| `report` | 完整的最終報告，含 `started_at`（測試開始時間，RFC 3339 UTC）、`fine_timeline` 與 `call_quality`（每通電話最終 MOS 的分布，0.01 一格，產生報告時可依任意門檻算達標比例與 P5） |
+
+### 整合報告（`--integrate`）
+
+`core/src/integrated_report.rs`，門檻在 `core/src/thresholds.rs`（`--thresholds` 可覆寫）。
+
+| 判定項目 | 數值 | 預設門檻 |
+|---|---|---|
+| MOS（jitter buffer 200 ms 模擬） | 每通電話最終值的 P5 | ≥ 4.0 |
+| 掉包率 | 整體（第 7 節） | ≤ 0.5% |
+| Jitter | 每通電話最終值的 P95 | ≤ 30 ms |
+
+三項都在門檻內為「通過」，任一項超過為「未通過」，沒有 RTP 數據為「無法判定」。圖表用 10 秒時間軸，超過 300 點時合併相鄰時段：計數相加後重算比率與掉包率，MOS 平均依通話數加權，MOS P5 取最低，最嚴重單通掉包與 Jitter P95 取最高。結論中的「超過門檻的時段」是 MOS（jitter buffer 200 ms）平均、掉包率或 Jitter 平均任一項超過門檻的時段。

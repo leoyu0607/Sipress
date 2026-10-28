@@ -402,6 +402,10 @@ pub struct FinalReport {
     #[serde(default)]
     pub fine_timeline: Vec<crate::timeline::TimelineBucket>,
 
+    /// 每通電話最終 RTP 品質的分布（整合報告判定用；未啟用 RTP 時為 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_quality: Option<crate::rtp::stats::CallQuality>,
+
     /// 座席端：座席流程每個撥碼的結果（沒有流程時為空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_dials: Vec<DialStat>,
@@ -477,6 +481,7 @@ impl FinalReport {
             timeline: Vec::new(),
             started_at: String::new(),
             fine_timeline: Vec::new(),
+            call_quality: None,
             agent_dials: Vec::new(),
         }
     }

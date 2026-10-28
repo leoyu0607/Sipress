@@ -2,7 +2,7 @@
 use crate::config::{Config, CpsPattern};
 use crate::rtp::{
     session::{RtpSession, RtpSessionConfig},
-    stats::{aggregate_snapshots, RtpStatsSnapshot},
+    stats::{aggregate_snapshots, CallQuality, RtpStatsSnapshot},
 };
 use crate::sip::{
     register::DigestChallenge, sdp, Dialog, DialogState, SipMessage, SipParser, SipResponse,
@@ -1130,6 +1130,7 @@ impl Engine {
         };
 
         let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_agg.as_ref());
+        report.call_quality = CallQuality::from_snapshots(&rtp_snapshots);
         if let Some(t) = timeline.lock().unwrap().take() {
             t.finish(elapsed, &live, &detail, last_rtp, &mut report);
         }
@@ -1159,10 +1160,10 @@ async fn stop_rtp_session(
     let session = sessions.lock().await.remove(call_id);
     if let Some(session) = session {
         let snap = session.stop();
+        live.on_rtp_stop();
         if let Some(t) = timeline.lock().unwrap().as_mut() {
             t.add_rtp(session.stats.take_interval());
         }
-        live.on_rtp_stop();
         traces.update(call_id, |t| t.set_rtp(&snap));
         snapshots.push(snap);
     }

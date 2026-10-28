@@ -24,7 +24,9 @@ mod runner;
 
 use crate::config::{Config, FlowStep};
 use crate::engine::ProgressCallback;
-use crate::rtp::stats::{aggregate_snapshots, RtpInterval, RtpStats, RtpStatsSnapshot};
+use crate::rtp::stats::{
+    aggregate_snapshots, CallQuality, RtpInterval, RtpStats, RtpStatsSnapshot,
+};
 use crate::sip_logger::{SipLogger, SipRole};
 use crate::stats::{DetailedStats, DialStat, FinalReport, LiveStats};
 use crate::timeline::Timelines;
@@ -275,9 +277,14 @@ impl AgentEngine {
         engine_finished.store(true, std::sync::atomic::Ordering::Relaxed);
 
         // ── 收集 RTP 統計（已結束 + 收尾時仍在進行的通話）──
-        let (rtp_final, last_rtp) = {
+        let (rtp_final, call_quality, last_rtp) = {
             let reg = rtp_registry.lock().await;
-            (reg.final_aggregate(), reg.take_intervals())
+            let snaps = reg.final_snapshots();
+            (
+                aggregate_snapshots(&snaps),
+                CallQuality::from_snapshots(&snaps),
+                reg.take_intervals(),
+            )
         };
 
         // ── 產生最終報告 ──
@@ -294,6 +301,7 @@ impl AgentEngine {
         ));
 
         let mut report = FinalReport::build(&snap, &detail, elapsed, rtp_final.as_ref());
+        report.call_quality = call_quality;
         if let Some(t) = timeline.lock().unwrap().take() {
             t.finish(elapsed, &live, &detail, last_rtp, &mut report);
         }
@@ -386,10 +394,10 @@ impl RtpRegistry {
     }
 
     /// 最終報告：已結束通話 + 仍在進行的通話
-    fn final_aggregate(&self) -> Option<RtpStatsSnapshot> {
+    fn final_snapshots(&self) -> Vec<RtpStatsSnapshot> {
         let mut snaps = self.finished.clone();
         snaps.extend(self.active.values().map(|s| s.snapshot()));
-        aggregate_snapshots(&snaps)
+        snaps
     }
 }
 

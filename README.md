@@ -507,6 +507,16 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | `--correlate A B` | — | 讀兩端的追蹤紀錄（順序不拘）輸出合併報告，不執行壓測；搭配 `--format`、`--html`、`--report-dir` |
 | `--correlate-window` | `120` | 以主叫號碼配對時，座席收到來電最晚可在民眾端撥出後幾秒 |
 
+### 整合報告
+
+| 參數 | 預設 | 說明 |
+|------|------|------|
+| `--html` | 關閉 | 產生 HTML 報告，同時寫出壓測數據檔 `<時間>_result.json`（含 10 秒時間軸、每通電話的品質分布；不含密碼） |
+| `--integrate <result.json>` | — | 讀壓測數據檔，依門檻產生 `<時間>_integrated_report.html` 到 `--report-dir`，不執行壓測 |
+| `--thresholds <JSON>` | 見說明 | 判定門檻，未寫的欄位用預設值：`{"cpu_pct":70,"mem_pct":80,"disk_queue":2,"jitter_ms":30,"loss_pct":0.5,"mos":4.0}` |
+
+整合報告依 A4 排版，用瀏覽器開啟後「列印 → 另存為 PDF」即可交給客戶。判定看 MOS（jitter buffer 200 ms 模擬）每通電話的 P5、整體掉包率、Jitter 每通電話的 P95；算法見 [METRICS.md](METRICS.md)。
+
 配對先用 SIPX 的 `P-CIN-CallId`（同一通電話的每一段都相同；SIP Call-ID 每段都不同），拿不到時改用主叫號碼 + 時間窗。報告包含漏接率、排隊與分配延遲、ACD 改派與雙向 MOS，GUI 的 `↓ 對照` 按鈕產生同一份報告。
 
 agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被忽略；Ctrl-C 或 TUI 按 `q` 會先送 `REGISTER Expires=0` 解除註冊再結束。

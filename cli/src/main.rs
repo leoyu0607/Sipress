@@ -11,9 +11,11 @@ use sipress_core::{
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
     html_reporter::HtmlReporter,
+    integrated_report::IntegratedReport,
     reporter::{OutputFormat, Reporter},
     result_file::ResultFile,
     stats::{FinalReport, StatsSnapshot},
+    thresholds::Thresholds,
     trace::{TraceFile, TraceLog},
 };
 use std::{
@@ -37,6 +39,10 @@ async fn main() -> Result<()> {
     // ── 端到端對照（不執行壓測）──
     if let Some(files) = &args.correlate {
         return run_correlate(&args, &files[0], &files[1]);
+    }
+    // ── 整合報告（不執行壓測）──
+    if let Some(path) = &args.integrate {
+        return run_integrate(&args, path);
     }
 
     let mode = args.mode();
@@ -262,6 +268,18 @@ fn read_trace_file(path: &std::path::Path) -> Result<TraceFile> {
             path.display()
         )
     })
+}
+
+/// --integrate：讀壓測數據檔，依門檻產生整合報告
+fn run_integrate(args: &Args, path: &std::path::Path) -> Result<()> {
+    let file = ResultFile::load(path)?;
+    let th = match &args.thresholds {
+        Some(p) => Thresholds::load(p)?,
+        None => Thresholds::default(),
+    };
+    let out = IntegratedReport::save(&file, &th, &args.report_dir, &report_timestamp())?;
+    println!("整合報告 → {}", out.display());
+    Ok(())
 }
 
 /// --correlate：讀兩端追蹤紀錄（順序不拘），輸出合併報告

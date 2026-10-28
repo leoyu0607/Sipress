@@ -51,6 +51,11 @@ pub const MOS_THRESHOLD: f64 = 4.0;
 pub struct RtpBucketStats {
     /// 本段有 RTP 的通話數
     pub calls: u64,
+    /// 本段的應收、掉包封包數（合併時段時用來重算掉包率）
+    #[serde(default)]
+    pub expected_packets: u64,
+    #[serde(default)]
+    pub lost_packets: u64,
     /// 掉包率（%）：本段所有通話的掉包數加總 ÷ 應收封包數加總
     pub loss_pct: f64,
     /// 本段掉包最嚴重的單通電話（%）
@@ -89,6 +94,8 @@ impl RtpBucketStats {
         let min = |v: &[f64]| v.iter().cloned().fold(f64::INFINITY, f64::min);
         Some(Self {
             calls: calls.len() as u64,
+            expected_packets: expected,
+            lost_packets: lost,
             loss_pct: lost as f64 / expected as f64 * 100.0,
             loss_max_pct: calls
                 .iter()

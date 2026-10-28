@@ -368,6 +368,31 @@ fn html_report_is_written_to_report_dir() {
             .sum::<u64>(),
         file.report.calls_initiated
     );
+
+    // 整合報告：讀 result.json 依門檻產生（不執行壓測）
+    let th = dir.join("th.json");
+    std::fs::write(&th, r#"{"mos": 3.5}"#).unwrap();
+    let out_dir = dir.join("integrated");
+    let out = run_sipress(
+        &[
+            "--integrate",
+            &result,
+            "--thresholds",
+            &th.to_string_lossy(),
+            "--report-dir",
+            &out_dir.to_string_lossy(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_success(&out);
+    let html: Vec<PathBuf> = std::fs::read_dir(&out_dir)
+        .expect("應建立輸出目錄")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with("_integrated_report.html"))
+        .collect();
+    assert_eq!(html.len(), 1);
+    let content = std::fs::read_to_string(&html[0]).unwrap();
+    assert!(content.contains("SIP 壓力測試報告") && content.contains("≥ 3.5"));
 }
 
 // ── 座席模式（--mode agent）────────────────────────────────────────
