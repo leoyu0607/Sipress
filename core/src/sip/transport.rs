@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpSocket, UdpSocket};
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// 單一 SIP 訊息的上限（UDP datagram 與 TCP 分框都適用）
 const MAX_MESSAGE: usize = 65536;
@@ -144,6 +144,22 @@ impl SipSocket {
                 let n = RECV_BUF.with_borrow_mut(|buf| match s.try_recv(buf) {
                     Ok(n) => Ok(Some(String::from_utf8_lossy(&buf[..n]).into_owned())),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                    // 先前送出的封包被回了 ICMP port unreachable（伺服器沒在聽、或防火牆擋）：
+                    // Windows 會在下一次接收報 10054（WSAECONNRESET），Linux 報 ECONNREFUSED。
+                    // 這只代表那一個封包沒送到，socket 仍可用，不可因此結束接收。
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionRefused
+                        ) =>
+                    {
+                        warn!(
+                            "SIP 伺服器 {} 回報 port 無法連線（ICMP）：{}",
+                            self.server, e
+                        );
+                        Ok(None)
+                    }
                     Err(e) => Err(e),
                 });
                 if let Some(msg) = n.context("UDP 接收失敗")? {
@@ -323,6 +339,30 @@ mod tests {
         let addr: SocketAddr = s.local_addr.parse().unwrap();
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0);
+    }
+
+    #[tokio::test]
+    async fn udp_recv_survives_icmp_port_unreachable() {
+        // 伺服器 port 先關著：送出的封包會被回 ICMP port unreachable
+        let port = free_port();
+        let server: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+        let sock = SipSocket::connect(Transport::Udp, server, "127.0.0.1")
+            .await
+            .unwrap();
+        sock.send("OPTIONS sip:a@b SIP/2.0\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 伺服器上線後送來的訊息仍要收得到
+        let peer = std::net::UdpSocket::bind(server).unwrap();
+        peer.send_to(b"SIP/2.0 200 OK\r\n\r\n", &sock.local_addr)
+            .unwrap();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv())
+            .await
+            .expect("應收到伺服器的訊息")
+            .expect("ICMP 錯誤不可讓接收失敗");
+        assert_eq!(got, "SIP/2.0 200 OK\r\n\r\n");
     }
 
     #[tokio::test]
