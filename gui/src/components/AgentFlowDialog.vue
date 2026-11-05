@@ -5,6 +5,7 @@ import {
   FLOW_CODE_NAMES, FLOW_PHASE_NAMES,
   newFlowStep, sipxPresetFlow, expandFlowCode, flowErrors,
 } from '../stores/testStore'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -111,7 +112,7 @@ function save() {
 
             <div class="dialog-hdr">
               <span class="dialog-title" id="flow-dlg-title">座席流程</span>
-              <button class="close-btn" @click="emit('cancel')" aria-label="關閉">×</button>
+              <button class="close-btn" @click="emit('cancel')" aria-label="關閉"><Icon name="x" :size="16" /></button>
             </div>
 
             <div class="dialog-body">
@@ -145,7 +146,7 @@ function save() {
                     <input v-model.number="st.secs" class="in secs" type="number" min="0" step="0.5">
                     <span class="unit">秒</span>
                   </template>
-                  <button class="del" @click="removeStep(phase, i)" aria-label="刪除步驟">×</button>
+                  <button class="del" @click="removeStep(phase, i)" aria-label="刪除步驟"><Icon name="x" :size="13" /></button>
                 </div>
                 <div class="add-row">
                   <span class="add-lbl">＋</span>
@@ -189,7 +190,7 @@ function save() {
               </section>
 
               <div v-if="errors.length" class="errors">
-                <div v-for="e in errors" :key="e">⚠ {{ e }}</div>
+                <div v-for="e in errors" :key="e" class="err-line"><Icon name="alert" :size="12" />{{ e }}</div>
               </div>
             </div>
 
@@ -236,7 +237,7 @@ function save() {
 .dialog-title { font-size: 13px; font-weight: 500; color: var(--text0); flex: 1; }
 .close-btn {
   background: none; border: none; color: var(--text2);
-  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px;
+  display: inline-flex; align-items: center; cursor: pointer; padding: 2px; border-radius: var(--radius-sm);
 }
 .close-btn:hover { color: var(--text0); }
 .dialog-body {
@@ -298,7 +299,7 @@ code { font-family: var(--mono); color: var(--accent); font-size: 11px; }
 .del {
   margin-left: auto;
   background: none; border: none; color: var(--text2);
-  font-size: 15px; cursor: pointer; padding: 0 2px;
+  display: inline-flex; align-items: center; cursor: pointer; padding: 2px;
 }
 .del:hover { color: var(--danger); }
 
@@ -327,6 +328,8 @@ code { font-family: var(--mono); color: var(--accent); font-size: 11px; }
 .preview code { background: var(--bg0); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; }
 .muted { color: var(--text2); }
 .errors { font-size: 11px; color: var(--danger); display: flex; flex-direction: column; gap: 2px; }
+.err-line { display: flex; align-items: flex-start; gap: 5px; }
+.err-line .icon { margin-top: 2px; }
 
 .dialog-footer {
   display: flex; align-items: center; gap: 8px;

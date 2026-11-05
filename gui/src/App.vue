@@ -83,6 +83,10 @@ provide('toggleTheme', toggleTheme)
 
   --scrollbar-thumb: rgba(255,255,255,0.1);
 
+  /* 實心主要按鈕（accent / danger 底）上的文字色 */
+  --on-accent: #04211c;
+  --on-danger: #1a0505;
+
   color-scheme: dark;
 }
 
@@ -122,6 +126,9 @@ provide('toggleTheme', toggleTheme)
   --input-border: rgba(0,0,0,0.14);
 
   --scrollbar-thumb: rgba(0,0,0,0.12);
+
+  --on-accent: #ffffff;
+  --on-danger: #ffffff;
 
   color-scheme: light;
 }
@@ -185,6 +192,23 @@ html, body, #app {
   background: rgba(var(--danger-rgb),0.07);
 }
 .btn-danger:hover { background: rgba(var(--danger-rgb),0.16); border-color: rgba(var(--danger-rgb),0.5); }
+
+/* 主要動作（開始 / 停止測試）：實心底色，整個畫面只放一個 */
+.btn-primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.btn-primary:hover { color: var(--on-accent); background: var(--accent); border-color: var(--accent); filter: brightness(1.1); }
+.btn-primary.is-danger { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
+.btn-primary.is-danger:hover { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
+.btn-primary:focus-visible { outline: 2px solid rgba(var(--accent-rgb),0.6); outline-offset: 2px; }
+.btn-primary.is-danger:focus-visible { outline-color: rgba(var(--danger-rgb),0.6); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
 
 /* ── Keyboard focus ────────────────────────── */
 :focus-visible {

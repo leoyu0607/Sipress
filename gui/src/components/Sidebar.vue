@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { useTestStore, FLOW_CODE_NAMES, flowStepCount, type AgentFlowConfig, type FlowCodeKey } from '../stores/testStore'
 import GenerateDialog from './GenerateDialog.vue'
 import AgentFlowDialog from './AgentFlowDialog.vue'
+import Icon from './Icon.vue'
 
 const store = useTestStore()
 const copied = ref(false)
@@ -126,10 +127,10 @@ function statusTitle(s: string) {
 
 <template>
   <aside class="sidebar">
-    <div class="lock-banner" v-if="locked">● 測試執行中，設定已鎖定</div>
+    <div class="lock-banner" v-if="locked"><Icon name="lock" :size="12" />測試執行中，設定已鎖定</div>
     <!-- 「開始測試」被擋住的原因直接列出，不只放在按鈕的 hover 提示裡 -->
     <div class="start-blockers" v-else-if="store.validationErrors.length > 0" aria-live="polite">
-      <div class="blockers-title">開始前需修正 {{ store.validationErrors.length }} 項</div>
+      <div class="blockers-title"><Icon name="alert" :size="12" />開始前需修正 {{ store.validationErrors.length }} 項</div>
       <ul>
         <li v-for="e in store.validationErrors" :key="e">{{ e }}</li>
       </ul>
@@ -141,7 +142,7 @@ function statusTitle(s: string) {
       <div class="section-hdr" role="button" tabindex="0" :aria-expanded="sec.target"
            @click="toggleSec('target')" @keydown.enter.prevent="toggleSec('target')" @keydown.space.prevent="toggleSec('target')">
         <span class="section-label">連線目標</span>
-        <span aria-hidden="true" class="arrow" :class="{ open: sec.target }">▶</span>
+        <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.target }" />
       </div>
       <div class="section-body" v-show="sec.target">
         <div class="field">
@@ -185,7 +186,7 @@ function statusTitle(s: string) {
         :class="{ active: store.config.mode === 'caller' }"
         @click="store.config.mode = 'caller'"
       >
-        <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        <Icon name="phone" :size="16" class="mode-icon" />
         <span class="mode-name">民眾端<span v-if="store.sessions.caller.status === 'running'" class="run-dot" title="執行中"></span></span>
         <span class="mode-sub">主動撥出</span>
       </button>
@@ -196,7 +197,7 @@ function statusTitle(s: string) {
         :class="{ active: store.config.mode === 'agent' }"
         @click="store.config.mode = 'agent'"
       >
-        <svg class="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+        <Icon name="headphones" :size="16" class="mode-icon" />
         <span class="mode-name">座席端<span v-if="store.sessions.agent.status === 'running'" class="run-dot" title="執行中"></span></span>
         <span class="mode-sub">SIP 話機</span>
       </button>
@@ -209,7 +210,7 @@ function statusTitle(s: string) {
       <div class="section-hdr" role="button" tabindex="0" :aria-expanded="sec.caller"
            @click="toggleSec('caller')" @keydown.enter.prevent="toggleSec('caller')" @keydown.space.prevent="toggleSec('caller')">
         <span class="section-label">民眾端設定</span>
-        <span aria-hidden="true" class="arrow" :class="{ open: sec.caller }">▶</span>
+        <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.caller }" />
       </div>
       <div class="section-body" v-show="sec.caller">
 
@@ -309,9 +310,9 @@ function statusTitle(s: string) {
               <label v-if="idx === 0">秒數</label>
               <input :aria-label="`第 ${idx + 1} 階秒數`" type="number" min="1" max="3600" v-model.number="step.duration_secs">
             </div>
-            <button class="del-btn" @click="store.config.caller.cpsPattern.steps.splice(idx, 1)" style="margin-bottom:6px" title="刪除此階層" aria-label="刪除此階層">×</button>
+            <button class="del-btn" @click="store.config.caller.cpsPattern.steps.splice(idx, 1)" style="margin-bottom:6px" title="刪除此階層" aria-label="刪除此階層"><Icon name="x" :size="13" /></button>
           </div>
-          <button class="btn btn-sm" @click="store.config.caller.cpsPattern.steps.push({ cps: 10, duration_secs: 30 })" style="margin-top:2px">+ 新增階層</button>
+          <button class="btn btn-sm" @click="store.config.caller.cpsPattern.steps.push({ cps: 10, duration_secs: 30 })" style="margin-top:2px"><Icon name="plus" :size="12" />新增階層</button>
         </div>
 
         <!-- Spike config -->
@@ -424,7 +425,7 @@ function statusTitle(s: string) {
           <span class="acc-count-badge">
             {{ store.config.agent.accounts.length }} 帳號
           </span>
-          <span aria-hidden="true" class="arrow" :class="{ open: sec.agent }">▶</span>
+          <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.agent }" />
         </div>
       </div>
       <div class="section-body agent-body" v-show="sec.agent">
@@ -531,7 +532,7 @@ function statusTitle(s: string) {
           @drop="onDrop"
           @click="triggerFileInput"
         >
-          <div class="drop-icon" aria-hidden="true">↑</div>
+          <Icon name="upload" :size="18" class="drop-icon" />
           <div class="drop-main">上傳帳號清單</div>
           <div class="drop-sub">CSV / TXT · 拖曳或點擊</div>
           <input ref="fileInputRef" type="file" accept=".csv,.txt" style="display:none" @change="onFileChange">
@@ -548,12 +549,12 @@ function statusTitle(s: string) {
 
         <!-- Import error -->
         <div class="import-error" v-if="store.accountImportError">
-          ⚠ {{ store.accountImportError }}
+          <Icon name="alert" :size="12" />{{ store.accountImportError }}
         </div>
 
         <!-- Generate via dialog -->
         <button class="btn btn-sm btn-accent gen-btn" @click="showGenDialog = true">
-          + 快速生成帳號
+          <Icon name="plus" :size="12" />快速生成帳號
         </button>
 
         <!-- Account table -->
@@ -605,7 +606,7 @@ function statusTitle(s: string) {
                 </span>
               </div>
               <div class="acc-col del">
-                <button class="del-btn" @click="store.removeAccount(acc.id)" title="刪除帳號" aria-label="刪除帳號">×</button>
+                <button class="del-btn" @click="store.removeAccount(acc.id)" title="刪除帳號" aria-label="刪除帳號"><Icon name="x" :size="13" /></button>
               </div>
             </div>
           </div>
@@ -650,7 +651,7 @@ function statusTitle(s: string) {
     <div class="cli-section">
       <div class="cli-label-row">
         <span class="cli-label">CLI 指令預覽</span>
-        <button class="cli-opts-btn" :aria-expanded="sec.cliOpts" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <span aria-hidden="true" class="arrow" :class="{ open: sec.cliOpts }">▶</span></button>
+        <button class="cli-opts-btn" :aria-expanded="sec.cliOpts" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.cliOpts }" /></button>
       </div>
       <div class="cli-opts" v-show="sec.cliOpts">
         <div class="field">
@@ -672,7 +673,7 @@ function statusTitle(s: string) {
       </div>
       <div class="cli-box" role="button" tabindex="0" :aria-label="copied ? '已複製 CLI 指令' : '複製 CLI 指令'" @click="copyCli" @keydown.enter.prevent="copyCli" @keydown.space.prevent="copyCli" :title="copied ? '已複製' : '點擊複製'">
         <span class="cli-text">{{ store.cliCommand }}</span>
-        <span class="cli-copy" aria-hidden="true">{{ copied ? '✓' : '⎘' }}</span>
+        <Icon :name="copied ? 'check' : 'copy'" :size="13" class="cli-copy" />
       </div>
       <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
@@ -717,6 +718,9 @@ function statusTitle(s: string) {
 /* Lock while running */
 .lock-wrap { display: contents; border: 0; }
 .lock-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--accent);
   /* sticky：底色必須不透明，否則捲動時下方欄位會透出來 */
@@ -738,7 +742,7 @@ function statusTitle(s: string) {
   z-index: 1;
   line-height: 1.5;
 }
-.blockers-title { font-weight: 600; margin-bottom: 2px; }
+.blockers-title { display: flex; align-items: center; gap: 5px; font-weight: 600; margin-bottom: 2px; }
 .start-blockers ul { margin: 0; padding-left: 14px; }
 .start-blockers li { color: var(--text0); }
 .start-blockers li::marker { color: var(--warn); }
@@ -786,7 +790,6 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 
 .arrow {
-  font-size: 10px;
   color: var(--text2);
   transition: transform 0.2s;
 }
@@ -973,7 +976,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   border-color: rgba(var(--accent-rgb),0.4);
   background: rgba(var(--accent-rgb),0.04);
 }
-.drop-icon { font-size: 18px; color: var(--text2); line-height: 1; }
+.drop-icon { color: var(--text2); margin-bottom: 2px; }
 .drop-main { font-size: 12px; color: var(--text0); font-weight: 500; }
 .drop-sub  { font-size: 11px; color: var(--text2); font-family: var(--mono); }
 
@@ -1004,6 +1007,9 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 /* Import error */
 .import-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--danger);
@@ -1166,7 +1172,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 .cli-box:hover { border-color: var(--border3); }
 .cli-text { font-family: var(--mono); font-size: 11px; color: var(--text1); word-break: break-all; line-height: 1.6; flex: 1; }
-.cli-copy { font-size: 12px; color: var(--text2); flex-shrink: 0; margin-top: 1px; transition: color 0.2s; }
+.cli-copy { color: var(--text2); margin-top: 1px; transition: color 0.2s; }
 .cli-box:hover .cli-copy { color: var(--accent); }
 .range-pair { display: flex; align-items: center; gap: 4px; }
 .range-pair input { flex: 1; min-width: 0; }
