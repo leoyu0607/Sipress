@@ -62,18 +62,20 @@ provide('toggleTheme', toggleTheme)
   --blue:    #3d9fff;
   --warn:    #f5a623;
   --danger:  #ff4d4d;
-  --purple:  #a855f7;
+  --purple:  #b57af9;
 
   /* RGB triplets for rgba(var(--x-rgb), alpha) */
   --accent-rgb: 0,229,192;
   --blue-rgb:   61,159,255;
   --warn-rgb:   245,166,35;
   --danger-rgb: 255,77,77;
-  --purple-rgb: 168,85,247;
+  --purple-rgb: 181,122,249;
 
   --text0: #e8eaf0;
-  --text1: #8a90a4;
-  --text2: #6b7287;
+  /* 對比（對 --bg1 / --bg3）：text1 7.7/6.5、text2 5.5/4.7 — 皆達 WCAG AA 4.5:1；
+     text3 僅供裝飾（分隔線、停用狀態），不可用於需閱讀的文字 */
+  --text1: #a0a6b8;
+  --text2: #848ba0;
   --text3: #4f5568;
 
   --input-bg:     #0b0d12;
@@ -98,21 +100,22 @@ provide('toggleTheme', toggleTheme)
   --border2: rgba(0,0,0,0.12);
   --border3: rgba(0,0,0,0.20);
 
-  --accent:  #00a189;
-  --blue:    #1a7fd4;
-  --warn:    #c27a08;
-  --danger:  #d93636;
+  /* 亮色主題的狀態色會直接當文字色使用，需對 --bg0 ~ --bg3 都達 4.5:1 */
+  --accent:  #00786a;
+  --blue:    #1462a6;
+  --warn:    #935c00;
+  --danger:  #c02828;
   --purple:  #8b3fd9;
 
-  --accent-rgb: 0,161,137;
-  --blue-rgb:   26,127,212;
-  --warn-rgb:   194,122,8;
-  --danger-rgb: 217,54,54;
+  --accent-rgb: 0,120,106;
+  --blue-rgb:   20,98,166;
+  --warn-rgb:   147,92,0;
+  --danger-rgb: 192,40,40;
   --purple-rgb: 139,63,217;
 
   --text0: #1a1c22;
-  --text1: #4a5068;
-  --text2: #6b7488;
+  --text1: #3f4560;
+  --text2: #5b6377;
   --text3: #a3aab8;
 
   --input-bg:     #ffffff;
@@ -167,7 +170,7 @@ html, body, #app {
 .btn:active { transform: scale(0.97); }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
-.btn-sm { padding: 3px 8px; font-size: 10px; }
+.btn-sm { padding: 3px 8px; font-size: 11px; }
 
 .btn-accent {
   color: var(--accent);

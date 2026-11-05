@@ -88,7 +88,7 @@ function resize() {
 }
 
 function drawPill(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color: string, bg: string, W: number) {
-  ctx.font = '500 10px JetBrains Mono, monospace'
+  ctx.font = '500 11px JetBrains Mono, monospace'
   const w = ctx.measureText(text).width + 10
   const h = 16
   let px = x + 8
@@ -147,7 +147,7 @@ function draw() {
   const xStep = cW / (data.length - 1)
 
   // Grid lines + y-axis labels
-  ctx.font      = '10px JetBrains Mono, monospace'
+  ctx.font      = '11px JetBrains Mono, monospace'
   ctx.textAlign = 'right'
   const steps   = 4
   for (let i = 0; i <= steps; i++) {
@@ -217,7 +217,7 @@ function draw() {
   // X-axis ticks（實際經過秒數）
   ctx.textAlign  = 'center'
   ctx.fillStyle  = label
-  ctx.font       = '10px JetBrains Mono, monospace'
+  ctx.font       = '11px JetBrains Mono, monospace'
   const every    = Math.max(1, Math.ceil(data.length / 6))
   for (let i = 0; i < data.length; i += every) {
     ctx.fillText(`${offset + i}s`, pad.l + i * xStep, H - 8)
@@ -345,7 +345,7 @@ onUnmounted(() => ro.disconnect())
   align-items: center;
   gap: 5px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text1);
   background: var(--bg3);
   border: 1px solid var(--border2);
@@ -374,7 +374,7 @@ onUnmounted(() => ro.disconnect())
 .tab {
   padding: 3px 8px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text2);
   border-radius: 3px;

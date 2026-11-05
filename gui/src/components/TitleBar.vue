@@ -76,12 +76,12 @@ function toggleTest() {
       <div class="dot" :class="{ pulse: store.status === 'running' }"></div>
       <span>{{ MODE_LABEL[store.config.mode] }} · {{ STATUS_LABEL[store.status] }}</span>
     </div>
-    <div class="status-badge running" v-if="bothRunning" title="民眾端與座席端同時執行中">
+    <div class="status-badge running both-badge" v-if="bothRunning" title="民眾端與座席端同時執行中">
       <span>雙端執行中</span>
     </div>
 
     <!-- Target -->
-    <div class="target-info" v-if="store.config.server">
+    <div class="target-info" v-if="store.config.server" :title="`${store.config.server} (${store.config.transport})`">
       → <strong>{{ store.config.server }}</strong>
       <span class="transport-tag">{{ store.config.transport }}</span>
     </div>
@@ -226,9 +226,11 @@ function toggleTest() {
   padding: 3px 9px;
   border-radius: 99px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   border: 1px solid;
+  white-space: nowrap;   /* 窄視窗時不可被擠成直排；改由右側目標位址截斷 */
+  flex-shrink: 0;
   transition: all 0.3s;
 }
 .status-badge.idle    { color: var(--text1); border-color: var(--border2); }
@@ -260,7 +262,7 @@ function toggleTest() {
 .target-info strong { color: var(--text0); font-weight: 500; }
 .transport-tag {
   margin-left: 4px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   background: var(--bg3);
   padding: 1px 5px;
@@ -319,5 +321,14 @@ function toggleTest() {
 }
 .theme-btn:hover .theme-icon svg {
   transform: rotate(20deg);
+}
+
+/* 窄視窗（最小 960px）：收緊間距、藏起次要資訊，確保右側視窗控制鈕不被擠出畫面。
+   目標位址與「雙端執行中」在側欄 / 模式分頁的執行點都看得到 */
+@media (max-width: 1100px) {
+  .titlebar { gap: 6px; }
+  .actions { gap: 4px; }
+  .actions .btn-sm { padding: 3px 6px; }
+  .target-info, .both-badge { display: none; }
 }
 </style>
