@@ -101,8 +101,8 @@ onUnmounted(onDragEnd)
     <div class="resize-handle" v-if="!collapsed" @mousedown.prevent="onDragStart" title="拖曳調整高度"></div>
 
     <div class="log-hdr">
-      <button class="collapse-btn" @click="collapsed = !collapsed" :title="collapsed ? '展開' : '收合'">
-        <span class="arrow" :class="{ open: !collapsed }">▶</span>
+      <button class="collapse-btn" :aria-expanded="!collapsed" aria-label="事件記錄" @click="collapsed = !collapsed" :title="collapsed ? '展開' : '收合'">
+        <span class="arrow" aria-hidden="true" :class="{ open: !collapsed }">▶</span>
       </button>
       <span class="log-title">事件記錄</span>
       <span class="log-count">{{ store.logs.length }}</span>
@@ -188,7 +188,7 @@ onUnmounted(onDragEnd)
   padding: 2px 4px;
   color: var(--text2);
 }
-.arrow { font-size: 8px; display: inline-block; transition: transform 0.2s; }
+.arrow { font-size: 10px; display: inline-block; transition: transform 0.2s; }
 .arrow.open { transform: rotate(90deg); }
 
 .log-title {
@@ -199,7 +199,7 @@ onUnmounted(onDragEnd)
 
 .log-count {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   background: var(--bg3);
   padding: 1px 6px;
@@ -209,7 +209,7 @@ onUnmounted(onDragEnd)
 .level-filters { display: flex; gap: 4px; margin-left: 6px; }
 .lvl-chip {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   padding: 1px 7px;
   border-radius: 99px;
@@ -254,22 +254,22 @@ onUnmounted(onDragEnd)
 .log-line:hover { background: var(--bg1); }
 
 .log-ts {
-  color: var(--text3);
+  color: var(--text2);
   min-width: 82px;
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .log-mode {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
 }
 .log-mode.agent { color: var(--blue); }
 .log-level {
   min-width: 34px;
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
 }
 

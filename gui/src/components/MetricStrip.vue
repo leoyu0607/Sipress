@@ -112,7 +112,7 @@ const errClass = computed(() => {
 
 .name {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1em;
   color: var(--text2);
@@ -134,7 +134,7 @@ const errClass = computed(() => {
 .val.c-danger { color: var(--danger); }
 
 .unit {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   margin-top: 2px;
   white-space: nowrap;

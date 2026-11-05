@@ -127,38 +127,46 @@ function statusTitle(s: string) {
 <template>
   <aside class="sidebar">
     <div class="lock-banner" v-if="locked">● 測試執行中，設定已鎖定</div>
+    <!-- 「開始測試」被擋住的原因直接列出，不只放在按鈕的 hover 提示裡 -->
+    <div class="start-blockers" v-else-if="store.validationErrors.length > 0" aria-live="polite">
+      <div class="blockers-title">開始前需修正 {{ store.validationErrors.length }} 項</div>
+      <ul>
+        <li v-for="e in store.validationErrors" :key="e">{{ e }}</li>
+      </ul>
+    </div>
     <fieldset class="lock-wrap" :disabled="locked">
 
     <!-- ── TARGET ─────────────────────────────────────────── -->
     <div class="section">
-      <div class="section-hdr" @click="toggleSec('target')">
+      <div class="section-hdr" role="button" tabindex="0" :aria-expanded="sec.target"
+           @click="toggleSec('target')" @keydown.enter.prevent="toggleSec('target')" @keydown.space.prevent="toggleSec('target')">
         <span class="section-label">連線目標</span>
-        <span class="arrow" :class="{ open: sec.target }">▶</span>
+        <span aria-hidden="true" class="arrow" :class="{ open: sec.target }">▶</span>
       </div>
       <div class="section-body" v-show="sec.target">
         <div class="field">
-          <label>SIP 伺服器 <span class="tag">-s</span></label>
-          <input v-model="store.config.server" type="text" placeholder="host:port" :class="{ invalid: serverInvalid }">
-          <div class="field-err" v-if="serverInvalid">格式需為 host:port，例：192.168.1.10:5060</div>
+          <label for="sb-server">SIP 伺服器 <span class="tag">-s</span></label>
+          <input id="sb-server" v-model="store.config.server" type="text" placeholder="host:port" :class="{ invalid: serverInvalid }" :aria-invalid="serverInvalid" aria-describedby="sb-server-err">
+          <div class="field-err" id="sb-server-err" v-if="serverInvalid">格式需為 host:port，例：192.168.1.10:5060</div>
         </div>
         <div class="field-row">
           <div class="field">
-            <label>傳輸協定</label>
-            <select v-model="store.config.transport">
+            <label for="sb-transport">傳輸協定</label>
+            <select id="sb-transport" v-model="store.config.transport">
               <option>UDP</option><option>TCP</option>
             </select>
           </div>
           <div class="field">
-            <label>本地埠</label>
-            <input v-model.number="store.config.localPort" type="number" min="0" max="65535"
+            <label for="sb-local-port">本地埠</label>
+            <input id="sb-local-port" v-model.number="store.config.localPort" type="number" min="0" max="65535"
                    title="民眾端 SIP 綁定的本機 port；0 = 自動。座席端每個帳號各自使用隨機 port">
           </div>
         </div>
         <div class="field">
-          <label>{{ store.config.mode === 'agent' ? '座席端' : '民眾端' }}持續時間 (s) <span class="tag">--duration</span></label>
+          <label for="sb-duration">{{ store.config.mode === 'agent' ? '座席端' : '民眾端' }}持續時間 (s) <span class="tag">--duration</span></label>
           <div class="slider-row">
-            <input type="range" min="0" max="3600" v-model.number="store.config[store.config.mode].duration">
-            <input type="number" min="0" v-model.number="store.config[store.config.mode].duration" class="num-input">
+            <input aria-label="持續時間（秒）" type="range" min="0" max="3600" v-model.number="store.config[store.config.mode].duration">
+            <input id="sb-duration" type="number" min="0" v-model.number="store.config[store.config.mode].duration" class="num-input">
           </div>
           <div class="field-hint">{{ durationHint }}</div>
         </div>
@@ -169,9 +177,11 @@ function statusTitle(s: string) {
 
     <!-- ── MODE TABS ──────────────────────────────────────── -->
     <!-- 只切換檢視中的一端，不受執行鎖定影響：雙端執行時仍可切換查看另一端 -->
-    <div class="mode-tabs">
+    <div class="mode-tabs" role="tablist" aria-label="檢視端">
       <button
         class="mode-tab"
+        role="tab"
+        :aria-selected="store.config.mode === 'caller'"
         :class="{ active: store.config.mode === 'caller' }"
         @click="store.config.mode = 'caller'"
       >
@@ -181,6 +191,8 @@ function statusTitle(s: string) {
       </button>
       <button
         class="mode-tab"
+        role="tab"
+        :aria-selected="store.config.mode === 'agent'"
         :class="{ active: store.config.mode === 'agent' }"
         @click="store.config.mode = 'agent'"
       >
@@ -194,64 +206,65 @@ function statusTitle(s: string) {
 
     <!-- ── CALLER PROFILE ─────────────────────────────────── -->
     <div class="section" v-if="store.config.mode === 'caller'">
-      <div class="section-hdr" @click="toggleSec('caller')">
+      <div class="section-hdr" role="button" tabindex="0" :aria-expanded="sec.caller"
+           @click="toggleSec('caller')" @keydown.enter.prevent="toggleSec('caller')" @keydown.space.prevent="toggleSec('caller')">
         <span class="section-label">民眾端設定</span>
-        <span class="arrow" :class="{ open: sec.caller }">▶</span>
+        <span aria-hidden="true" class="arrow" :class="{ open: sec.caller }">▶</span>
       </div>
       <div class="section-body" v-show="sec.caller">
 
         <div class="field">
-          <label>主叫號碼</label>
-          <input v-model="store.config.caller.accessNumber" type="text" placeholder="例：4008001234" :class="{ invalid: !store.config.caller.accessNumber.trim() }">
+          <label for="sb-access-number">主叫號碼</label>
+          <input id="sb-access-number" v-model="store.config.caller.accessNumber" type="text" placeholder="例：4008001234" :class="{ invalid: !store.config.caller.accessNumber.trim() }">
           <div class="field-hint">From 標頭中的號碼，告訴交換機「這通是誰打的」</div>
         </div>
         <div class="field-row">
           <div class="field" style="flex:1">
-            <label>撥號認證帳號</label>
-            <input v-model="store.config.caller.authUser" type="text" placeholder="空白 = 主叫號碼" autocomplete="off"
+            <label for="sb-auth-user">撥號認證帳號</label>
+            <input id="sb-auth-user" v-model="store.config.caller.authUser" type="text" placeholder="空白 = 主叫號碼" autocomplete="off"
                    title="SIPX 對 INVITE 回 401 / 407 時使用的 Digest 帳號">
           </div>
           <div class="field" style="flex:1">
-            <label>撥號認證密碼</label>
-            <input v-model="store.config.caller.authPass" type="password" placeholder="空白 = 不認證" autocomplete="new-password"
+            <label for="sb-auth-pass">撥號認證密碼</label>
+            <input id="sb-auth-pass" v-model="store.config.caller.authPass" type="password" placeholder="空白 = 不認證" autocomplete="new-password"
                    title="設定後，INVITE 收到 401 / 407 會帶認證重送一次">
           </div>
         </div>
         <div class="toggle-row field">
-          <span title="第 n 通使用「主叫號碼 + n」（保留位數）。端到端對照拿不到 P-CIN-CallId 時，靠不同號碼一對一配對座席端來電">每通不同主叫號碼 <span class="tag">--from-seq</span></span>
+          <span id="sb-number-seq-lbl" title="第 n 通使用「主叫號碼 + n」（保留位數）。端到端對照拿不到 P-CIN-CallId 時，靠不同號碼一對一配對座席端來電">每通不同主叫號碼 <span class="tag">--from-seq</span></span>
           <label class="toggle">
-            <input type="checkbox" v-model="store.config.caller.numberSeq">
+            <input aria-labelledby="sb-number-seq-lbl" type="checkbox" v-model="store.config.caller.numberSeq">
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
 
         <div class="field">
-          <label>被叫號碼 <span class="tag">--to</span></label>
-          <input v-model="store.config.caller.calleeFixed" type="text" placeholder="例：8001（留空 = 隨機）">
+          <label for="sb-callee">被叫號碼 <span class="tag">--to</span></label>
+          <input id="sb-callee" v-model="store.config.caller.calleeFixed" type="text" placeholder="例：8001（留空 = 隨機）">
           <div class="field-hint">{{ store.config.caller.calleeFixed ? `所有通話都打給 ${store.config.caller.calleeFixed}` : '留空時使用前綴+隨機尾數（壓測分散負載用）' }}</div>
         </div>
 
         <div class="field" v-show="!store.config.caller.calleeFixed">
-          <label>被叫前綴 / 尾數範圍 <span class="tag">--to-prefix / --to-range</span></label>
+          <label for="sb-callee-prefix">被叫前綴 / 尾數範圍 <span class="tag">--to-prefix / --to-range</span></label>
           <div class="slider-row" style="gap:6px">
-            <input v-model="store.config.caller.calleePrefix" type="text" placeholder="2" style="flex:1">
-            <input type="number" min="0" v-model.number="store.config.caller.calleeRange" class="num-input">
+            <input id="sb-callee-prefix" v-model="store.config.caller.calleePrefix" type="text" placeholder="2" style="flex:1">
+            <input aria-label="被叫尾數範圍" type="number" min="0" v-model.number="store.config.caller.calleeRange" class="num-input">
           </div>
           <div class="field-hint">例：前綴 80 + 尾數 99 → 隨機產生 80~8099</div>
         </div>
 
         <div class="field">
-          <label>併發數量 <span class="tag">-c</span></label>
+          <label for="sb-concurrency">併發數量 <span class="tag">-c</span></label>
           <div class="slider-row">
-            <input type="range" min="1" max="1000" v-model.number="store.config.caller.concurrency">
-            <input type="number" min="1" max="10000" v-model.number="store.config.caller.concurrency" class="num-input">
+            <input aria-label="併發數量" type="range" min="1" max="1000" v-model.number="store.config.caller.concurrency">
+            <input id="sb-concurrency" type="number" min="1" max="10000" v-model.number="store.config.caller.concurrency" class="num-input">
           </div>
         </div>
 
         <!-- CPS 負載模式 -->
         <div class="field">
-          <label>CPS 模式</label>
-          <select v-model="store.config.caller.cpsPattern.type">
+          <label for="sb-cps-pattern">CPS 模式</label>
+          <select id="sb-cps-pattern" v-model="store.config.caller.cpsPattern.type">
             <option value="flat">固定</option>
             <option value="ramp">漸增 Ramp</option>
             <option value="step">階梯 Step</option>
@@ -266,22 +279,22 @@ function statusTitle(s: string) {
         </div>
 
         <div class="field" v-if="store.config.caller.cpsPattern.type === 'flat'">
-          <label>呼叫頻率 CPS <span class="tag">--cps</span></label>
+          <label for="sb-cps">呼叫頻率 CPS <span class="tag">--cps</span></label>
           <div class="slider-row">
-            <input type="range" min="1" max="200" v-model.number="store.config.caller.cps">
-            <input type="number" min="1" max="1000" v-model.number="store.config.caller.cps" class="num-input">
+            <input aria-label="呼叫頻率 CPS" type="range" min="1" max="200" v-model.number="store.config.caller.cps">
+            <input id="sb-cps" type="number" min="1" max="1000" v-model.number="store.config.caller.cps" class="num-input">
           </div>
         </div>
 
         <!-- Ramp config -->
         <div class="field-row" v-if="store.config.caller.cpsPattern.type === 'ramp'">
           <div class="field" style="flex:1">
-            <label>起始 CPS</label>
-            <input type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.rampStart">
+            <label for="sb-ramp-start">起始 CPS</label>
+            <input id="sb-ramp-start" type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.rampStart">
           </div>
           <div class="field" style="flex:1">
-            <label>終止 CPS</label>
-            <input type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.rampEnd">
+            <label for="sb-ramp-end">終止 CPS</label>
+            <input id="sb-ramp-end" type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.rampEnd">
           </div>
         </div>
 
@@ -290,11 +303,11 @@ function statusTitle(s: string) {
           <div class="field-row step-row" v-for="(step, idx) in store.config.caller.cpsPattern.steps" :key="idx">
             <div class="field" style="flex:1">
               <label v-if="idx === 0">CPS</label>
-              <input type="number" min="1" max="500" v-model.number="step.cps">
+              <input :aria-label="`第 ${idx + 1} 階 CPS`" type="number" min="1" max="500" v-model.number="step.cps">
             </div>
             <div class="field" style="flex:1">
               <label v-if="idx === 0">秒數</label>
-              <input type="number" min="1" max="3600" v-model.number="step.duration_secs">
+              <input :aria-label="`第 ${idx + 1} 階秒數`" type="number" min="1" max="3600" v-model.number="step.duration_secs">
             </div>
             <button class="del-btn" @click="store.config.caller.cpsPattern.steps.splice(idx, 1)" style="margin-bottom:6px" title="刪除此階層" aria-label="刪除此階層">×</button>
           </div>
@@ -305,22 +318,22 @@ function statusTitle(s: string) {
         <div v-if="store.config.caller.cpsPattern.type === 'spike'">
           <div class="field-row">
             <div class="field" style="flex:1">
-              <label>基準 CPS</label>
-              <input type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.spikeBase">
+              <label for="sb-spike-base">基準 CPS</label>
+              <input id="sb-spike-base" type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.spikeBase">
             </div>
             <div class="field" style="flex:1">
-              <label>尖峰 CPS</label>
-              <input type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.spikePeak">
+              <label for="sb-spike-peak">尖峰 CPS</label>
+              <input id="sb-spike-peak" type="number" min="1" max="500" v-model.number="store.config.caller.cpsPattern.spikePeak">
             </div>
           </div>
           <div class="field-row">
             <div class="field" style="flex:1">
-              <label>觸發位置 (%)</label>
-              <input type="number" min="0" max="100" v-model.number="store.config.caller.cpsPattern.spikeAtPct">
+              <label for="sb-spike-at">觸發位置 (%)</label>
+              <input id="sb-spike-at" type="number" min="0" max="100" v-model.number="store.config.caller.cpsPattern.spikeAtPct">
             </div>
             <div class="field" style="flex:1">
-              <label>持續秒數</label>
-              <input type="number" min="1" max="300" v-model.number="store.config.caller.cpsPattern.spikeDurationSecs">
+              <label for="sb-spike-dur">持續秒數</label>
+              <input id="sb-spike-dur" type="number" min="1" max="300" v-model.number="store.config.caller.cpsPattern.spikeDurationSecs">
             </div>
           </div>
         </div>
@@ -328,36 +341,36 @@ function statusTitle(s: string) {
         <!-- Batch config -->
         <div class="field-row" v-if="store.config.caller.cpsPattern.type === 'batch'">
           <div class="field" style="flex:1">
-            <label>每批通數 <span class="tag">--cps-batch</span></label>
-            <input type="number" min="1" max="1000" v-model.number="store.config.caller.cpsPattern.batchCount">
+            <label for="sb-batch-count">每批通數 <span class="tag">--cps-batch</span></label>
+            <input id="sb-batch-count" type="number" min="1" max="1000" v-model.number="store.config.caller.cpsPattern.batchCount">
           </div>
           <div class="field" style="flex:1">
-            <label>間隔 (秒)</label>
-            <input type="number" min="0.1" step="0.5" v-model.number="store.config.caller.cpsPattern.batchEvery">
+            <label for="sb-batch-every">間隔 (秒)</label>
+            <input id="sb-batch-every" type="number" min="0.1" step="0.5" v-model.number="store.config.caller.cpsPattern.batchEvery">
           </div>
         </div>
 
         <div class="field">
-          <label>補話延遲 (秒) <span class="tag">--refill-delay</span></label>
-          <input type="number" min="0" step="0.5" v-model.number="store.config.caller.refillDelay"
+          <label for="sb-refill-delay">補話延遲 (秒) <span class="tag">--refill-delay</span></label>
+          <input id="sb-refill-delay" type="number" min="0" step="0.5" v-model.number="store.config.caller.refillDelay"
                  title="線路釋放後等幾秒才補新的通話；雙端測 SIPX 時設 2–3 秒，避免新來電剛好在座席掛線的瞬間進線">
           <div class="field-hint">{{ store.config.caller.refillDelay > 0 ? `線路釋放 ${store.config.caller.refillDelay} 秒後才補下一通` : '0 = 線路一釋放就補' }}</div>
         </div>
 
         <div class="field">
-          <label>總測試通數 <span class="tag">--max-calls</span></label>
+          <label for="sb-total-calls">總測試通數 <span class="tag">--max-calls</span></label>
           <div class="slider-row">
-            <input type="range" min="0" max="10000" step="100" v-model.number="store.config.caller.totalCalls">
-            <input type="number" min="0" v-model.number="store.config.caller.totalCalls" class="num-input">
+            <input aria-label="總測試通數" type="range" min="0" max="10000" step="100" v-model.number="store.config.caller.totalCalls">
+            <input id="sb-total-calls" type="number" min="0" v-model.number="store.config.caller.totalCalls" class="num-input">
           </div>
           <div class="field-hint">{{ store.config.caller.totalCalls === 0 ? '0 = 不限（依測試時長）' : `達 ${store.config.caller.totalCalls} 通後自動停止` }}</div>
         </div>
 
         <div class="field">
-          <label>單通時長 (s) <span class="tag">--call-duration</span></label>
+          <label for="sb-call-duration">單通時長 (s) <span class="tag">--call-duration</span></label>
           <div class="slider-row">
-            <input type="range" min="0" max="300" v-model.number="store.config.caller.callDuration">
-            <input type="number" min="0" v-model.number="store.config.caller.callDuration" class="num-input">
+            <input aria-label="單通時長（秒）" type="range" min="0" max="300" v-model.number="store.config.caller.callDuration">
+            <input id="sb-call-duration" type="number" min="0" v-model.number="store.config.caller.callDuration" class="num-input">
           </div>
           <div class="field-hint">{{ store.config.caller.callDuration === 0 ? '0 = 不限（直到對方掛斷）' : `接通後約 ${store.config.caller.callDuration} 秒掛斷` }}</div>
         </div>
@@ -365,18 +378,18 @@ function statusTitle(s: string) {
         <!-- Audio -->
         <div class="field">
           <div class="toggle-row">
-            <span>播放音檔</span>
+            <span id="sb-enable-audio-lbl">播放音檔</span>
             <label class="toggle">
-              <input type="checkbox" v-model="store.config.caller.enableAudio">
+              <input aria-labelledby="sb-enable-audio-lbl" type="checkbox" v-model="store.config.caller.enableAudio">
               <span class="track"><span class="thumb"></span></span>
             </label>
           </div>
         </div>
 
         <div class="field" v-if="store.config.caller.enableAudio">
-          <label>音檔路徑</label>
+          <label for="sb-audio-file">音檔路徑</label>
           <div class="file-pick-row">
-            <input v-model="store.config.caller.audioFile" type="text" placeholder="audio.wav" class="file-path-input" :class="{ invalid: audioMissing }" :title="store.config.caller.audioFile">
+            <input id="sb-audio-file" v-model="store.config.caller.audioFile" type="text" placeholder="audio.wav" class="file-path-input" :class="{ invalid: audioMissing }" :aria-invalid="audioMissing" :title="store.config.caller.audioFile">
             <button class="btn btn-sm" @click="pickAudioFile">瀏覽</button>
           </div>
           <div class="field-err" v-if="audioMissing">請選擇音檔，否則無法開始測試</div>
@@ -385,8 +398,8 @@ function statusTitle(s: string) {
 
         <!-- Codec -->
         <div class="field" v-if="store.config.caller.enableAudio">
-          <label>Codec</label>
-          <select v-model="store.config.caller.codec">
+          <label for="sb-codec">Codec</label>
+          <select id="sb-codec" v-model="store.config.caller.codec">
             <option value="pcma">G.711A (PCMA)</option>
             <option value="pcmu">G.711U (PCMU)</option>
           </select>
@@ -394,8 +407,8 @@ function statusTitle(s: string) {
 
         <!-- DTMF -->
         <div class="field">
-          <label>DTMF 序列</label>
-          <input v-model="store.config.caller.dtmfSequence" type="text" placeholder="1,w2000,2,w500,#">
+          <label for="sb-dtmf">DTMF 序列</label>
+          <input id="sb-dtmf" v-model="store.config.caller.dtmfSequence" type="text" placeholder="1,w2000,2,w500,#">
           <div class="field-hint">接通後自動送出（w=等待ms，如 1,w2000,# 表示按1→等2秒→按#）</div>
         </div>
 
@@ -404,43 +417,44 @@ function statusTitle(s: string) {
 
     <!-- ── AGENT PROFILE ──────────────────────────────────── -->
     <div class="section agent-section" v-if="store.config.mode === 'agent'">
-      <div class="section-hdr" @click="toggleSec('agent')">
+      <div class="section-hdr" role="button" tabindex="0" :aria-expanded="sec.agent"
+           @click="toggleSec('agent')" @keydown.enter.prevent="toggleSec('agent')" @keydown.space.prevent="toggleSec('agent')">
         <span class="section-label">座席端設定</span>
         <div class="section-hdr-right">
           <span class="acc-count-badge">
             {{ store.config.agent.accounts.length }} 帳號
           </span>
-          <span class="arrow" :class="{ open: sec.agent }">▶</span>
+          <span aria-hidden="true" class="arrow" :class="{ open: sec.agent }">▶</span>
         </div>
       </div>
       <div class="section-body agent-body" v-show="sec.agent">
 
         <!-- Default domain -->
         <div class="field">
-          <label>預設 SIP Domain</label>
-          <input v-model="store.config.agent.defaultDomain" type="text" placeholder="192.168.1.100">
+          <label for="sb-domain">預設 SIP Domain</label>
+          <input id="sb-domain" v-model="store.config.agent.defaultDomain" type="text" placeholder="192.168.1.100">
         </div>
 
         <!-- Timeouts -->
         <div class="field-row">
           <div class="field" style="flex:1">
-            <label>ACK 逾時 (秒)</label>
-            <input v-model.number="store.config.agent.ackTimeout" type="number" min="1" max="60" placeholder="10">
+            <label for="sb-ack-timeout">ACK 逾時 (秒)</label>
+            <input id="sb-ack-timeout" v-model.number="store.config.agent.ackTimeout" type="number" min="1" max="60" placeholder="10">
           </div>
           <div class="field" style="flex:1">
-            <label>BYE 逾時 (秒)</label>
-            <input v-model.number="store.config.agent.byeTimeout" type="number" min="1" max="600" placeholder="150">
+            <label for="sb-bye-timeout">BYE 逾時 (秒)</label>
+            <input id="sb-bye-timeout" v-model.number="store.config.agent.byeTimeout" type="number" min="1" max="600" placeholder="150">
           </div>
         </div>
         <div class="field">
-          <label>註冊間隔 (毫秒) <span class="tag">--register-interval</span></label>
-          <input v-model.number="store.config.agent.registerInterval" type="number" min="0" step="100" placeholder="1000"
+          <label for="sb-reg-interval">註冊間隔 (毫秒) <span class="tag">--register-interval</span></label>
+          <input id="sb-reg-interval" v-model.number="store.config.agent.registerInterval" type="number" min="0" step="100" placeholder="1000"
                  title="每個分機開始註冊的間隔；大量分機同時註冊會部分失敗時調大。壓測啟動、帳號批次註冊與座席流程都依此錯開；0 = 同時註冊">
           <div class="field-hint" v-if="registerEta">{{ registerEta }}</div>
         </div>
         <div class="field">
-          <label>註冊有效期 (秒) <span class="tag">--register-expires</span></label>
-          <input v-model.number="store.config.agent.registerExpires" type="number" min="30" step="60" placeholder="3600"
+          <label for="sb-reg-expires">註冊有效期 (秒) <span class="tag">--register-expires</span></label>
+          <input id="sb-reg-expires" v-model.number="store.config.agent.registerExpires" type="number" min="30" step="60" placeholder="3600"
                  title="REGISTER 要求的有效期；伺服器可能改給其他值（SIPX 對 3600 給 1800），在有效期的 2/3 時重新註冊。一般 IP 話機用 3600；SIPX 的 CTI 每次收到註冊都會產生 Register 事件，不建議設太短">
           <div class="field-hint">有效期的 2/3 時重新註冊（SIPX 給 1800 秒時約每 20 分鐘）</div>
         </div>
@@ -449,47 +463,47 @@ function statusTitle(s: string) {
         <div class="field">
           <label title="SIPX 環境建議 1–2 秒：設 0 秒時 100 / 180 / 200 幾乎同時送出，CTI 可能漏掉「接聽」事件，座席之後不再被派話">響鈴後接聽 (秒) <span class="tag">--ring</span></label>
           <div class="range-pair">
-            <input v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
+            <input aria-label="響鈴後接聽最短秒數" v-model.number="store.config.agent.behavior.ringMin" type="number" min="0" step="0.5" title="最小值">
             <span>–</span>
-            <input v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
+            <input aria-label="響鈴後接聽最長秒數" v-model.number="store.config.agent.behavior.ringMax" type="number" min="0" step="0.5" title="最大值；0 = 立即接聽">
           </div>
         </div>
         <div class="field">
           <label>主動掛斷 (秒) <span class="tag">--talk</span></label>
           <div class="range-pair">
-            <input v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
+            <input aria-label="主動掛斷最短秒數" v-model.number="store.config.agent.behavior.talkMin" type="number" min="0" title="最小值">
             <span>–</span>
-            <input v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
+            <input aria-label="主動掛斷最長秒數" v-model.number="store.config.agent.behavior.talkMax" type="number" min="0" title="最大值；0 = 等對方 BYE">
           </div>
         </div>
         <div class="field-row">
           <div class="field" style="flex:1">
-            <label>拒接 % <span class="tag">486</span></label>
-            <input v-model.number="store.config.agent.behavior.rejectPct" type="number" min="0" max="100"
+            <label for="sb-reject-pct">拒接 % <span class="tag">486</span></label>
+            <input id="sb-reject-pct" v-model.number="store.config.agent.behavior.rejectPct" type="number" min="0" max="100"
                    title="響鈴後回 486 Busy Here 的比例">
           </div>
           <div class="field" style="flex:1">
-            <label>不接 %</label>
-            <input v-model.number="store.config.agent.behavior.noAnswerPct" type="number" min="0" max="100"
+            <label for="sb-no-answer-pct">不接 %</label>
+            <input id="sb-no-answer-pct" v-model.number="store.config.agent.behavior.noAnswerPct" type="number" min="0" max="100"
                    title="一直響鈴不接，等 SIPX 逾時 CANCEL 重派的比例">
           </div>
           <div class="field" style="flex:1">
-            <label>休息 (秒)</label>
-            <input v-model.number="store.config.agent.behavior.wrapUp" type="number" min="0"
+            <label for="sb-wrap-up">休息 (秒)</label>
+            <input id="sb-wrap-up" v-model.number="store.config.agent.behavior.wrapUp" type="number" min="0"
                    title="通話結束後的 wrap-up 時間，期間來電回 486">
           </div>
         </div>
         <div class="toggle-row field">
-          <span title="已有通話（含響鈴中）時，新來電直接回 486 Busy Here，讓 ACD 改派給其他座席。關閉時同一帳號可同時接多通">通話中忙線 <span class="tag">--busy-in-call</span></span>
+          <span id="sb-busy-in-call-lbl" title="已有通話（含響鈴中）時，新來電直接回 486 Busy Here，讓 ACD 改派給其他座席。關閉時同一帳號可同時接多通">通話中忙線 <span class="tag">--busy-in-call</span></span>
           <label class="toggle">
-            <input type="checkbox" v-model="store.config.agent.behavior.busyInCall">
+            <input aria-labelledby="sb-busy-in-call-lbl" type="checkbox" v-model="store.config.agent.behavior.busyInCall">
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
         <div class="toggle-row field">
-          <span title="每通結束後立即重新 REGISTER。SIPX 環境請勿開啟：CTI 會把掛線後收到的註冊當成座席重新登入，座席之後不再被派話。高話務下也會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag warn-tag">SIPX 勿開</span></span>
+          <span id="sb-rereg-lbl" title="每通結束後立即重新 REGISTER。SIPX 環境請勿開啟：CTI 會把掛線後收到的註冊當成座席重新登入，座席之後不再被派話。高話務下也會對交換機多送大量 REGISTER">通話後重新註冊 <span class="tag warn-tag">SIPX 勿開</span></span>
           <label class="toggle">
-            <input type="checkbox" v-model="store.config.agent.reregisterAfterCall">
+            <input aria-labelledby="sb-rereg-lbl" type="checkbox" v-model="store.config.agent.reregisterAfterCall">
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
@@ -517,7 +531,7 @@ function statusTitle(s: string) {
           @drop="onDrop"
           @click="triggerFileInput"
         >
-          <div class="drop-icon">↑</div>
+          <div class="drop-icon" aria-hidden="true">↑</div>
           <div class="drop-main">上傳帳號清單</div>
           <div class="drop-sub">CSV / TXT · 拖曳或點擊</div>
           <input ref="fileInputRef" type="file" accept=".csv,.txt" style="display:none" @change="onFileChange">
@@ -560,6 +574,7 @@ function statusTitle(s: string) {
               <div class="acc-col ext">
                 <input
                   :value="acc.extension"
+                  :aria-label="`${acc.extension || '未命名'} 分機`"
                   @input="store.updateAccount(acc.id, { extension: ($event.target as HTMLInputElement).value })"
                   class="acc-input"
                   placeholder="1001"
@@ -568,6 +583,7 @@ function statusTitle(s: string) {
               <div class="acc-col user">
                 <input
                   :value="acc.username"
+                  :aria-label="`${acc.extension || '未命名'} 帳號`"
                   @input="store.updateAccount(acc.id, { username: ($event.target as HTMLInputElement).value })"
                   class="acc-input"
                   placeholder="user"
@@ -576,6 +592,7 @@ function statusTitle(s: string) {
               <div class="acc-col pass">
                 <input
                   :value="acc.password"
+                  :aria-label="`${acc.extension || '未命名'} 密碼`"
                   @input="store.updateAccount(acc.id, { password: ($event.target as HTMLInputElement).value })"
                   class="acc-input pass-input"
                   type="password"
@@ -633,12 +650,12 @@ function statusTitle(s: string) {
     <div class="cli-section">
       <div class="cli-label-row">
         <span class="cli-label">CLI 指令預覽</span>
-        <button class="cli-opts-btn" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <span class="arrow" :class="{ open: sec.cliOpts }">▶</span></button>
+        <button class="cli-opts-btn" :aria-expanded="sec.cliOpts" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <span aria-hidden="true" class="arrow" :class="{ open: sec.cliOpts }">▶</span></button>
       </div>
       <div class="cli-opts" v-show="sec.cliOpts">
         <div class="field">
-          <label>報告格式 <span class="tag">--format / --tui</span></label>
-          <select v-model="store.config.cliFormat">
+          <label for="sb-cli-format">報告格式 <span class="tag">--format / --tui</span></label>
+          <select id="sb-cli-format" v-model="store.config.cliFormat">
             <option value="tui">TUI 儀表板</option>
             <option value="table">Table</option>
             <option value="json">JSON</option>
@@ -646,16 +663,16 @@ function statusTitle(s: string) {
           </select>
         </div>
         <div class="toggle-row field">
-          <span>詳細記錄 <span class="tag">--verbose</span></span>
+          <span id="sb-verbose-lbl">詳細記錄 <span class="tag">--verbose</span></span>
           <label class="toggle">
-            <input type="checkbox" v-model="store.config.cliVerbose">
+            <input aria-labelledby="sb-verbose-lbl" type="checkbox" v-model="store.config.cliVerbose">
             <span class="track"><span class="thumb"></span></span>
           </label>
         </div>
       </div>
-      <div class="cli-box" role="button" tabindex="0" @click="copyCli" @keydown.enter="copyCli" :title="copied ? '已複製' : '點擊複製'">
+      <div class="cli-box" role="button" tabindex="0" :aria-label="copied ? '已複製 CLI 指令' : '複製 CLI 指令'" @click="copyCli" @keydown.enter.prevent="copyCli" @keydown.space.prevent="copyCli" :title="copied ? '已複製' : '點擊複製'">
         <span class="cli-text">{{ store.cliCommand }}</span>
-        <span class="cli-copy">{{ copied ? '✓' : '⎘' }}</span>
+        <span class="cli-copy" aria-hidden="true">{{ copied ? '✓' : '⎘' }}</span>
       </div>
       <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
@@ -710,6 +727,22 @@ function statusTitle(s: string) {
   top: 0;
   z-index: 1;
 }
+.start-blockers {
+  font-size: 11px;
+  color: var(--warn);
+  background: linear-gradient(rgba(var(--warn-rgb),0.08), rgba(var(--warn-rgb),0.08)), var(--bg1);
+  border-bottom: 1px solid rgba(var(--warn-rgb),0.3);
+  padding: 6px 14px 7px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  line-height: 1.5;
+}
+.blockers-title { font-weight: 600; margin-bottom: 2px; }
+.start-blockers ul { margin: 0; padding-left: 14px; }
+.start-blockers li { color: var(--text0); }
+.start-blockers li::marker { color: var(--warn); }
+
 fieldset:disabled input,
 fieldset:disabled select,
 fieldset:disabled .btn,
@@ -729,7 +762,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .section-label {
   flex: 1;
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--mono);
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -745,7 +778,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .acc-count-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--accent);
   background: rgba(var(--accent-rgb),0.1);
   padding: 1px 6px;
@@ -753,7 +786,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 
 .arrow {
-  font-size: 8px;
+  font-size: 10px;
   color: var(--text2);
   transition: transform 0.2s;
 }
@@ -798,7 +831,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   color: var(--text0);
 }
 .mode-sub {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   font-family: var(--mono);
 }
@@ -823,17 +856,20 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;          /* 標籤加參數放不下時，參數整塊換到下一行 */
+  gap: 2px 6px;
   font-size: 11px;
   color: var(--text1);
   margin-bottom: 3px;
 }
 .tag {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   background: var(--bg3);
   padding: 1px 5px;
   border-radius: 3px;
+  white-space: nowrap;
 }
 .warn-tag { color: var(--warn); background: rgba(var(--warn-rgb), 0.12); }
 .flow-row { display: flex; align-items: center; gap: 6px; }
@@ -842,7 +878,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .ctl-title { font-size: 11px; color: var(--text1); margin-bottom: 6px; }
 .ctl-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .field-hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   margin-top: 3px;
   line-height: 1.5;
@@ -868,7 +904,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .field input:focus, .field select:focus { border-color: rgba(var(--accent-rgb),0.6); box-shadow: 0 0 0 2px rgba(var(--accent-rgb),0.15); }
 .field input.invalid { border-color: rgba(var(--danger-rgb),0.6); }
 .field-err {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--danger);
   margin-top: 3px;
 }
@@ -939,7 +975,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 .drop-icon { font-size: 18px; color: var(--text2); line-height: 1; }
 .drop-main { font-size: 12px; color: var(--text0); font-weight: 500; }
-.drop-sub  { font-size: 10px; color: var(--text2); font-family: var(--mono); }
+.drop-sub  { font-size: 11px; color: var(--text2); font-family: var(--mono); }
 
 /* Format hint */
 .format-hint {
@@ -950,7 +986,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   margin-bottom: 8px;
 }
 .hint-title {
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--mono);
   color: var(--text2);
   text-transform: uppercase;
@@ -960,15 +996,16 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .hint-line { margin-bottom: 2px; }
 .hint-code {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--accent);
+  overflow-wrap: anywhere;  /* 長格式範例在側欄寬度內換行，不超出框線 */
 }
-.muted { font-family: var(--mono); font-size: 10px; color: var(--text2); }
+.muted { font-family: var(--mono); font-size: 11px; color: var(--text2); }
 
 /* Import error */
 .import-error {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--danger);
   background: rgba(var(--danger-rgb),0.06);
   border: 1px solid rgba(var(--danger-rgb),0.2);
@@ -1029,7 +1066,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 /* header labels */
 .acc-table-hdr .acc-col {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1050,7 +1087,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 
 .status-dot {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -1087,7 +1124,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 .reg-ok  { color: var(--accent); font-weight: 600; }
 .reg-sep { color: var(--text2); }
-.reg-label { margin-left: 3px; color: var(--text2); font-size: 10px; }
+.reg-label { margin-left: 3px; color: var(--text2); font-size: 11px; }
 
 .acc-empty {
   font-size: 11px;
@@ -1110,17 +1147,17 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 .cli-label-row { display: flex; align-items: center; margin-bottom: 5px; }
 .cli-label {
   flex: 1;
-  font-size: 10px; font-weight: 500;
+  font-size: 11px; font-weight: 500;
   color: var(--text2); letter-spacing: 0.07em;
 }
 .cli-opts-btn {
   background: none; border: none; cursor: pointer;
-  font-size: 10px; color: var(--text2);
+  font-size: 11px; color: var(--text2);
   display: inline-flex; align-items: center; gap: 4px;
 }
 .cli-opts-btn:hover, .cli-opts-btn.open { color: var(--text1); }
 .cli-opts { margin-bottom: 6px; }
-.cli-warn { margin-top: 5px; font-size: 10px; color: var(--warn); line-height: 1.5; }
+.cli-warn { margin-top: 5px; font-size: 11px; color: var(--warn); line-height: 1.5; }
 .danger-text { color: var(--danger); }
 .cli-box {
   display: flex; align-items: flex-start; gap: 6px;
@@ -1128,7 +1165,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   padding: 6px 8px; cursor: pointer; transition: border-color 0.15s;
 }
 .cli-box:hover { border-color: var(--border3); }
-.cli-text { font-family: var(--mono); font-size: 10px; color: var(--text1); word-break: break-all; line-height: 1.6; flex: 1; }
+.cli-text { font-family: var(--mono); font-size: 11px; color: var(--text1); word-break: break-all; line-height: 1.6; flex: 1; }
 .cli-copy { font-size: 12px; color: var(--text2); flex-shrink: 0; margin-top: 1px; transition: color 0.2s; }
 .cli-box:hover .cli-copy { color: var(--accent); }
 .range-pair { display: flex; align-items: center; gap: 4px; }

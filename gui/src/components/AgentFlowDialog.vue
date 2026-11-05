@@ -277,7 +277,7 @@ code { font-family: var(--mono); color: var(--accent); font-size: 11px; }
   height: 2px; background: var(--accent); border-radius: 1px;
 }
 .grip { cursor: grab; color: var(--text2); font-family: var(--mono); user-select: none; }
-.num { font-family: var(--mono); font-size: 10px; color: var(--text2); width: 14px; text-align: right; }
+.num { font-family: var(--mono); font-size: 11px; color: var(--text2); width: 14px; text-align: right; }
 .kind { font-size: 11px; color: var(--text1); width: 28px; flex-shrink: 0; }
 .unit { font-size: 11px; color: var(--text2); }
 .in {

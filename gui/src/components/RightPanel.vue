@@ -215,7 +215,7 @@ const jitterColor = computed(() => {
 
 .rp-title {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.1em;
   color: var(--text2);
@@ -227,7 +227,7 @@ const jitterColor = computed(() => {
 }
 
 .rtp-off {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -236,7 +236,7 @@ const jitterColor = computed(() => {
   text-transform: lowercase;
 }
 .rtp-active {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--warn);
   background: rgba(var(--warn-rgb),0.15);
   border: 1px solid var(--warn);
@@ -244,7 +244,7 @@ const jitterColor = computed(() => {
   border-radius: 3px;
 }
 .rtp-on {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--accent);
   background: rgba(var(--accent-rgb),0.15);
   border: 1px solid var(--accent);
@@ -252,7 +252,7 @@ const jitterColor = computed(() => {
   border-radius: 3px;
 }
 .rtp-scope {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   border: 1px solid var(--border);
   padding: 1px 5px;
@@ -286,7 +286,7 @@ const jitterColor = computed(() => {
 }
 .state-count {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text0);
   min-width: 44px;
   text-align: right;
@@ -301,7 +301,7 @@ const jitterColor = computed(() => {
 }
 .rtp-key {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text1);
   min-width: 36px;
 }
@@ -319,7 +319,7 @@ const jitterColor = computed(() => {
 }
 .rtp-val {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   min-width: 52px;
   text-align: right;
   display: flex;
@@ -328,7 +328,7 @@ const jitterColor = computed(() => {
   justify-content: flex-end;
 }
 .rtp-tag {
-  font-size: 10px;
+  font-size: 11px;
   opacity: 0.75;
 }
 
@@ -343,12 +343,12 @@ const jitterColor = computed(() => {
   gap: 1px;
 }
 .rtp-stat-key {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
 }
 .rtp-stat-val {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text1);
 }
 
@@ -378,7 +378,7 @@ const jitterColor = computed(() => {
 }
 .rcode-count {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text1);
 }
 .empty {
@@ -387,7 +387,7 @@ const jitterColor = computed(() => {
 }
 
 .rp-note {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   margin-top: 4px;
 }

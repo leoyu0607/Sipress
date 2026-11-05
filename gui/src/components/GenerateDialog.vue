@@ -113,24 +113,24 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
               <!-- Row: count + start ext -->
               <div class="field-row">
                 <div class="field">
-                  <label>生成數量</label>
-                  <input ref="firstInput" v-model.number="count" type="number" min="1" :max="MAX_COUNT" class="field-input" :class="{ invalid: count > MAX_COUNT || count < 1 }">
+                  <label for="gen-count">生成數量</label>
+                  <input id="gen-count" ref="firstInput" v-model.number="count" type="number" min="1" :max="MAX_COUNT" class="field-input" :class="{ invalid: count > MAX_COUNT || count < 1 }">
                   <div class="field-err" v-if="count > MAX_COUNT">單次最多 {{ MAX_COUNT }} 個</div>
                 </div>
                 <div class="field">
-                  <label>起始分機號</label>
-                  <input v-model.number="startExt" type="number" min="1" class="field-input">
+                  <label for="gen-start">起始分機號</label>
+                  <input id="gen-start" v-model.number="startExt" type="number" min="1" class="field-input">
                 </div>
               </div>
 
               <!-- Username prefix -->
               <div class="field">
-                <label>
+                <label for="gen-prefix">
                   帳號前綴
                   <span class="label-hint">留空則帳號 = 分機號</span>
                 </label>
                 <div class="prefix-preview-row">
-                  <input v-model="usernamePrefix" type="text" class="field-input" placeholder="例：agent_">
+                  <input id="gen-prefix" v-model="usernamePrefix" type="text" class="field-input" placeholder="例：agent_">
                   <div class="prefix-example">
                     → <code>{{ usernamePrefix || startExt }}{{ usernamePrefix ? startExt : '' }}</code>
                   </div>
@@ -139,8 +139,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
               <!-- Password mode -->
               <div class="field">
-                <label>密碼設定</label>
-                <div class="radio-group">
+                <label id="gen-pw-mode">密碼設定</label>
+                <div class="radio-group" role="radiogroup" aria-labelledby="gen-pw-mode">
                   <label class="radio-opt" :class="{ active: passwordMode === 'same' }">
                     <input type="radio" v-model="passwordMode" value="same">
                     <span class="radio-label">統一密碼</span>
@@ -158,17 +158,17 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
               <!-- Password input (conditional) -->
               <div class="field" v-if="passwordMode === 'same'">
-                <label>統一密碼</label>
-                <input v-model="samePassword" type="text" class="field-input"
+                <label for="gen-same-pw">統一密碼</label>
+                <input id="gen-same-pw" v-model="samePassword" type="text" class="field-input"
                        placeholder="輸入所有帳號共用密碼">
               </div>
 
               <div class="field" v-if="passwordMode === 'custom'">
-                <label>
+                <label for="gen-custom-pw">
                   密碼規則
                   <span class="label-hint"><code>{ext}</code> 代入分機號</span>
                 </label>
-                <input v-model="customPassword" type="text" class="field-input"
+                <input id="gen-custom-pw" v-model="customPassword" type="text" class="field-input"
                        placeholder="例：pass{ext} → pass1001">
                 <div class="field-hint" v-if="customPassword">
                   預覽：<code>{{ customPassword.replaceAll('{ext}', String(startExt)) }}</code>
@@ -177,8 +177,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
               <!-- Domain -->
               <div class="field">
-                <label>SIP Domain</label>
-                <input v-model="domain" type="text" class="field-input" placeholder="192.168.1.100">
+                <label for="gen-domain">SIP Domain</label>
+                <input id="gen-domain" v-model="domain" type="text" class="field-input" placeholder="192.168.1.100">
               </div>
 
               <!-- Preview table -->
@@ -297,7 +297,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   color: var(--text1);
 }
 .label-hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   font-family: var(--mono);
 }
@@ -317,10 +317,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .field-input:hover { border-color: var(--border3); }
 .field-input:focus { border-color: rgba(var(--accent-rgb),0.6); }
 .field-input.invalid { border-color: rgba(var(--danger-rgb),0.6); }
-.field-err { font-size: 10px; color: var(--danger); }
+.field-err { font-size: 11px; color: var(--danger); }
 
 .field-hint {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text2);
   font-family: var(--mono);
 }
@@ -381,7 +381,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 }
 .preview-label {
   padding: 5px 10px;
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--mono);
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -397,7 +397,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
 }
-.preview-hdr .pc { color: var(--text2); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.preview-hdr .pc { color: var(--text2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .preview-row {
   display: flex;
   padding: 4px 10px;
