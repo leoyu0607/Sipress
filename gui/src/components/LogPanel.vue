@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { useTestStore, MODE_LABEL, type LogEntry } from '../stores/testStore'
+import Icon from './Icon.vue'
 
 const store = useTestStore()
 const bodyRef = ref<HTMLDivElement | null>(null)
@@ -102,7 +103,7 @@ onUnmounted(onDragEnd)
 
     <div class="log-hdr">
       <button class="collapse-btn" :aria-expanded="!collapsed" aria-label="事件記錄" @click="collapsed = !collapsed" :title="collapsed ? '展開' : '收合'">
-        <span class="arrow" aria-hidden="true" :class="{ open: !collapsed }">▶</span>
+        <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: !collapsed }" />
       </button>
       <span class="log-title">事件記錄</span>
       <span class="log-count">{{ store.logs.length }}</span>
@@ -124,9 +125,9 @@ onUnmounted(onDragEnd)
                 :class="{ active: autoScroll }"
                 @click="autoScroll = !autoScroll"
                 :title="autoScroll ? '自動捲動：開' : '自動捲動：關'">
-          {{ autoScroll ? '↓ 自動捲動' : '⏸ 已暫停' }}
+          <Icon :name="autoScroll ? 'arrow-down-to-line' : 'pause'" :size="12" />{{ autoScroll ? '自動捲動' : '已暫停' }}
         </button>
-        <button class="btn btn-sm" :class="{ active: copied }" @click="copyLog">{{ copied ? '✓ 已複製' : '複製' }}</button>
+        <button class="btn btn-sm" :class="{ active: copied }" @click="copyLog"><Icon :name="copied ? 'check' : 'copy'" :size="12" />{{ copied ? '已複製' : '複製' }}</button>
         <button class="btn btn-sm" :class="{ 'btn-danger': confirmClear }" @click="onClear">
           {{ confirmClear ? '確定清除？' : '清除' }}
         </button>
@@ -188,7 +189,7 @@ onUnmounted(onDragEnd)
   padding: 2px 4px;
   color: var(--text2);
 }
-.arrow { font-size: 10px; display: inline-block; transition: transform 0.2s; }
+.arrow { transition: transform 0.2s; }
 .arrow.open { transform: rotate(90deg); }
 
 .log-title {

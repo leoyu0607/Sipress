@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
+import Icon from './Icon.vue'
 
 interface GenerateOptions {
   count: number
@@ -104,7 +105,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <!-- Header -->
             <div class="dialog-hdr">
               <span class="dialog-title" id="gen-dlg-title">快速生成座席帳號</span>
-              <button class="close-btn" @click="emit('cancel')" aria-label="關閉">×</button>
+              <button class="close-btn" @click="emit('cancel')" aria-label="關閉"><Icon name="x" :size="16" /></button>
             </div>
 
             <!-- Body -->
@@ -267,10 +268,11 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   background: none;
   border: none;
   color: var(--text2);
-  font-size: 18px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
   transition: color 0.15s;
 }
 .close-btn:hover { color: var(--text0); }

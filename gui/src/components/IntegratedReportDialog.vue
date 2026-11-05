@@ -11,6 +11,7 @@ import {
   loadReportSettings, saveReportSettings,
   type CallMode, type IntegratedRequest, type ReportThresholds,
 } from '../stores/testStore'
+import Icon from './Icon.vue'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{ close: [] }>()
@@ -105,7 +106,7 @@ async function run(kind: 'html' | 'pdf' | 'open') {
 
             <div class="dialog-hdr">
               <span class="dialog-title" id="ir-dlg-title">整合報告</span>
-              <button class="close-btn" :disabled="!!busy" @click="emit('close')" aria-label="關閉">×</button>
+              <button class="close-btn" :disabled="!!busy" @click="emit('close')" aria-label="關閉"><Icon name="x" :size="16" /></button>
             </div>
 
             <div class="dialog-body">
@@ -163,8 +164,8 @@ async function run(kind: 'html' | 'pdf' | 'open') {
                           placeholder="例如：受測系統 SIPX 4.2；交換機與壓測機在同一內網；測試期間無其他話務"></textarea>
               </section>
 
-              <div v-if="invalid" class="errors">⚠ {{ invalid }}</div>
-              <div v-else-if="error" class="errors">⚠ {{ error }}</div>
+              <div v-if="invalid" class="errors"><Icon name="alert" :size="12" />{{ invalid }}</div>
+              <div v-else-if="error" class="errors"><Icon name="alert" :size="12" />{{ error }}</div>
               <div v-if="!pdfReady" class="hint">找不到 Chrome 或 Edge，無法直接轉成 PDF；請用「瀏覽器開啟」後按報告右上角的「列印 / 另存 PDF」。</div>
             </div>
 
@@ -212,7 +213,7 @@ async function run(kind: 'html' | 'pdf' | 'open') {
 .dialog-title { font-size: 13px; font-weight: 500; color: var(--text0); flex: 1; }
 .close-btn {
   background: none; border: none; color: var(--text2);
-  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px;
+  display: inline-flex; align-items: center; cursor: pointer; padding: 2px; border-radius: var(--radius-sm);
 }
 .close-btn:hover { color: var(--text0); }
 .dialog-body {
@@ -263,7 +264,8 @@ async function run(kind: 'html' | 'pdf' | 'open') {
 .in:focus { border-color: rgba(var(--accent-rgb), 0.6); }
 .notes { font-family: inherit; resize: vertical; line-height: 1.5; }
 
-.errors { font-size: 11px; color: var(--danger); }
+.errors { font-size: 11px; color: var(--danger); display: flex; align-items: flex-start; gap: 5px; }
+.errors .icon { margin-top: 2px; }
 .hint { font-size: 11px; color: var(--warn); line-height: 1.5; }
 
 .dialog-footer {
