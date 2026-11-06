@@ -7,9 +7,13 @@
  * - 顏色全部取自 CSS 變數，跟隨亮/暗主題
  * - 滑鼠移入顯示該秒數值；最新點旁標示目前值
  * - MOS tab 固定 y 軸 1~5 並畫品質參考線（≥4.0 / ≥3.0）
+ * - 可暫停：凍結畫面上的資料（背景仍持續收集），方便看清楚某一段；新測試開始或切換檢視端時自動恢復
+ * - 圖表下方有文字摘要（目前 / 平均 / 最高 / 最低），canvas 以 role="img" 提供同樣內容給螢幕閱讀器
+ * - 鍵盤：圖表取得焦點後 ← → 逐點查看數值、Home / End 到頭尾、Esc 離開
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import { useTestStore, mosGrade, type SeriesKey } from '../stores/testStore'
+import Icon from './Icon.vue'
 
 const store = useTestStore()
 const isDark = inject<ReturnType<typeof ref<boolean>>>('isDark')!
@@ -17,6 +21,56 @@ const isDark = inject<ReturnType<typeof ref<boolean>>>('isDark')!
 const canvasRef   = ref<HTMLCanvasElement | null>(null)
 const activeChart = ref<SeriesKey>('cps')
 const hoverX      = ref<number | null>(null)
+/** 鍵盤查看中的資料點索引（null = 未用鍵盤查看） */
+const kbIdx       = ref<number | null>(null)
+
+// ── 暫停：凍結各 tab 的資料快照 ─────────────────────────────────
+interface SeriesView { data: number[]; offset: number }
+const paused = ref(false)
+const frozen = ref<Partial<Record<SeriesKey, SeriesView>> | null>(null)
+
+function viewOf(key: SeriesKey): SeriesView {
+  const f = paused.value ? frozen.value?.[key] : undefined
+  return f ?? { data: store.series[key], offset: store.seriesOffset[key] }
+}
+function togglePause() {
+  if (paused.value) {
+    paused.value = false
+    frozen.value = null
+  } else {
+    const snap: Partial<Record<SeriesKey, SeriesView>> = {}
+    for (const k of TABS) snap[k] = { data: store.series[k].slice(), offset: store.seriesOffset[k] }
+    frozen.value = snap
+    paused.value = true
+  }
+}
+// 新測試開始、或切換檢視的一端時，凍結的畫面已不相干 → 自動恢復
+watch([() => store.status, () => store.config.mode], ([st, mode], [prevSt, prevMode]) => {
+  if (!paused.value) return
+  if (mode !== prevMode || (st === 'running' && prevSt !== 'running')) togglePause()
+})
+
+const current = computed(() => viewOf(activeChart.value))
+const canPause = computed(() => paused.value || current.value.data.length >= 2)
+
+// ── 文字摘要 ───────────────────────────────────────────────────
+const summary = computed(() => {
+  const key = activeChart.value
+  const { data, offset } = current.value
+  if (data.length < 2) return ''
+  const last = data[data.length - 1]
+  const avg = data.reduce((a, b) => a + b, 0) / data.length
+  const parts = [
+    `目前 ${fmtValue(key, last)}`,
+    `平均 ${fmtValue(key, avg)}`,
+    `最高 ${fmtValue(key, Math.max(...data))}`,
+    `最低 ${fmtValue(key, Math.min(...data))}`,
+  ]
+  const span = `${offset}–${offset + data.length - 1}s`
+  return `${parts.join(' · ')}（${span}${paused.value ? '，已暫停' : ''}）`
+})
+const canvasLabel = computed(() =>
+  summary.value ? `${CHART_LABELS[activeChart.value]}：${summary.value}` : `${CHART_LABELS[activeChart.value]}：尚無資料`)
 
 /** 每個圖表使用的 CSS 色彩變數 */
 const CHART_VARS: Record<SeriesKey, string> = {
@@ -118,8 +172,7 @@ function draw() {
   const { grid, label, empty, text0, bg } = themeColors()
 
   const key    = activeChart.value
-  const data   = store.series[key]
-  const offset = store.seriesOffset[key]
+  const { data, offset } = viewOf(key)
 
   if (data.length < 2) {
     ctx.fillStyle = empty
@@ -225,7 +278,9 @@ function draw() {
 
   // Hover crosshair 或最新點
   const hx = hoverX.value
-  const hi = hx !== null && hx >= pad.l - xStep / 2 && hx <= pad.l + cW + xStep / 2
+  const hi = kbIdx.value !== null
+    ? Math.max(0, Math.min(data.length - 1, kbIdx.value))
+    : hx !== null && hx >= pad.l - xStep / 2 && hx <= pad.l + cW + xStep / 2
     ? Math.max(0, Math.min(data.length - 1, Math.round((hx - pad.l) / xStep)))
     : null
   const idx = hi ?? data.length - 1
@@ -255,7 +310,32 @@ function draw() {
 function switchChart(key: SeriesKey) {
   if (key === 'mos' && mosDisabled.value) return
   activeChart.value = key
+  kbIdx.value = null
 }
+
+/** 鍵盤查看：← → 逐點、Home / End、Esc 離開 */
+function onCanvasKey(e: KeyboardEvent) {
+  const n = current.value.data.length
+  if (n < 2) return
+  const at = kbIdx.value ?? n - 1
+  const next =
+      e.key === 'ArrowLeft'  ? at - 1
+    : e.key === 'ArrowRight' ? at + 1
+    : e.key === 'Home'       ? 0
+    : e.key === 'End'        ? n - 1
+    : undefined
+  if (e.key === 'Escape') { kbIdx.value = null; return }
+  if (next === undefined) return
+  e.preventDefault()
+  kbIdx.value = Math.max(0, Math.min(n - 1, next))
+}
+/** 鍵盤查看中那一點的文字（給螢幕閱讀器的 live region） */
+const kbText = computed(() => {
+  if (kbIdx.value === null) return ''
+  const { data, offset } = current.value
+  const i = Math.min(kbIdx.value, data.length - 1)
+  return i >= 0 ? `${offset + i}s：${fmtValue(activeChart.value, data[i])}` : ''
+})
 
 function onMouseMove(e: MouseEvent) {
   const rect = canvasRef.value?.getBoundingClientRect()
@@ -264,7 +344,7 @@ function onMouseMove(e: MouseEvent) {
 }
 
 // 資料、主題、tab 或滑鼠位置變化時重繪
-watch([() => store.seriesTick, () => store.status, () => store.config.mode, isDark, activeChart, hoverX], () => nextTick(draw))
+watch([() => store.seriesTick, () => store.status, () => store.config.mode, isDark, activeChart, hoverX, kbIdx, paused], () => nextTick(draw))
 
 const ro = new ResizeObserver(() => { resize() })
 
@@ -288,6 +368,13 @@ onUnmounted(() => ro.disconnect())
         MOS {{ store.rtpMetrics.mos.toFixed(2) }} · {{ mosGrade(store.rtpMetrics.mos).label }}
       </div>
 
+      <button class="btn btn-sm pause-btn" type="button" :class="{ active: paused }"
+              :aria-pressed="paused" :disabled="!canPause"
+              :title="paused ? '繼續更新圖表（資料在暫停期間仍持續收集）' : '暫停更新圖表，方便查看目前畫面'"
+              @click="togglePause">
+        <Icon :name="paused ? 'play' : 'pause'" :size="12" />{{ paused ? '繼續' : '暫停' }}
+      </button>
+
       <div class="tabs" role="tablist">
         <button
           v-for="key in TABS"
@@ -303,8 +390,14 @@ onUnmounted(() => ro.disconnect())
       </div>
     </div>
 
+    <p class="chart-summary" :class="{ paused }" aria-hidden="true">{{ summary || ' ' }}</p>
+
     <div class="canvas-wrap">
-      <canvas ref="canvasRef" @mousemove="onMouseMove" @mouseleave="hoverX = null"></canvas>
+      <canvas ref="canvasRef" role="img" tabindex="0" :aria-label="canvasLabel"
+              title="← → 逐點查看數值，Esc 離開"
+              @mousemove="onMouseMove" @mouseleave="hoverX = null"
+              @keydown="onCanvasKey" @blur="kbIdx = null"></canvas>
+      <span class="sr-only" aria-live="polite">{{ kbText }}</span>
     </div>
   </div>
 </template>
@@ -396,6 +489,22 @@ onUnmounted(() => ro.disconnect())
   position: relative;
   min-height: 0;
 }
+canvas:focus-visible { outline: 2px solid rgba(var(--accent-rgb),0.6); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+.pause-btn { flex-shrink: 0; }
+.pause-btn.active { color: var(--warn); border-color: rgba(var(--warn-rgb),0.45); background: rgba(var(--warn-rgb),0.1); }
+
+.chart-summary {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text2);
+  margin: -2px 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.chart-summary.paused { color: var(--warn); }
 
 canvas {
   position: absolute;

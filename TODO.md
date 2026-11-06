@@ -228,3 +228,13 @@ ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 
 
 實測 Yealink SIP-T20P：REGISTER 要求 3600 秒、SIPX 給 1800 秒、每 1200 秒（2/3）刷新，不送 OPTIONS。sipress 原本要求 240 秒、SIPX 給 360 秒、每 180 秒刷新，刷新次數是話機的 6.7 倍，而 SIPX 會把每次註冊轉成 CTI 的 Register 事件。
 已完成（分支 `feat/register-expires`）：`Config.agent_register_expires`（預設 3600，CLI `--register-expires`、GUI「註冊有效期」），刷新改在有效期的 2/3（最少 30 秒）。實測 SIPX 回 1800 秒。
+
+### [x] 30. GUI 易用性與無障礙（UI/UX 檢查）
+
+依 UI/UX 規則檢查 GUI 後分批處理：
+- [x] 文字對比達 WCAG AA、最小字級 11px、表單標籤綁定、鍵盤操作收合區塊與模式分頁、側欄直接列出「無法開始」的原因 — PR #30
+- [x] 標題列匯出收成選單、實心「開始測試」主按鈕、圖示統一為 SVG（`Icon.vue`）、`prefers-reduced-motion` — PR #31
+- [x] 指標附文字分級（不只靠顏色）、滑桿範圍隨數字框延伸、數字框 5 位數、音檔格式提示更正 — PR #32
+- [x] 即時圖表暫停 / 文字摘要 / 鍵盤逐點查看、側欄可拖曳調整寬度（上限依視窗寬度）、`index.html` 標題與語言 — PR #33
+
+驗證方式：vitest 元件測試，加上以 headless Edge 載入 build 結果（Tauri API 以 stub 代替）在 960×600 與 1280×780 截圖量測。尚未在 `npm run tauri dev` 的原生視窗確認拖曳標題列與視窗按鈕。

@@ -1,11 +1,22 @@
 <script setup lang="ts">
-import { ref, provide } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import TitleBar    from './components/TitleBar.vue'
 import Sidebar     from './components/Sidebar.vue'
 import MetricStrip from './components/MetricStrip.vue'
 import ChartPanel  from './components/ChartPanel.vue'
 import RightPanel  from './components/RightPanel.vue'
 import LogPanel    from './components/LogPanel.vue'
+import SidebarResizer, { loadSidebarWidth, sidebarMaxFor } from './components/SidebarResizer.vue'
+
+// 側欄寬度（可拖曳調整，記在本機）。實際顯示的寬度不超過目前視窗允許的上限，
+// 視窗縮小時側欄跟著變窄，放大後回到使用者設定的寬度
+const sidebarWidth = ref(loadSidebarWidth())
+const viewportWidth = ref(window.innerWidth)
+const onWindowResize = () => { viewportWidth.value = window.innerWidth }
+onMounted(() => window.addEventListener('resize', onWindowResize))
+onUnmounted(() => window.removeEventListener('resize', onWindowResize))
+const sidebarMax = computed(() => sidebarMaxFor(viewportWidth.value))
+const shownSidebarWidth = computed(() => Math.min(sidebarWidth.value, sidebarMax.value))
 
 // ── Theme ─────────────────────────────────────────────────────────
 const isDark = ref(localStorage.getItem('sipress-theme') !== 'light')
@@ -29,7 +40,8 @@ provide('toggleTheme', toggleTheme)
   <div class="app">
     <TitleBar />
     <div class="body">
-      <Sidebar />
+      <Sidebar :style="{ width: shownSidebarWidth + 'px' }" />
+      <SidebarResizer v-model="sidebarWidth" :max="sidebarMax" />
       <div class="content">
         <MetricStrip />
         <div class="middle">
@@ -216,6 +228,17 @@ html, body, #app {
   outline-offset: 1px;
 }
 .btn:focus-visible { outline: 2px solid rgba(var(--accent-rgb),0.6); }
+
+/* 只給螢幕閱讀器讀的文字 */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ── Fonts (referenced by components) ─────── */
 :root {
