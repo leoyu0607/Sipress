@@ -1,4 +1,4 @@
-//! 整合壓測報告：讀壓測數據檔（`<時間>_result.json`），依門檻產生交給客戶的 HTML 報告
+//! 整合壓測報告：讀壓測數據檔（`<時間>_result.json`），依警戒值產生交給客戶的 HTML 報告
 //!
 //! 版面以 A4 列印為準（瀏覽器「列印 → 另存 PDF」即可輸出 PDF）。圖表用 10 秒時間軸，
 //! 點數過多時合併相鄰時段；合併時品質指標取較差的值（MOS 取低、掉包與 Jitter 取高）。
@@ -103,7 +103,7 @@ impl IntegratedReport {
 <div class="verdict {cls}">{label}</div>
 {summary}
 <table class="tbl checks">
-<thead><tr><th>項目</th><th>結果</th><th>門檻</th><th>判定</th></tr></thead>
+<thead><tr><th>項目</th><th>結果</th><th>警戒值</th><th>判定</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 </section>
@@ -199,7 +199,7 @@ impl IntegratedReport {
                 out,
                 r#"<section class="card">
 <h2>4. 聲音品質</h2>
-<p class="hint">每個時段只計算該時段內新增的封包；紅色底色為超過門檻的時段，橘黃色虛線為門檻，灰色點線為平均；MOS 圖的黑色虛線為並發通話數（右軸）。</p>
+<p class="hint">每個時段只計算該時段內新增的封包；紅色底色為超過警戒值的時段，橘黃色虛線為警戒線，灰色點線為平均；MOS 圖的黑色虛線為並發通話數（右軸）。</p>
 {c1}{c2}{c3}
 </section>
 "#,
@@ -431,7 +431,7 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
         let Some(v) = c.value else { continue };
         let pass = c.limit.ok(v);
         lines.push(format!(
-            "{}為 {}{}，{}門檻 {}{}，判定{}。",
+            "{}為 {}{}，{}警戒值 {}{}，判定{}。",
             c.name,
             fmt_num(v),
             c.unit,
@@ -446,7 +446,7 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
             if pass { "正常" } else { "未達標" }
         ));
     }
-    // 超過門檻的時段
+    // 超過警戒值的時段
     let bad: Vec<&Point> = points
         .iter()
         .filter(|p| {
@@ -459,7 +459,7 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
         .collect();
     if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
         lines.push(format!(
-            "以時段來看，有 {} 個時段（共約 {}）的聲音品質超過門檻，出現在 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 至 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 之間，詳見第 4 節的圖表。",
+            "以時段來看，有 {} 個時段（共約 {}）的聲音品質超過警戒值，出現在 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 至 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 之間，詳見第 4 節的圖表。",
             bad.len(),
             duration_label(bad.iter().map(|p| p.span).sum()),
             first.t - first.span / 2.0,
@@ -468,7 +468,7 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
             clock(last.t + last.span / 2.0),
         ));
     } else if points.iter().any(|p| p.rtp.is_some()) {
-        lines.push("每個時段的聲音品質都在門檻內。".into());
+        lines.push("每個時段的聲音品質都沒有超過警戒值。".into());
     }
     format!(
         "<div class=\"summary\">{}</div>",
@@ -966,7 +966,7 @@ impl Series {
     }
 }
 
-/// 一張折線圖：第一條線為主線（畫平均線、標示超過門檻的時段，下方列平均與最高 / 最低）
+/// 一張折線圖：第一條線為主線（畫平均線、標示超過警戒值的時段，下方列平均與最高 / 最低）
 struct Chart {
     title: String,
     unit: &'static str,
@@ -1062,7 +1062,7 @@ impl Chart {
             );
             t += step;
         }
-        // 超過門檻的時段
+        // 超過警戒值的時段
         if let Some(limit) = self.limit {
             let half = |i: usize| {
                 let prev = if i > 0 { x[i - 1] } else { x0 };
@@ -1125,7 +1125,7 @@ impl Chart {
             }
         }
         g.push_str(&lines);
-        // 平均線、門檻線
+        // 平均線、警戒線
         let avg = vals.iter().sum::<f64>() / vals.len() as f64;
         let _ = write!(
             g,
@@ -1139,7 +1139,7 @@ impl Chart {
         if let Some(limit) = self.limit {
             let _ = write!(
                 g,
-                r##"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_LIMIT}" stroke-width="2" stroke-dasharray="8 4"/><text x="{tx}" y="{ty:.1}" class="tag-l" fill="#b45309" text-anchor="end">門檻 {v}{u}</text>"##,
+                r##"<line x1="{L}" y1="{y:.1}" x2="{x2}" y2="{y:.1}" stroke="{C_LIMIT}" stroke-width="2" stroke-dasharray="8 4"/><text x="{tx}" y="{ty:.1}" class="tag-l" fill="#b45309" text-anchor="end">{v}{u}</text>"##,
                 y = py(limit.value()),
                 x2 = W - rm,
                 tx = W - rm - 4.0,
@@ -1171,7 +1171,7 @@ impl Chart {
         }
         legend.push_str(r#"<span><i class="dash avg"></i>平均</span>"#);
         if self.limit.is_some() {
-            legend.push_str(r#"<span><i class="dash limit"></i>門檻</span>"#);
+            legend.push_str(r#"<span><i class="dash limit"></i>警戒線</span>"#);
         }
         let worst = match self.limit {
             Some(Limit::Min(_)) => ("最低", vals.iter().copied().fold(f64::MAX, f64::min)),
@@ -1197,7 +1197,7 @@ impl Chart {
             let n = main.y.iter().flatten().filter(|v| !limit.ok(**v)).count();
             let _ = write!(
                 stats,
-                " · 門檻 <b>{}{}</b> · 超過門檻的時段 <b>{}</b> / {}",
+                " · 警戒值 <b>{}{}</b> · 超過警戒值的時段 <b>{}</b> / {}",
                 limit.label(),
                 self.unit,
                 n,
@@ -1435,7 +1435,7 @@ mod tests {
         );
         let html = IntegratedReport::render(&f, &ReportOptions::default());
         assert!(html.contains(r#"<div class="verdict good">通過</div>"#));
-        assert!(html.contains("每個時段的聲音品質都在門檻內"));
+        assert!(html.contains("每個時段的聲音品質都沒有超過警戒值"));
         assert!(html.contains("@page{size:A4"));
         assert!(html.contains(r#"data-utc="2026-10-28T05:00:00Z""#));
     }
@@ -1504,7 +1504,7 @@ mod tests {
             &[(4.4, 4.3); 20],
         );
         let t0 = parse_rfc3339(&f.report.started_at).unwrap();
-        // 測試 300 秒：CPU 多數 50%、偶爾 95%（P95 仍為 50）；Disk Queue 持續 3（超過門檻 2）
+        // 測試 300 秒：CPU 多數 50%、偶爾 95%（P95 仍為 50）；Disk Queue 持續 3（超過警戒值 2）
         let samples = (-30..=330)
             .step_by(10)
             .map(|t| HostSample {
