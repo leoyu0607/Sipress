@@ -40,6 +40,12 @@ const registerEta = computed(() => {
   return secs < 60 ? `${n} 個分機約 ${Math.ceil(secs)} 秒註冊完` : `${n} 個分機約 ${(secs / 60).toFixed(1)} 分鐘註冊完`
 })
 
+// 滑桿上限：數字框可以填超過滑桿預設範圍的值（例如 CPS 300），
+// 這時把滑桿範圍延伸到該值，避免滑桿卡在最右邊、看起來跟數字對不上
+function sliderMax(base: number, value: number) {
+  return Number.isFinite(value) && value > base ? value : base
+}
+
 // Section collapse state（民眾端 / 座席端各自記憶）
 const sec = ref({ target:true, caller:true, agent:true, cliOpts:false })
 
@@ -166,7 +172,7 @@ function statusTitle(s: string) {
         <div class="field">
           <label for="sb-duration">{{ store.config.mode === 'agent' ? '座席端' : '民眾端' }}持續時間 (s) <span class="tag">--duration</span></label>
           <div class="slider-row">
-            <input aria-label="持續時間（秒）" type="range" min="0" max="3600" v-model.number="store.config[store.config.mode].duration">
+            <input aria-label="持續時間（秒）" type="range" min="0" :max="sliderMax(3600, store.config[store.config.mode].duration)" v-model.number="store.config[store.config.mode].duration">
             <input id="sb-duration" type="number" min="0" v-model.number="store.config[store.config.mode].duration" class="num-input">
           </div>
           <div class="field-hint">{{ durationHint }}</div>
@@ -257,7 +263,7 @@ function statusTitle(s: string) {
         <div class="field">
           <label for="sb-concurrency">併發數量 <span class="tag">-c</span></label>
           <div class="slider-row">
-            <input aria-label="併發數量" type="range" min="1" max="1000" v-model.number="store.config.caller.concurrency">
+            <input aria-label="併發數量" type="range" min="1" :max="sliderMax(1000, store.config.caller.concurrency)" v-model.number="store.config.caller.concurrency">
             <input id="sb-concurrency" type="number" min="1" max="10000" v-model.number="store.config.caller.concurrency" class="num-input">
           </div>
         </div>
@@ -282,7 +288,7 @@ function statusTitle(s: string) {
         <div class="field" v-if="store.config.caller.cpsPattern.type === 'flat'">
           <label for="sb-cps">呼叫頻率 CPS <span class="tag">--cps</span></label>
           <div class="slider-row">
-            <input aria-label="呼叫頻率 CPS" type="range" min="1" max="200" v-model.number="store.config.caller.cps">
+            <input aria-label="呼叫頻率 CPS" type="range" min="1" :max="sliderMax(200, store.config.caller.cps)" v-model.number="store.config.caller.cps">
             <input id="sb-cps" type="number" min="1" max="1000" v-model.number="store.config.caller.cps" class="num-input">
           </div>
         </div>
@@ -361,7 +367,7 @@ function statusTitle(s: string) {
         <div class="field">
           <label for="sb-total-calls">總測試通數 <span class="tag">--max-calls</span></label>
           <div class="slider-row">
-            <input aria-label="總測試通數" type="range" min="0" max="10000" step="100" v-model.number="store.config.caller.totalCalls">
+            <input aria-label="總測試通數" type="range" min="0" :max="sliderMax(10000, store.config.caller.totalCalls)" step="100" v-model.number="store.config.caller.totalCalls">
             <input id="sb-total-calls" type="number" min="0" v-model.number="store.config.caller.totalCalls" class="num-input">
           </div>
           <div class="field-hint">{{ store.config.caller.totalCalls === 0 ? '0 = 不限（依測試時長）' : `達 ${store.config.caller.totalCalls} 通後自動停止` }}</div>
@@ -370,7 +376,7 @@ function statusTitle(s: string) {
         <div class="field">
           <label for="sb-call-duration">單通時長 (s) <span class="tag">--call-duration</span></label>
           <div class="slider-row">
-            <input aria-label="單通時長（秒）" type="range" min="0" max="300" v-model.number="store.config.caller.callDuration">
+            <input aria-label="單通時長（秒）" type="range" min="0" :max="sliderMax(300, store.config.caller.callDuration)" v-model.number="store.config.caller.callDuration">
             <input id="sb-call-duration" type="number" min="0" v-model.number="store.config.caller.callDuration" class="num-input">
           </div>
           <div class="field-hint">{{ store.config.caller.callDuration === 0 ? '0 = 不限（直到對方掛斷）' : `接通後約 ${store.config.caller.callDuration} 秒掛斷` }}</div>
@@ -394,7 +400,7 @@ function statusTitle(s: string) {
             <button class="btn btn-sm" @click="pickAudioFile">瀏覽</button>
           </div>
           <div class="field-err" v-if="audioMissing">請選擇音檔，否則無法開始測試</div>
-          <div class="field-hint" v-else>支援 WAV / MP3 / PCM（8kHz/16bit 建議）</div>
+          <div class="field-hint" v-else>WAV（16-bit PCM 或 G.711，自動轉 8kHz）或 G.711 原始檔（.al / .ul）</div>
         </div>
 
         <!-- Codec -->
@@ -935,7 +941,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
   background: var(--accent); border: 2px solid var(--bg1); cursor: pointer; transition: transform 0.1s;
 }
 .slider-row input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
-.num-input { width: 58px !important; flex-shrink: 0; text-align: right; }
+.num-input { width: 72px !important; flex-shrink: 0; text-align: right; }  /* 5 位數 + 微調鈕 */
 
 /* Toggle */
 .toggle-row {

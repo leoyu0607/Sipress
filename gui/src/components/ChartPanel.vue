@@ -9,7 +9,7 @@
  * - MOS tab 固定 y 軸 1~5 並畫品質參考線（≥4.0 / ≥3.0）
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
-import { useTestStore, type SeriesKey } from '../stores/testStore'
+import { useTestStore, mosGrade, type SeriesKey } from '../stores/testStore'
 
 const store = useTestStore()
 const isDark = inject<ReturnType<typeof ref<boolean>>>('isDark')!
@@ -285,7 +285,7 @@ onUnmounted(() => ro.disconnect())
       <!-- RTP badge：若 RTP 啟用顯示 MOS 即時值 -->
       <div v-if="store.rtpMetrics.enabled" class="rtp-badge">
         <span class="rtp-dot" :class="store.mosRating"></span>
-        MOS {{ store.rtpMetrics.mos.toFixed(2) }}
+        MOS {{ store.rtpMetrics.mos.toFixed(2) }} · {{ mosGrade(store.rtpMetrics.mos).label }}
       </div>
 
       <div class="tabs" role="tablist">
@@ -336,7 +336,7 @@ onUnmounted(() => ro.disconnect())
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-  flex: 1 1 140px;
+  flex: 1 1 0;               /* 空間不夠時標題先截斷（有 hover 提示），MOS 徽章與分頁維持同一行 */
 }
 
 /* RTP MOS badge */
