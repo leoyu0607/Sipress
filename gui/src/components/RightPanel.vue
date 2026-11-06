@@ -9,7 +9,7 @@
  * 5. 測試中顯示近 10 秒的值，結束後顯示整場的值（標在標題旁）
  */
 import { computed } from 'vue'
-import { useTestStore, mosGrade, type RtpScope } from '../stores/testStore'
+import { useTestStore, mosGrade, lossGrade, jitterGrade, type RtpScope } from '../stores/testStore'
 
 const store = useTestStore()
 
@@ -54,19 +54,9 @@ const SCOPE_LABEL: Record<RtpScope, { text: string; title: string }> = {
 }
 const scope = computed(() => SCOPE_LABEL[rtp.value.scope])
 
-const lossColor = computed(() => {
-  const p = rtp.value.packetLoss
-  if (p <= 0.5) return 'var(--accent)'
-  if (p <= 1)   return 'var(--warn)'
-  return 'var(--danger)'
-})
-
-const jitterColor = computed(() => {
-  const j = rtp.value.jitter
-  if (j < 30) return 'var(--accent)'
-  if (j < 60) return 'var(--warn)'
-  return 'var(--danger)'
-})
+// 顏色之外附文字分級（優 / 普通 / 差），與 MOS 用語一致
+const loss = computed(() => lossGrade(rtp.value.packetLoss))
+const jitter = computed(() => jitterGrade(rtp.value.jitter))
 </script>
 
 <template>
@@ -126,28 +116,30 @@ const jitterColor = computed(() => {
         </div>
 
         <!-- 掉包率 -->
-        <div class="rtp-row" title="掉包率：所有通話的掉包數 ÷ 應收封包數（不是每通電話的平均）">
+        <div class="rtp-row" title="掉包率：所有通話的掉包數 ÷ 應收封包數（不是每通電話的平均）；≤ 0.5% 優、≤ 1% 普通、> 1% 差">
           <div class="rtp-key">掉包</div>
           <div class="rtp-bar-wrap">
             <div class="rtp-bar"
-                 :style="{ width: Math.min(rtp.packetLoss * 10, 100) + '%', background: lossColor }">
+                 :style="{ width: Math.min(rtp.packetLoss * 10, 100) + '%', background: loss.color }">
             </div>
           </div>
-          <div class="rtp-val" :style="{ color: lossColor }">
+          <div class="rtp-val" :style="{ color: loss.color }">
             {{ rtp.packetLoss.toFixed(2) }}%
+            <span class="rtp-tag">{{ loss.label }}</span>
           </div>
         </div>
 
         <!-- Jitter -->
-        <div class="rtp-row">
+        <div class="rtp-row" title="Jitter（RFC 3550）：< 30 ms 優、< 60 ms 普通、≥ 60 ms 差">
           <div class="rtp-key">Jitter</div>
           <div class="rtp-bar-wrap">
             <div class="rtp-bar"
-                 :style="{ width: Math.min(rtp.jitter / 150 * 100, 100) + '%', background: jitterColor }">
+                 :style="{ width: Math.min(rtp.jitter / 150 * 100, 100) + '%', background: jitter.color }">
             </div>
           </div>
-          <div class="rtp-val" :style="{ color: jitterColor }">
+          <div class="rtp-val" :style="{ color: jitter.color }">
             {{ rtp.jitter.toFixed(1) }}ms
+            <span class="rtp-tag">{{ jitter.label }}</span>
           </div>
         </div>
 
@@ -221,6 +213,8 @@ const jitterColor = computed(() => {
   color: var(--text2);
   text-transform: uppercase;
   margin-bottom: 8px;
+  white-space: nowrap;       /* 標題與標籤不在字中間斷行；放不下時整個標籤換到下一行 */
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -329,7 +323,7 @@ const jitterColor = computed(() => {
 }
 .rtp-tag {
   font-size: 11px;
-  opacity: 0.75;
+  font-weight: 600;          /* 不用 opacity 淡化：會讓亮色主題的 warn 低於 4.5:1 */
 }
 
 .rtp-stats {

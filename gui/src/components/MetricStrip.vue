@@ -1,27 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useTestStore } from '../stores/testStore'
+import { useTestStore, asrGrade, errGrade, regGrade } from '../stores/testStore'
 
 const store = useTestStore()
 
 const isReady = computed(() => store.status !== 'idle')
 
-const asrClass = computed(() => {
-  if (!isReady.value) return ''
-  const v = store.metrics.asr
-  return v >= 85 ? 'c-accent' : v >= 70 ? 'c-warn' : 'c-danger'
-})
-
-const regClass = computed(() => {
+// 分級同時給顏色與文字（顯示在單位那一行），不只靠顏色。
+// 還沒有任何通話時 ASR / 錯誤率是 0，不代表「偏低」，不分級
+const hasCalls = computed(() => isReady.value && store.metrics.initiated > 0)
+const asr = computed(() => hasCalls.value ? asrGrade(store.metrics.asr) : null)
+const err = computed(() => hasCalls.value ? errGrade(store.metrics.errorRate) : null)
+const reg = computed(() => {
   const { registered, total } = store.agents
-  if (!isReady.value || total === 0) return ''
-  return registered >= total ? 'c-accent' : registered > 0 ? 'c-warn' : 'c-danger'
-})
-
-const errClass = computed(() => {
-  if (!isReady.value) return ''
-  const v = store.metrics.errorRate
-  return v <= 5 ? 'c-accent' : v <= 20 ? 'c-warn' : 'c-danger'
+  return isReady.value && total > 0 ? regGrade(registered, total) : null
 })
 </script>
 
@@ -60,27 +52,27 @@ const errClass = computed(() => {
 
     <div class="cell">
       <div class="name">ASR</div>
-      <div class="val" :class="asrClass">
+      <div class="val" :style="asr && { color: asr.color }">
         {{ isReady ? store.metrics.asr.toFixed(1) + '%' : '—' }}
       </div>
-      <div class="unit">接通率</div>
+      <div class="unit">接通率<span v-if="asr" class="grade" :style="{ color: asr.color }"> · {{ asr.label }}</span></div>
     </div>
 
     <div class="cell">
       <div class="name">ERR%</div>
-      <div class="val" :class="errClass">
+      <div class="val" :style="err && { color: err.color }">
         {{ isReady ? store.metrics.errorRate.toFixed(1) + '%' : '—' }}
       </div>
-      <div class="unit">錯誤率</div>
+      <div class="unit">錯誤率<span v-if="err" class="grade" :style="{ color: err.color }"> · {{ err.label }}</span></div>
     </div>
 
     <!-- 座席端量不到 PDD，改顯示註冊狀態 -->
     <div class="cell" v-if="store.config.mode === 'agent'">
       <div class="name">REG</div>
-      <div class="val" :class="regClass">
+      <div class="val" :style="reg && { color: reg.color }">
         {{ isReady && store.agents.total > 0 ? `${store.agents.registered}/${store.agents.total}` : '—' }}
       </div>
-      <div class="unit">已註冊座席</div>
+      <div class="unit">已註冊座席<span v-if="reg" class="grade" :style="{ color: reg.color }"> · {{ reg.label }}</span></div>
     </div>
 
     <div class="cell" v-else>
@@ -133,6 +125,7 @@ const errClass = computed(() => {
 .val.c-warn   { color: var(--warn); }
 .val.c-danger { color: var(--danger); }
 
+.grade { font-weight: 600; }
 .unit {
   font-size: 11px;
   color: var(--text2);

@@ -444,6 +444,36 @@ export function mosGrade(m: number): { key: 'excellent' | 'fair' | 'poor' | 'non
   return { key: 'none', label: '—', color: 'var(--text2)' }
 }
 
+/**
+ * 指標分級：顏色之外一律附文字標籤，不只靠紅 / 黃 / 綠表達好壞（色弱、黑白截圖也看得懂）。
+ * 門檻與原本畫面上的配色一致。
+ */
+export interface Grade { key: 'good' | 'warn' | 'bad'; label: string; color: string }
+const GOOD = (label: string): Grade => ({ key: 'good', label, color: 'var(--accent)' })
+const WARN = (label: string): Grade => ({ key: 'warn', label, color: 'var(--warn)' })
+const BAD  = (label: string): Grade => ({ key: 'bad',  label, color: 'var(--danger)' })
+
+/** 接通率 ASR %：≥85 良好、≥70 注意、其餘偏低 */
+export function asrGrade(v: number): Grade {
+  return v >= 85 ? GOOD('良好') : v >= 70 ? WARN('注意') : BAD('偏低')
+}
+/** 錯誤率 %：≤5 良好、≤20 注意、其餘偏高 */
+export function errGrade(v: number): Grade {
+  return v <= 5 ? GOOD('良好') : v <= 20 ? WARN('注意') : BAD('偏高')
+}
+/** 座席註冊：全部完成 / 部分 / 全未註冊 */
+export function regGrade(registered: number, total: number): Grade {
+  return registered >= total ? GOOD('全部') : registered > 0 ? WARN('部分') : BAD('未註冊')
+}
+/** 掉包率 %：≤0.5 優、≤1 普通、其餘差（用語與 MOS 一致） */
+export function lossGrade(p: number): Grade {
+  return p <= 0.5 ? GOOD('優') : p <= 1 ? WARN('普通') : BAD('差')
+}
+/** Jitter ms：<30 優、<60 普通、其餘差 */
+export function jitterGrade(j: number): Grade {
+  return j < 30 ? GOOD('優') : j < 60 ? WARN('普通') : BAD('差')
+}
+
 function fmtDuration(sec: number) {
   return sec > 0 ? `${sec}s` : '不限'
 }
