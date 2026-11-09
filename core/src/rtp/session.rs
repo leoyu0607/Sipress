@@ -321,13 +321,59 @@ impl RtpSession {
                 continue;
             }
             let addr = crate::net::join(local_ip, port);
-            if let Ok(socket) = UdpSocket::bind(&addr).await {
+            if let Ok(socket) = bind_exclusive(&addr).await {
                 *guard = port.wrapping_add(2);
                 return Ok((port, socket));
             }
         }
         anyhow::bail!("無法找到可用的 RTP port（從 {} 開始）", start);
     }
+}
+
+/// 綁定 RTP socket，且不與其他 socket 共用同一個 port。
+///
+/// Windows 預設允許「`0.0.0.0:P`」與「`<網卡 IP>:P`」同時綁定成功，封包只會送進
+/// 綁特定 IP 的那個 socket。同機同時跑 caller 與 agent 時，兩邊的 port 計數器
+/// 都從同一個起點開始，就會互相搶走對方的語音（看起來像斷線、100% 掉包）。
+/// 設定 `SO_EXCLUSIVEADDRUSE` 後，port 已被任何 socket 佔用時 bind 會失敗，
+/// `allocate_port` 便會跳到下一個 port。
+async fn bind_exclusive(addr: &str) -> Result<UdpSocket> {
+    let sa = resolve(addr).await?;
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(sa),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    #[cfg(windows)]
+    set_exclusive_addr_use(&socket)?;
+    socket.bind(&sa.into())?;
+    socket.set_nonblocking(true)?;
+    Ok(UdpSocket::from_std(socket.into())?)
+}
+
+#[cfg(windows)]
+fn set_exclusive_addr_use(socket: &socket2::Socket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{
+        setsockopt, WSAGetLastError, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+    };
+    let on: i32 = 1;
+    // SAFETY: socket 是有效的 SOCKET handle；optval 指向 4 bytes 的 i32。
+    let rc = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as usize,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            &on as *const i32 as *const u8,
+            std::mem::size_of::<i32>() as i32,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::from_raw_os_error(unsafe {
+            WSAGetLastError()
+        }));
+    }
+    Ok(())
 }
 
 /// 解析 "ip:port"（或 "host:port"）為 SocketAddr
@@ -359,5 +405,24 @@ fn latch_remote(remote: &std::sync::Mutex<RemoteTarget>, src: SocketAddr) {
 impl Drop for RtpSession {
     fn drop(&mut self) {
         self.signal_stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 同機兩個 port 計數器從同一起點分配，一個綁 0.0.0.0、一個綁特定 IP，
+    /// 不論誰先綁，都不能拿到同一個 port（否則語音會被另一邊搶走）。
+    #[tokio::test]
+    async fn wildcard_and_specific_never_share_a_port() {
+        for (first, second) in [("0.0.0.0", "127.0.0.1"), ("127.0.0.1", "0.0.0.0")] {
+            let base = 41000 + rand::thread_rng().gen_range(0..2000u16) * 2;
+            let a = Arc::new(Mutex::new(base));
+            let b = Arc::new(Mutex::new(base));
+            let (pa, _sa) = RtpSession::allocate_port(&a, first).await.unwrap();
+            let (pb, _sb) = RtpSession::allocate_port(&b, second).await.unwrap();
+            assert_ne!(pa, pb, "{first} 與 {second} 拿到同一個 RTP port {pa}");
+        }
     }
 }
