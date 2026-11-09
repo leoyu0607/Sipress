@@ -14,3 +14,7 @@ tracing      = { workspace = true }
 hdrhistogram = { workspace = true }
 md-5         = { workspace = true }
 zip          = { workspace = true }
+socket2      = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Networking_WinSock"] }
