@@ -512,7 +512,7 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 | 參數 | 預設 | 說明 |
 |------|------|------|
 | `--html` | 關閉 | 產生 HTML 報告，同時寫出壓測數據檔 `<時間>_result.json`（含 10 秒時間軸、每通電話的品質分布；不含密碼） |
-| `--integrate <result.json>` | — | 讀壓測數據檔，依門檻產生 `<時間>_integrated_report.html` 到 `--report-dir`，不執行壓測 |
+| `--integrate <result.json> [result.json]` | — | 讀壓測數據檔，依門檻產生 `<時間>_integrated_report.html` 到 `--report-dir`，不執行壓測；民眾端與座席端各給一份時，兩個方向的聲音品質分開判定，都通過才算通過 |
 | `--host-metrics <ZIP 或 CSV>` | — | 受測主機的效能資料：主機 agent 主控台「匯出分析資料 (ZIP)」，或單台主機的 `metrics.csv`；加入 CPU、記憶體、Disk Queue（含磁碟忙碌率）圖表與主機規格 |
 | `--report-notes <TEXT>` | — | 受測環境備註，列在報告的「測試條件」 |
 | `--pdf` | 關閉 | 另外輸出 PDF（用本機的 Chrome 或 Edge 轉檔） |

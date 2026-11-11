@@ -214,9 +214,10 @@ pub struct Args {
     pub correlate: Option<Vec<std::path::PathBuf>>,
 
     /// 整合報告：讀取壓測數據檔（`--html` 時寫出的 `<時間>_result.json`），
-    /// 依門檻產生 `<時間>_integrated_report.html` 到 --report-dir（不執行壓測）
-    #[arg(long = "integrate", value_name = "RESULT_JSON")]
-    pub integrate: Option<std::path::PathBuf>,
+    /// 依門檻產生 `<時間>_integrated_report.html` 到 --report-dir（不執行壓測）。
+    /// 給民眾端與座席端各一份（順序不拘）時，兩個方向的聲音品質分開判定，都通過才算通過
+    #[arg(long = "integrate", value_name = "RESULT_JSON", num_args = 1..=2)]
+    pub integrate: Option<Vec<std::path::PathBuf>>,
 
     /// 整合報告：受測主機的效能資料（主機 agent 主控台「匯出分析資料」的 ZIP，
     /// 或單台主機的 metrics.csv）；加入 CPU、記憶體、Disk Queue 圖表與主機規格

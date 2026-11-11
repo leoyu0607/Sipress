@@ -50,6 +50,8 @@ pub struct RtpStats {
 /// 固定 jitter buffer 的大小（ms）：50 = 小緩衝、200 = 一般話機
 pub const JB_SMALL_MS: u64 = 50;
 pub const JB_LARGE_MS: u64 = 200;
+/// 時段統計等第一個封包的寬限：送出 100 個封包（20 ms 一包 = 2 秒）內還沒收到，先不計入時段
+const FIRST_PACKET_GRACE: u64 = 100;
 /// 基準延遲的視窗長度：取最近一到兩個視窗內最小的延遲，讓基準跟著時鐘漂移移動
 const JB_WINDOW_US: u64 = 30_000_000;
 
@@ -300,7 +302,17 @@ impl RtpStats {
     }
 
     /// 上次呼叫以後新增的封包數（第一次呼叫 = 從通話開始）；每通電話只能有一個呼叫端
+    ///
+    /// 接通後對方的第一個封包要一點時間才到，這段期間 `totals` 會把送出的封包全算成掉包。
+    /// 剛接通時若時段剛好在這時結束，這通電話會以 100% 掉包（MOS 1）拉低 P5。
+    /// 所以還沒收到任何封包、送出未滿 `FIRST_PACKET_GRACE` 時先不計，留到下個時段；
+    /// 超過寬限仍沒收到，才當作單向無聲計入。
     pub fn take_interval(&self) -> RtpInterval {
+        if self.recv_packets.load(Ordering::Relaxed) == 0
+            && self.sent_packets.load(Ordering::Relaxed) < FIRST_PACKET_GRACE
+        {
+            return RtpInterval::default();
+        }
         let (expected, lost) = self.totals();
         let (late_small, late_large) = {
             let jb = self.jb.lock().unwrap();
@@ -838,6 +850,32 @@ mod tests {
         assert!((b.loss_rate() - 0.0).abs() < 1e-9);
         assert!((a.loss_rate() - 0.1).abs() < 1e-9);
         assert_eq!(stats.take_interval().expected, 0);
+    }
+
+    #[test]
+    fn take_interval_waits_for_first_packet() {
+        let stats = RtpStats::new();
+        // 剛接通：已送出 5 包、還沒收到 → 先不計，不會變成 100% 掉包
+        stats.sent_packets.store(5, Ordering::Relaxed);
+        assert_eq!(stats.take_interval().expected, 0);
+        // 對方的封包到了 → 從第一個收到的序號開始算，沒有假掉包
+        stats.sent_packets.store(55, Ordering::Relaxed);
+        for i in 0..50u16 {
+            stats.on_recv(1, i, i as u32 * 160, i as u64 * 20_000);
+        }
+        let a = stats.take_interval();
+        assert_eq!((a.expected, a.lost), (50, 0));
+
+        // 單向無聲：超過寬限仍沒收到 → 照樣計為全部掉包
+        let silent = RtpStats::new();
+        silent
+            .sent_packets
+            .store(FIRST_PACKET_GRACE, Ordering::Relaxed);
+        let b = silent.take_interval();
+        assert_eq!(
+            (b.expected, b.lost),
+            (FIRST_PACKET_GRACE, FIRST_PACKET_GRACE)
+        );
     }
 
     #[test]

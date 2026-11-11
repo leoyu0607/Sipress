@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 整合報告：選擇壓測結果（最近一次執行或 result.json）、主機效能資料（選填）、
+ * 整合報告：選擇壓測結果（最近一次民眾端、座席端、雙端，或一至兩份 result.json）、主機效能資料（選填）、
  * 判定門檻與受測環境備註，存成 HTML、轉成 PDF 或用瀏覽器開啟。
  */
 import { ref, computed, watch, onUnmounted } from 'vue'
@@ -18,9 +18,10 @@ const emit = defineEmits<{ close: [] }>()
 
 const store = useTestStore()
 
-/** 'caller' / 'agent' = 最近一次執行的結果；'file' = 壓測數據檔 */
-const source = ref<CallMode | 'file'>('caller')
-const resultPath = ref('')
+/** 'caller' / 'agent' / 'both' = 最近一次執行的結果；'file' = 壓測數據檔（一端或兩端各一份） */
+type Source = CallMode | 'both' | 'file'
+const source = ref<Source>('caller')
+const resultPaths = ref<string[]>([])
 const hostPath = ref('')
 const thresholds = ref<ReportThresholds>({ ...DEFAULT_THRESHOLDS })
 const notes = ref('')
@@ -46,9 +47,10 @@ watch(() => props.visible, async v => {
   thresholds.value = saved.thresholds
   notes.value = saved.notes
   error.value = ''
-  // 預設選目前模式最近一次的結果；沒有時改選檔案
+  // 預設：兩端都有結果時選雙端，否則選有結果的那一端；都沒有時改選檔案
   const m = store.config.mode as CallMode
-  source.value = done(m) ? m : done(m === 'caller' ? 'agent' : 'caller') ? (m === 'caller' ? 'agent' : 'caller') : 'file'
+  const other: CallMode = m === 'caller' ? 'agent' : 'caller'
+  source.value = done(m) && done(other) ? 'both' : done(m) ? m : done(other) ? other : 'file'
   try { pdfReady.value = await invoke<boolean>('pdf_available') } catch { pdfReady.value = false }
 })
 function onKeydown(e: KeyboardEvent) {
@@ -57,8 +59,9 @@ function onKeydown(e: KeyboardEvent) {
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 async function pickResult() {
-  const p = await open({ multiple: false, filters: [{ name: '壓測數據（*_result.json）', extensions: ['json'] }] })
-  if (p && typeof p === 'string') { resultPath.value = p; source.value = 'file' }
+  const p = await open({ multiple: true, filters: [{ name: '壓測數據（*_result.json）', extensions: ['json'] }] })
+  const list = Array.isArray(p) ? p : p ? [p] : []
+  if (list.length) { resultPaths.value = list; source.value = 'file' }
 }
 async function pickHost() {
   const p = await open({ multiple: false, filters: [{ name: '主機效能資料（ZIP / CSV）', extensions: ['zip', 'csv'] }] })
@@ -67,16 +70,25 @@ async function pickHost() {
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
 
 const invalid = computed(() => {
-  if (source.value === 'file' && !resultPath.value) return '請選擇壓測數據檔'
-  if (source.value !== 'file' && !done(source.value)) return `${MODE_LABEL[source.value]}還沒有完成的測試`
+  if (source.value === 'file') {
+    if (!resultPaths.value.length) return '請選擇壓測數據檔'
+    if (resultPaths.value.length > 2) return '最多選兩份數據檔（民眾端與座席端各一份）'
+  } else {
+    const missing = modesOf(source.value).find(m => !done(m))
+    if (missing) return `${MODE_LABEL[missing]}還沒有完成的測試`
+  }
   const bad = THRESHOLD_FIELDS.find(f => !(Number.isFinite(thresholds.value[f.key]) && thresholds.value[f.key] >= 0))
   return bad ? `${bad.label}需為 0 以上的數字` : ''
 })
 
+function modesOf(s: Source): CallMode[] {
+  return s === 'both' ? ['caller', 'agent'] : s === 'file' ? [] : [s]
+}
+
 function request(): IntegratedRequest {
   return {
-    result_path: source.value === 'file' ? resultPath.value : null,
-    mode: source.value === 'file' ? null : source.value,
+    result_paths: source.value === 'file' ? [...resultPaths.value] : [],
+    modes: modesOf(source.value),
     host_metrics_path: hostPath.value || null,
     thresholds: { ...thresholds.value },
     notes: notes.value,
@@ -122,12 +134,18 @@ async function run(kind: 'html' | 'pdf' | 'open') {
                   最近一次{{ MODE_LABEL[m] }}測試
                   <span v-if="!done(m)" class="muted">（尚無結果）</span>
                 </label>
+                <label class="radio" :class="{ disabled: !done('caller') || !done('agent') }">
+                  <input v-model="source" type="radio" value="both" :disabled="!done('caller') || !done('agent')">
+                  最近一次雙端測試（民眾端＋座席端）
+                  <span v-if="!done('caller') || !done('agent')" class="muted">（兩端都完成後才能選）</span>
+                </label>
                 <label class="radio">
                   <input v-model="source" type="radio" value="file">
                   壓測數據檔
                   <button class="btn btn-sm" @click.prevent="pickResult">選擇…</button>
-                  <span class="path" :title="resultPath">{{ resultPath ? baseName(resultPath) : 'CLI 加 --html 或 GUI「↓ 數據」產生的 *_result.json' }}</span>
+                  <span class="path" :title="resultPaths.join('、')">{{ resultPaths.length ? resultPaths.map(baseName).join('、') : 'CLI 加 --html 或 GUI「↓ 數據」產生的 *_result.json；雙端報告選民眾端與座席端各一份' }}</span>
                 </label>
+                <div class="muted note">每一端量測的是自己收到的聲音：民眾端是座席 → 民眾，座席端是民眾 → 座席。雙端報告兩個方向分開判定，都通過才算通過。</div>
               </section>
 
               <!-- 主機資料 -->
@@ -234,6 +252,7 @@ async function run(kind: 'html' | 'pdf' | 'open') {
 .muted { color: var(--text2); font-weight: 400; font-size: 11px; }
 .radio { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text0); min-width: 0; }
 .radio.disabled { color: var(--text2); }
+.note { line-height: 1.5; }
 .row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .path {
   font-family: var(--mono); font-size: 11px; color: var(--text2);
