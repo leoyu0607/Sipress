@@ -12,7 +12,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
-    integrated_report::{IntegratedReport, ReportOptions},
+    integrated_report::{IntegratedReport, ReportOptions, ReportSources},
     reporter::{OutputFormat, Reporter},
     result_file::ResultFile,
     stats::{FinalReport, StatsSnapshot},
@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
         return run_correlate(&args, &files[0], &files[1]);
     }
     // ── 整合報告（不執行壓測）──
-    if let Some(path) = &args.integrate {
-        return run_integrate(&args, path);
+    if let Some(paths) = &args.integrate {
+        return run_integrate(&args, paths);
     }
 
     let mode = args.mode();
@@ -271,9 +271,13 @@ fn read_trace_file(path: &std::path::Path) -> Result<TraceFile> {
     })
 }
 
-/// --integrate：讀壓測數據檔，依門檻產生整合報告
-fn run_integrate(args: &Args, path: &std::path::Path) -> Result<()> {
-    let file = ResultFile::load(path)?;
+/// --integrate：讀壓測數據檔（一端或兩端），依門檻產生整合報告
+fn run_integrate(args: &Args, paths: &[std::path::PathBuf]) -> Result<()> {
+    let files = paths
+        .iter()
+        .map(|p| ResultFile::load(p))
+        .collect::<Result<Vec<_>>>()?;
+    let src = ReportSources::from_files(files)?;
     let th = match &args.thresholds {
         Some(p) => Thresholds::load(p)?,
         None => Thresholds::default(),
@@ -288,7 +292,7 @@ fn run_integrate(args: &Args, path: &std::path::Path) -> Result<()> {
         hosts,
         notes: args.report_notes.clone().unwrap_or_default(),
     };
-    let out = IntegratedReport::save(&file, &opts, &args.report_dir, &report_timestamp())?;
+    let out = IntegratedReport::save(&src, &opts, &args.report_dir, &report_timestamp())?;
     println!("整合報告 → {}", out.display());
     if args.pdf {
         let pdf = out.with_extension("pdf");

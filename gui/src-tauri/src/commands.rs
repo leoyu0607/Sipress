@@ -7,7 +7,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
-    integrated_report::{IntegratedReport, ReportOptions},
+    integrated_report::{IntegratedReport, ReportOptions, ReportSources},
     registrar::{register_once, RegisterResult},
     result_file::ResultFile,
     rtp::audio::AudioSource,
@@ -292,11 +292,12 @@ pub fn get_result_json(state: State<'_, Arc<AppState>>, mode: Mode) -> Result<St
 /// 整合報告的來源與選項（前端「整合報告」對話框）
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct IntegratedRequest {
-    /// 壓測數據檔（`<時間>_result.json`）；None = 用 `mode` 最近一次執行的結果
+    /// 壓測數據檔（`<時間>_result.json`），一端或兩端各一份；空 = 用 `modes` 最近一次執行的結果
     #[serde(default)]
-    pub result_path: Option<String>,
+    pub result_paths: Vec<String>,
+    /// 最近一次執行的結果：`[caller]`、`[agent]`，或兩端都給產生雙端報告
     #[serde(default)]
-    pub mode: Option<Mode>,
+    pub modes: Vec<Mode>,
     /// 主機 agent 匯出的 ZIP 或 metrics.csv（選填）
     #[serde(default)]
     pub host_metrics_path: Option<String>,
@@ -307,20 +308,27 @@ pub struct IntegratedRequest {
 }
 
 fn integrated_html(app: &AppState, req: &IntegratedRequest) -> Result<String, String> {
-    let file = match (&req.result_path, &req.mode) {
-        (Some(p), _) if !p.is_empty() => {
-            ResultFile::load(std::path::Path::new(p)).map_err(|e| format!("{:#}", e))?
-        }
-        (_, Some(mode)) => {
-            let session = app.session(mode);
-            let report = session.report.lock().unwrap().clone().ok_or_else(|| {
-                "這個模式還沒有測試結果，請先完成一次壓測或選擇壓測數據檔".to_string()
-            })?;
-            let config = session.config.lock().unwrap().clone().unwrap_or_default();
-            ResultFile::new(&config, &report)
-        }
-        _ => return Err("請選擇壓測數據檔".into()),
+    let paths: Vec<&String> = req.result_paths.iter().filter(|p| !p.is_empty()).collect();
+    let files = if !paths.is_empty() {
+        paths
+            .iter()
+            .map(|p| ResultFile::load(std::path::Path::new(p)).map_err(|e| format!("{:#}", e)))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        req.modes
+            .iter()
+            .map(|mode| {
+                let session = app.session(mode);
+                let report = session.report.lock().unwrap().clone().ok_or_else(|| {
+                    "這個模式還沒有測試結果，請先完成一次壓測或選擇壓測數據檔".to_string()
+                })?;
+                let mut config = session.config.lock().unwrap().clone().unwrap_or_default();
+                config.mode = mode.clone();
+                Ok(ResultFile::new(&config, &report))
+            })
+            .collect::<Result<Vec<_>, String>>()?
     };
+    let src = ReportSources::from_files(files).map_err(|e| format!("{:#}", e))?;
     let hosts = match req.host_metrics_path.as_deref().filter(|p| !p.is_empty()) {
         Some(p) => {
             Some(HostMetrics::load(std::path::Path::new(p)).map_err(|e| format!("{:#}", e))?)
@@ -332,7 +340,7 @@ fn integrated_html(app: &AppState, req: &IntegratedRequest) -> Result<String, St
         hosts,
         notes: req.notes.clone(),
     };
-    Ok(IntegratedReport::render(&file, &opts))
+    Ok(IntegratedReport::render(&src, &opts))
 }
 
 /// 整合報告的 HTML（前端負責存檔）
@@ -453,20 +461,27 @@ mod tests {
     #[test]
     fn integrated_report_uses_latest_session_or_file() {
         let app = AppState::default();
-        let req = |mode: Option<Mode>, path: Option<String>| IntegratedRequest {
-            result_path: path,
-            mode,
+        let req = |modes: Vec<Mode>, paths: Vec<String>| IntegratedRequest {
+            result_paths: paths,
+            modes,
             host_metrics_path: None,
             thresholds: Thresholds::default(),
             notes: "受測方 SIPX".into(),
         };
-        assert!(integrated_html(&app, &req(Some(Mode::Caller), None)).is_err());
+        assert!(integrated_html(&app, &req(vec![Mode::Caller], vec![])).is_err());
+        assert!(integrated_html(&app, &req(vec![], vec![])).is_err());
 
         *app.caller.report.lock().unwrap() = Some(sample_report());
-        let html = integrated_html(&app, &req(Some(Mode::Caller), None)).unwrap();
+        let html = integrated_html(&app, &req(vec![Mode::Caller], vec![])).unwrap();
         assert!(html.contains("SIP 壓力測試報告") && html.contains("受測方 SIPX"));
 
-        let err = integrated_html(&app, &req(None, Some("/no/such/result.json".into())));
+        // 雙端：座席端還沒有結果時回錯誤；兩端都有時兩個方向分開列出
+        assert!(integrated_html(&app, &req(vec![Mode::Caller, Mode::Agent], vec![])).is_err());
+        *app.agent.report.lock().unwrap() = Some(sample_report());
+        let html = integrated_html(&app, &req(vec![Mode::Caller, Mode::Agent], vec![])).unwrap();
+        assert!(html.contains("雙端（民眾端撥出、座席端接聽）"));
+
+        let err = integrated_html(&app, &req(vec![], vec!["/no/such/result.json".into()]));
         assert!(err.unwrap_err().contains("無法讀取"));
     }
 

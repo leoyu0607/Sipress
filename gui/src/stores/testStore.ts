@@ -357,9 +357,10 @@ export const DEFAULT_THRESHOLDS: ReportThresholds = {
 
 /** 整合報告的來源與選項（欄位同 Rust `IntegratedRequest`） */
 export interface IntegratedRequest {
-  /** 壓測數據檔；null = 用 mode 最近一次執行的結果 */
-  result_path:       string | null
-  mode:              CallMode | null
+  /** 壓測數據檔，一端或民眾端＋座席端各一份；空 = 用 modes 最近一次執行的結果 */
+  result_paths:      string[]
+  /** 最近一次執行的結果；兩端都給時產生雙端報告（兩個方向都通過才算通過） */
+  modes:             CallMode[]
   host_metrics_path: string | null
   thresholds:        ReportThresholds
   notes:             string

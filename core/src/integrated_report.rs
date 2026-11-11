@@ -22,12 +22,107 @@ const C_GREEN: &str = "#16a34a";
 const C_BLUE: &str = "#1d4ed8";
 const C_RED: &str = "#dc2626";
 const C_ORANGE: &str = "#ea580c";
-const C_GRAY: &str = "#6b7280";
 const C_INK: &str = "#111827";
 const C_AVG: &str = "#374151";
 const C_LIMIT: &str = "#f59e0b";
 
 pub struct IntegratedReport;
+
+/// 報告的資料來源：民眾端與座席端的壓測數據檔，至少一份
+///
+/// 兩端各自量測**收到**的封包，民眾端的 MOS 是座席 → 民眾方向，座席端的是民眾 → 座席方向。
+/// 兩份都有時兩個方向分開列出，都在警戒值內才算通過。
+#[derive(Debug, Clone, Default)]
+pub struct ReportSources {
+    pub caller: Option<ResultFile>,
+    pub agent: Option<ResultFile>,
+}
+
+impl ReportSources {
+    /// 依數據檔的測試模式分到民眾端或座席端；同一端出現兩份時回錯誤
+    pub fn from_files(files: Vec<ResultFile>) -> Result<Self> {
+        let mut s = Self::default();
+        for f in files {
+            let (slot, name) = if is_agent(&f) {
+                (&mut s.agent, "座席端")
+            } else {
+                (&mut s.caller, "民眾端")
+            };
+            if slot.is_some() {
+                anyhow::bail!("有兩份{}的數據檔；雙端報告需要民眾端與座席端各一份", name);
+            }
+            *slot = Some(f);
+        }
+        if s.caller.is_none() && s.agent.is_none() {
+            anyhow::bail!("請選擇壓測數據檔");
+        }
+        Ok(s)
+    }
+
+    pub fn single(file: ResultFile) -> Self {
+        Self::from_files(vec![file]).expect("一份數據檔不會衝突")
+    }
+
+    /// 時間軸、通話量、主機資源的基準：有民眾端時用民眾端
+    fn primary(&self) -> &ResultFile {
+        self.caller
+            .as_ref()
+            .or(self.agent.as_ref())
+            .expect("ReportSources 至少要有一份數據檔")
+    }
+}
+
+fn is_agent(f: &ResultFile) -> bool {
+    cfg_str(&f.config, "mode") == "agent"
+}
+
+/// 一個方向的聲音品質（某一端收到的封包）
+struct Side<'a> {
+    file: &'a ResultFile,
+    /// 聽到聲音的一方與方向，例如「民眾聽到（座席 → 民眾）」
+    label: &'static str,
+    /// 對齊到基準時間軸（基準的測試開始 = 0）的時段
+    points: Vec<Point>,
+}
+
+fn sides(src: &ReportSources) -> Vec<Side<'_>> {
+    let primary = src.primary();
+    let t0 = parse_rfc3339(&primary.report.started_at);
+    let dur = primary.report.duration_secs;
+    [
+        (&src.caller, "民眾聽到（座席 → 民眾）"),
+        (&src.agent, "座席聽到（民眾 → 座席）"),
+    ]
+    .into_iter()
+    .filter_map(|(f, label)| Some((f.as_ref()?, label)))
+    .map(|(file, label)| {
+        let points = if std::ptr::eq(file, primary) {
+            merge(&file.report.fine_timeline)
+        } else {
+            // 另一端的時段換到基準的時間軸，只留基準測試期間的部分
+            let off = match (t0, parse_rfc3339(&file.report.started_at)) {
+                (Some(a), Some(b)) => (b - a) as f64,
+                _ => 0.0,
+            };
+            let buckets: Vec<TimelineBucket> = file
+                .report
+                .fine_timeline
+                .iter()
+                .filter(|b| b.end_secs + off > 0.0 && b.start_secs + off < dur)
+                .cloned()
+                .collect();
+            let mut p = merge(&buckets);
+            p.iter_mut().for_each(|p| p.t += off);
+            p
+        };
+        Side {
+            file,
+            label,
+            points,
+        }
+    })
+    .collect()
+}
 
 /// 產生整合報告的選項
 #[derive(Debug, Clone, Default)]
@@ -42,26 +137,28 @@ pub struct ReportOptions {
 impl IntegratedReport {
     /// 寫到 `<dir>/<timestamp>_integrated_report.html`
     pub fn save(
-        file: &ResultFile,
+        src: &ReportSources,
         opts: &ReportOptions,
         output_dir: &str,
         timestamp: &str,
     ) -> Result<PathBuf> {
         fs::create_dir_all(output_dir)?;
         let path = PathBuf::from(output_dir).join(format!("{}_integrated_report.html", timestamp));
-        fs::write(&path, Self::render(file, opts))?;
+        fs::write(&path, Self::render(src, opts))?;
         Ok(path)
     }
 
-    pub fn render(file: &ResultFile, opts: &ReportOptions) -> String {
+    pub fn render(src: &ReportSources, opts: &ReportOptions) -> String {
         let th = &opts.thresholds;
+        let file = src.primary();
         let r = &file.report;
-        let points = merge(&r.fine_timeline);
+        let sides = sides(src);
+        let points = &sides[0].points;
         let hosts: Vec<HostView> = opts
             .hosts
             .as_ref()
             .map_or(Vec::new(), |h| host_views(file, h));
-        let mut checks = checks(file, th);
+        let mut checks: Vec<Check> = sides.iter().flat_map(|s| checks(s, th)).collect();
         for h in &hosts {
             checks.extend(h.checks(th));
         }
@@ -110,7 +207,7 @@ impl IntegratedReport {
 "#,
             cls = verdict.cls(),
             label = verdict.label(),
-            summary = summary_text(file, th, &checks, &points),
+            summary = summary_text(src, th, &checks, &sides),
             rows = checks.iter().map(Check::row).collect::<String>(),
         );
 
@@ -122,7 +219,7 @@ impl IntegratedReport {
 <table class="tbl kv"><tbody>{rows}</tbody></table>
 </section>
 "#,
-            rows = conditions(file, &opts.notes)
+            rows = conditions(src, &opts.notes)
                 .iter()
                 .map(|(k, v)| format!("<tr><th>{}</th><td>{}</td></tr>", k, v))
                 .collect::<String>(),
@@ -191,78 +288,34 @@ impl IntegratedReport {
         );
 
         // ── 4. 聲音品質 ──
-        if points.iter().any(|p| p.rtp.is_some()) {
-            let rtp = |f: fn(&RtpPoint) -> f64| -> Vec<Option<f64>> {
-                points.iter().map(|p| p.rtp.as_ref().map(f)).collect()
-            };
+        if sides
+            .iter()
+            .any(|s| s.points.iter().any(|p| p.rtp.is_some()))
+        {
             let _ = write!(
                 out,
                 r#"<section class="card">
 <h2>4. 聲音品質</h2>
-<p class="hint">每個時段只計算該時段內新增的封包；紅色底色為超過警戒值的時段，橘黃色虛線為警戒線，灰色點線為平均；MOS 圖的黑色虛線為並發通話數（右軸）。</p>
-{c1}{c2}{c3}
-</section>
+<p class="hint">MOS、掉包率與 Jitter 由收到聲音的一端量測，依方向分開列出{both}。每個時段只計算該時段內新增的封包；紅色底色為主線（每張圖的第一條線）超過警戒值的時段，橘黃色虛線為警戒線，灰色點線為主線的全程平均；MOS 的 P5 為該時段內最差 5% 通話的 MOS（通話數少於 20 通時即為最差的那一通）；MOS 圖的黑色虛線為並發通話數（右軸）。</p>
 "#,
-                c1 = Chart {
-                    title: "MOS".into(),
-                    unit: "",
-                    y_min: 1.0,
-                    y_max: Some(5.0),
-                    series: vec![
-                        Series::new(
-                            "MOS（jitter buffer 200 ms）平均",
-                            C_BLUE,
-                            rtp(|r| r.mos_jb200_avg)
-                        ),
-                        Series::new(
-                            "MOS（jitter buffer 200 ms）P5",
-                            C_RED,
-                            rtp(|r| r.mos_jb200_p5)
-                        ),
-                        Series::new("MOS（E-Model）平均", C_GRAY, rtp(|r| r.mos_avg)),
-                    ],
-                    limit: Some(Limit::Min(th.mos)),
-                    right: Some(RightAxis {
-                        unit: "通",
-                        y_max: None,
-                        series: vec![Series::new(
-                            "並發通話數",
-                            C_INK,
-                            points.iter().map(|p| Some(p.active)).collect(),
-                        )
-                        .dashed()],
-                    }),
-                    summary: None,
-                }
-                .svg(&x),
-                c2 = Chart {
-                    title: "掉包率".into(),
-                    unit: "%",
-                    y_min: 0.0,
-                    y_max: None,
-                    series: vec![
-                        Series::new("整體（時段內所有通話）", C_GREEN, rtp(|r| r.loss_pct)).area(),
-                        Series::new("最嚴重的單通電話", C_ORANGE, rtp(|r| r.loss_max_pct)),
-                    ],
-                    limit: Some(Limit::Max(th.loss_pct)),
-                    right: None,
-                    summary: None,
-                }
-                .svg(&x),
-                c3 = Chart {
-                    title: "Jitter".into(),
-                    unit: "ms",
-                    y_min: 0.0,
-                    y_max: None,
-                    series: vec![
-                        Series::new("平均", C_GREEN, rtp(|r| r.jitter_avg_ms)).area(),
-                        Series::new("每通電話的 P95", C_ORANGE, rtp(|r| r.jitter_p95_ms)),
-                    ],
-                    limit: Some(Limit::Max(th.jitter_ms)),
-                    right: None,
-                    summary: None,
-                }
-                .svg(&x),
+                both = if sides.len() > 1 {
+                    "，兩個方向都在警戒值內才算通過"
+                } else {
+                    ""
+                },
+            );
+            for (i, side) in sides.iter().enumerate() {
+                let heading = if sides.len() > 1 {
+                    format!("4.{} {}", i + 1, side.label)
+                } else {
+                    side.label.to_string()
+                };
+                let _ = writeln!(out, "<h3>{}</h3>", heading);
+                out.push_str(&quality_charts(side, th));
+            }
+            out.push_str(
+                "</section>
+",
             );
         } else {
             out.push_str(
@@ -303,6 +356,83 @@ impl IntegratedReport {
     }
 }
 
+/// 一個方向的 MOS、掉包率、Jitter 圖
+fn quality_charts(side: &Side, th: &Thresholds) -> String {
+    let points = &side.points;
+    if !points.iter().any(|p| p.rtp.is_some()) {
+        return r#"<p class="hint">這一端沒有測試期間的聲音品質數據（未啟用 RTP，或測試時間沒有重疊）。</p>"#
+            .into();
+    }
+    let x: Vec<f64> = points.iter().map(|p| p.t).collect();
+    let rtp = |f: fn(&RtpPoint) -> f64| -> Vec<Option<f64>> {
+        points.iter().map(|p| p.rtp.as_ref().map(f)).collect()
+    };
+    let mut out = Chart {
+        title: "MOS".into(),
+        unit: "",
+        y_min: 1.0,
+        y_max: Some(5.0),
+        series: vec![
+            Series::new(
+                "MOS（jitter buffer 200 ms）平均",
+                C_BLUE,
+                rtp(|r| r.mos_jb200_avg),
+            ),
+            Series::new(
+                "MOS（jitter buffer 200 ms）P5",
+                C_RED,
+                rtp(|r| r.mos_jb200_p5),
+            ),
+        ],
+        limit: Some(Limit::Min(th.mos)),
+        right: Some(RightAxis {
+            unit: "通",
+            y_max: None,
+            series: vec![Series::new(
+                "並發通話數",
+                C_INK,
+                points.iter().map(|p| Some(p.active)).collect(),
+            )
+            .dashed()],
+        }),
+        summary: None,
+    }
+    .svg(&x);
+    out.push_str(
+        &Chart {
+            title: "掉包率".into(),
+            unit: "%",
+            y_min: 0.0,
+            y_max: None,
+            series: vec![
+                Series::new("整體（時段內所有通話）", C_GREEN, rtp(|r| r.loss_pct)).area(),
+                Series::new("最嚴重的單通電話", C_ORANGE, rtp(|r| r.loss_max_pct)),
+            ],
+            limit: Some(Limit::Max(th.loss_pct)),
+            right: None,
+            summary: None,
+        }
+        .svg(&x),
+    );
+    out.push_str(
+        &Chart {
+            title: "Jitter".into(),
+            unit: "ms",
+            y_min: 0.0,
+            y_max: None,
+            series: vec![
+                Series::new("平均", C_GREEN, rtp(|r| r.jitter_avg_ms)).area(),
+                Series::new("每通電話的 P95", C_ORANGE, rtp(|r| r.jitter_p95_ms)),
+            ],
+            limit: Some(Limit::Max(th.jitter_ms)),
+            right: None,
+            summary: None,
+        }
+        .svg(&x),
+    );
+    out
+}
+
 // ── 判定 ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -332,6 +462,8 @@ impl Verdict {
 
 struct Check {
     name: String,
+    /// 聲音品質的方向（例如「民眾聽到（座席 → 民眾）」）；主機資源為空字串
+    scope: &'static str,
     value: Option<f64>,
     unit: &'static str,
     limit: Limit,
@@ -353,8 +485,13 @@ impl Check {
             format!("{}{}", fmt_num(x), self.unit)
         });
         format!(
-            r#"<tr><td>{name}</td><td class="num">{value}<div class="sub">{note}</div></td><td class="num">{limit}{unit}</td><td><span class="tag {cls}">{label}</span></td></tr>"#,
+            r#"<tr><td>{name}{scope}</td><td class="num">{value}<div class="sub">{note}</div></td><td class="num">{limit}{unit}</td><td><span class="tag {cls}">{label}</span></td></tr>"#,
             name = self.name,
+            scope = if self.scope.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<div class="sub">{}</div>"#, self.scope)
+            },
             note = self.note,
             limit = self.limit.label(),
             unit = self.unit,
@@ -364,8 +501,9 @@ impl Check {
     }
 }
 
-fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
-    let r = &file.report;
+fn checks(side: &Side, th: &Thresholds) -> Vec<Check> {
+    let r = &side.file.report;
+    let scope = side.label;
     let q = r.call_quality.as_ref();
     let mos_p5 = q.and_then(|q| CallQuality::quantile(&q.mos_jb200_hist, 0.05));
     let mos_note = q.map_or(String::new(), |q| {
@@ -380,6 +518,7 @@ fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
     vec![
         Check {
             name: "MOS（jitter buffer 200 ms 模擬）".into(),
+            scope,
             value: mos_p5,
             unit: "",
             limit: Limit::Min(th.mos),
@@ -387,6 +526,7 @@ fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
         },
         Check {
             name: "掉包率（整體）".into(),
+            scope,
             value: r.loss_rate_pct,
             unit: "%",
             limit: Limit::Max(th.loss_pct),
@@ -396,6 +536,7 @@ fn checks(file: &ResultFile, th: &Thresholds) -> Vec<Check> {
         },
         Check {
             name: "Jitter".into(),
+            scope,
             value: q.map(|q| q.jitter_p95_ms),
             unit: " ms",
             limit: Limit::Max(th.jitter_ms),
@@ -416,9 +557,9 @@ fn overall(checks: &[Check]) -> Verdict {
 }
 
 /// 結論文字：規則產生
-fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[Point]) -> String {
-    let r = &file.report;
-    let peak = points.iter().map(|p| p.active).fold(0.0, f64::max);
+fn summary_text(src: &ReportSources, th: &Thresholds, checks: &[Check], sides: &[Side]) -> String {
+    let r = &src.primary().report;
+    let peak = sides[0].points.iter().map(|p| p.active).fold(0.0, f64::max);
     let mut lines = vec![format!(
         "本次測試持續 {}，共發起 {} 通，接通 {} 通（接通率 {:.1}%），最高並發 {:.0} 通。",
         duration_label(r.duration_secs),
@@ -427,11 +568,22 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
         r.asr,
         peak
     )];
+    if let (Some(_), Some(a)) = (&src.caller, &src.agent) {
+        lines.push(format!(
+            "座席端共接聽 {} 通。聲音品質分兩個方向量測：民眾端量測座席 → 民眾，座席端量測民眾 → 座席，兩個方向都在警戒值內才算通過。",
+            a.report.calls_answered
+        ));
+    }
     for c in checks {
         let Some(v) = c.value else { continue };
         let pass = c.limit.ok(v);
         lines.push(format!(
-            "{}為 {}{}，{}警戒值 {}{}，判定{}。",
+            "{}{}為 {}{}，{}警戒值 {}{}，判定{}。",
+            if c.scope.is_empty() {
+                String::new()
+            } else {
+                format!("{}的", c.scope)
+            },
             c.name,
             fmt_num(v),
             c.unit,
@@ -446,28 +598,38 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
             if pass { "正常" } else { "未達標" }
         ));
     }
-    // 超過警戒值的時段
-    let bad: Vec<&Point> = points
-        .iter()
-        .filter(|p| {
-            p.rtp.as_ref().is_some_and(|q| {
-                q.mos_jb200_avg < th.mos
-                    || q.loss_pct > th.loss_pct
-                    || q.jitter_avg_ms > th.jitter_ms
+    // 超過警戒值的時段（每個方向分開找）
+    let mut any_bad = false;
+    for side in sides {
+        let bad: Vec<&Point> = side
+            .points
+            .iter()
+            .filter(|p| {
+                p.rtp.as_ref().is_some_and(|q| {
+                    q.mos_jb200_avg < th.mos
+                        || q.loss_pct > th.loss_pct
+                        || q.jitter_avg_ms > th.jitter_ms
+                })
             })
-        })
-        .collect();
-    if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
-        lines.push(format!(
-            "以時段來看，有 {} 個時段（共約 {}）的聲音品質超過警戒值，出現在 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 至 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 之間，詳見第 4 節的圖表。",
-            bad.len(),
-            duration_label(bad.iter().map(|p| p.span).sum()),
-            first.t - first.span / 2.0,
-            clock(first.t - first.span / 2.0),
-            last.t + last.span / 2.0,
-            clock(last.t + last.span / 2.0),
-        ));
-    } else if points.iter().any(|p| p.rtp.is_some()) {
+            .collect();
+        if let (Some(first), Some(last)) = (bad.first(), bad.last()) {
+            any_bad = true;
+            lines.push(format!(
+                "以時段來看，{}有 {} 個時段（共約 {}）的聲音品質超過警戒值，出現在 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 至 <span class=\"clock\" data-offset=\"{:.0}\">{}</span> 之間，詳見第 4 節的圖表。",
+                side.label,
+                bad.len(),
+                duration_label(bad.iter().map(|p| p.span).sum()),
+                first.t - first.span / 2.0,
+                clock(first.t - first.span / 2.0),
+                last.t + last.span / 2.0,
+                clock(last.t + last.span / 2.0),
+            ));
+        }
+    }
+    let has_rtp = sides
+        .iter()
+        .any(|s| s.points.iter().any(|p| p.rtp.is_some()));
+    if !any_bad && has_rtp {
         lines.push("每個時段的聲音品質都沒有超過警戒值。".into());
     }
     format!(
@@ -479,11 +641,13 @@ fn summary_text(file: &ResultFile, th: &Thresholds, checks: &[Check], points: &[
     )
 }
 
-fn conditions(file: &ResultFile, notes: &str) -> Vec<(&'static str, String)> {
+fn conditions(src: &ReportSources, notes: &str) -> Vec<(&'static str, String)> {
+    let file = src.primary();
     let c = &file.config;
     let r = &file.report;
-    let mode = match cfg_str(c, "mode").as_str() {
-        "agent" => "座席端（接聽）",
+    let mode = match (&src.caller, &src.agent) {
+        (Some(_), Some(_)) => "雙端（民眾端撥出、座席端接聽）",
+        (None, _) => "座席端（接聽）",
         _ => "民眾端（撥出）",
     };
     let mut rows = vec![
@@ -498,8 +662,9 @@ fn conditions(file: &ResultFile, notes: &str) -> Vec<(&'static str, String)> {
             "每通通話時長",
             format!("{} 秒", cfg_num(c, "call_duration_secs")),
         ));
-    } else {
-        rows.push(("座席帳號數", cfg_num(c, "agent_account_count")));
+    }
+    if let Some(a) = &src.agent {
+        rows.push(("座席帳號數", cfg_num(&a.config, "agent_account_count")));
     }
     rows.push((
         "語音",
@@ -598,6 +763,7 @@ impl HostView<'_> {
             if let Some((avg, max, p95)) = stats(&v) {
                 out.push(Check {
                     name: label,
+                    scope: "",
                     value: Some(p95),
                     unit,
                     limit: Limit::Max(limit),
@@ -794,7 +960,6 @@ struct RtpPoint {
     loss_max_pct: f64,
     jitter_avg_ms: f64,
     jitter_p95_ms: f64,
-    mos_avg: f64,
     mos_jb200_avg: f64,
     mos_jb200_p5: f64,
 }
@@ -843,7 +1008,6 @@ fn merge(buckets: &[TimelineBucket]) -> Vec<Point> {
                     loss_max_pct: max(|r| r.loss_max_pct),
                     jitter_avg_ms: w(|r| r.jitter_avg_ms),
                     jitter_p95_ms: max(|r| r.jitter_p95_ms),
-                    mos_avg: w(|r| r.mos_avg),
                     mos_jb200_avg: w(|r| r.mos_jb200_avg),
                     mos_jb200_p5: min(|r| r.mos_jb200_p5),
                 }
@@ -1293,10 +1457,10 @@ fn duration_label(secs: f64) -> String {
 }
 
 const DEFINITIONS: &str = r#"<dl>
+<dt>聲音方向</dt>
+<dd>每一端只能量測自己收到的封包：民眾端的數據是座席 → 民眾方向（民眾聽到的聲音），座席端的數據是民眾 → 座席方向（座席聽到的聲音）。報告同時有兩端數據時分開列出，兩個方向都在警戒值內才算通過；座席端的時間軸依兩端的測試開始時間對齊到民眾端。</dd>
 <dt>MOS（jitter buffer 200 ms 模擬）</dt>
 <dd>判定用的 MOS。模擬話機的 200 ms 固定緩衝：封包延遲比基準（最近 30 至 60 秒內最小的延遲）多出 200 ms 以上就來不及播放，視同遺失，再以 ITU-T G.107 E-Model（G.711）換算成 MOS。完全不掉包時最高 4.41。判定看<strong>每通電話的 P5</strong>：95% 的通話不低於這個值。</dd>
-<dt>MOS（E-Model）</dt>
-<dd>只用掉包率與 Jitter 估算，Jitter 低於 150 ms 不扣分，所以主要反映掉包。列出供參考。</dd>
 <dt>掉包率（整體）</dt>
 <dd>所有通話的掉包封包數加總 ÷ 應收封包數加總（依 RTP 序號計算）。不是每通電話掉包率的平均；另列最嚴重的單通電話。</dd>
 <dt>Jitter</dt>
@@ -1433,7 +1597,7 @@ mod tests {
             (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
             &[(4.4, 4.3); 20],
         );
-        let html = IntegratedReport::render(&f, &ReportOptions::default());
+        let html = IntegratedReport::render(&ReportSources::single(f), &ReportOptions::default());
         assert!(html.contains(r#"<div class="verdict good">通過</div>"#));
         assert!(html.contains("每個時段的聲音品質都沒有超過警戒值"));
         assert!(html.contains("@page{size:A4"));
@@ -1447,13 +1611,75 @@ mod tests {
         b[13] = bucket(13, 3.0, 2.5);
         let mut calls = vec![(4.4, 4.3); 18];
         calls.extend([(3.4, 3.0), (3.5, 3.1)]);
-        let html = IntegratedReport::render(&file(b, &calls), &ReportOptions::default());
+        let html = IntegratedReport::render(
+            &ReportSources::single(file(b, &calls)),
+            &ReportOptions::default(),
+        );
         assert!(html.contains(r#"<div class="verdict bad">未通過</div>"#));
         // 20 通的 P5 = 最低的一通（3.0）
         assert!(html.contains("判定未達標"));
         assert!(html.contains("有 2 個時段"), "{}", html);
         assert!(html.contains("0:02:00"), "第一個不良時段從 2 分開始");
         assert!(html.contains("18（90.0%）達標"));
+    }
+
+    /// 座席端數據檔：比民眾端早 `early` 秒開始
+    fn agent_file(mut f: ResultFile, early: i64) -> ResultFile {
+        f.config["mode"] = "agent".into();
+        if early > 0 {
+            f.report.started_at = format!("2026-10-28T04:59:{:02}Z", 60 - early);
+        }
+        f
+    }
+
+    #[test]
+    fn dual_report_judges_both_directions() {
+        let caller = file(
+            (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
+            &[(4.4, 4.3); 20],
+        );
+        // 座席端早 30 秒開始：座席端第 15–17 段 = 民眾端的 2:00–2:30
+        let mut b: Vec<_> = (0..33).map(|i| bucket(i, 4.3, 0.1)).collect();
+        for (i, x) in b.iter_mut().enumerate().take(18).skip(15) {
+            *x = bucket(i, 3.0, 2.0);
+        }
+        let mut calls = vec![(4.4, 4.3); 18];
+        calls.extend([(3.4, 3.0), (3.5, 3.1)]);
+        let agent = agent_file(file(b, &calls), 30);
+
+        let src = ReportSources::from_files(vec![agent, caller]).unwrap();
+        let html = IntegratedReport::render(&src, &ReportOptions::default());
+        assert!(
+            html.contains(r#"<div class="verdict bad">未通過</div>"#),
+            "座席方向未達標 → 整份未通過"
+        );
+        assert!(html.contains("雙端（民眾端撥出、座席端接聽）"));
+        assert!(html.contains("<h3>4.1 民眾聽到（座席 → 民眾）</h3>"));
+        assert!(html.contains("<h3>4.2 座席聽到（民眾 → 座席）</h3>"));
+        assert!(html.contains("民眾聽到（座席 → 民眾）的MOS（jitter buffer 200 ms 模擬）為 4.3，高於警戒值 4，判定正常"));
+        assert!(html.contains("座席聽到（民眾 → 座席）的MOS（jitter buffer 200 ms 模擬）為 3，低於警戒值 4，判定未達標"));
+        assert!(
+            html.contains("座席聽到（民眾 → 座席）有 3 個時段"),
+            "{}",
+            html
+        );
+        assert!(html.contains("0:02:00"), "座席端時段對齊到民眾端時間軸");
+        assert!(
+            !html.contains("民眾聽到（座席 → 民眾）有"),
+            "民眾方向沒有不良時段"
+        );
+    }
+
+    #[test]
+    fn sources_reject_two_files_of_the_same_side() {
+        let f = || file((0..3).map(|i| bucket(i, 4.3, 0.1)).collect(), &[(4.4, 4.3)]);
+        let err = ReportSources::from_files(vec![f(), f()]).unwrap_err();
+        assert!(err.to_string().contains("兩份民眾端"));
+        assert!(ReportSources::from_files(vec![]).is_err());
+        let one = ReportSources::single(agent_file(f(), 0));
+        assert!(one.caller.is_none() && one.agent.is_some());
+        let html = IntegratedReport::render(&one, &ReportOptions::default());
+        assert!(html.contains("<h3>座席聽到（民眾 → 座席）</h3>") && !html.contains("4.1 "));
     }
 
     #[test]
@@ -1480,7 +1706,7 @@ mod tests {
             .collect();
         let mut f = file(b, &[]);
         f.report.loss_rate_pct = None;
-        let html = IntegratedReport::render(&f, &ReportOptions::default());
+        let html = IntegratedReport::render(&ReportSources::single(f), &ReportOptions::default());
         assert!(html.contains("無法判定"));
         assert!(html.contains("未啟用 RTP，沒有聲音品質數據"));
     }
@@ -1541,7 +1767,7 @@ mod tests {
             ],
         };
         let html = IntegratedReport::render(
-            &f,
+            &ReportSources::single(f),
             &ReportOptions {
                 hosts: Some(hm),
                 notes: "受測方：SIPX 4.2\n<交換機>".into(),
@@ -1591,7 +1817,7 @@ mod tests {
             }],
         };
         let html = IntegratedReport::render(
-            &f,
+            &ReportSources::single(f),
             &ReportOptions {
                 hosts: Some(hm),
                 notes: evil.into(),

@@ -333,7 +333,7 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 
 按 TitleBar 的 **整合報告** 開啟設定視窗：
 
-1. **壓測結果**：選「最近一次民眾端 / 座席端測試」，或選一份 `*_result.json`（CLI 加 `--html` 或 GUI `↓ 數據` 產生）。
+1. **壓測結果**：選「最近一次民眾端 / 座席端 / 雙端測試」，或選一至兩份 `*_result.json`（CLI 加 `--html` 或 GUI `↓ 數據` 產生）。每一端量測的是自己收到的聲音（民眾端是座席 → 民眾，座席端是民眾 → 座席）；選雙端，或民眾端、座席端各一份數據檔時，報告把兩個方向分開判定，兩個方向都通過才算通過。
 2. **受測主機效能資料**（選填）：主機 agent「效能」頁的「匯出分析資料 (ZIP)」，時間範圍需涵蓋測試時間。報告會加上每台主機的規格、CPU、記憶體與每顆磁碟的 Disk Queue／忙碌率圖。
 3. **判定門檻**：預設 MOS ≥ 4、掉包率 ≤ 0.5%、Jitter ≤ 30 ms、CPU ≤ 70%、記憶體 ≤ 80%、Disk Queue ≤ 2，會記住上次的設定。
 4. **受測環境備註**（選填）：列在報告的「測試條件」。
@@ -436,7 +436,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 --timeline-csv <檔案>       結束後把分時段統計寫成 CSV
 --correlate <檔案A> <檔案B>  合併兩端的追蹤紀錄產生對照報告（不執行壓測）
 --correlate-window <秒>     主叫號碼配對的時間窗（預設：120）
---integrate <result.json>  讀壓測數據檔產生整合報告（不執行壓測）
+--integrate <result.json> [result.json]
+                           讀壓測數據檔產生整合報告（不執行壓測）；民眾端、座席端各給一份時兩個方向分開判定
 --host-metrics <ZIP|CSV>   整合報告加入受測主機的效能資料（主機 agent 匯出的 ZIP）
 --thresholds <檔案>         整合報告的判定門檻（JSON）
 --report-notes <文字>       整合報告的受測環境備註
@@ -480,6 +481,8 @@ CLI 使用時，先用「座席流程」的「匯出」存成 `sipress_flow.json
 # 3. 加上受測主機的效能資料：在主機 agent 主控台「效能」頁選涵蓋測試時間的區間，匯出分析資料 (ZIP)
 ./sipress --integrate reports/20261028_100000_result.json --host-metrics metrics-20261028-0958-1205.zip \
   --report-notes "受測系統 SIPX 4.2" --pdf
+# 4. 雙端報告：民眾端與座席端的數據檔各一份（順序不拘），兩個方向的聲音品質都通過才算通過
+./sipress --integrate caller_result.json agent_result.json --host-metrics metrics.zip
 ```
 
 ---

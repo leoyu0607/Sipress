@@ -397,7 +397,7 @@ describe('匯出 (D14)', () => {
 
 describe('整合報告', () => {
   const req = (patch: Partial<IntegratedRequest> = {}): IntegratedRequest => ({
-    result_path: null, mode: 'caller', host_metrics_path: '/tmp/metrics.zip',
+    result_paths: [], modes: ['caller'], host_metrics_path: '/tmp/metrics.zip',
     thresholds: { ...DEFAULT_THRESHOLDS, mos: 3.8 }, notes: 'SIPX 4.2', ...patch,
   })
 
@@ -420,9 +420,9 @@ describe('整合報告', () => {
     const s = useTestStore()
     await s.exportIntegratedPdf(req())
     expect(calls).toHaveLength(0)
-    await s.exportIntegratedPdf(req({ result_path: '/tmp/x_result.json', mode: null }))
+    await s.exportIntegratedPdf(req({ result_paths: ['/tmp/x_result.json'], modes: [] }))
     expect(calls[0].cmd).toBe('export_integrated_pdf')
-    expect(calls[0].args).toMatchObject({ path: '/tmp/r.pdf', req: { result_path: '/tmp/x_result.json', mode: null } })
+    expect(calls[0].args).toMatchObject({ path: '/tmp/r.pdf', req: { result_paths: ['/tmp/x_result.json'], modes: [] } })
     expect(calls[0].args?.timestamp).toMatch(/^\d{8}_\d{6}$/)
   })
 
