@@ -114,7 +114,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # musl 靜態連結（.cargo/config.toml 指定 rust-lld，不需 C toolchain）
+          # musl 靜態連結：ring（TTS 的 HTTPS 加密）含 C 程式碼，用 zig 當交叉編譯器與連結器
+          # （zig 內建各架構的 musl 標頭，ubuntu 沒有 aarch64 musl 的 gcc）
           - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  asset: sipress-linux-x86_64,      smoke: true }
           - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, asset: sipress-linux-arm64,       smoke: false }
           - { os: macos-latest,   target: aarch64-apple-darwin,       asset: sipress-macos-arm64,       smoke: true }
@@ -133,8 +134,25 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - uses: mlugg/setup-zig@v2
+        if: contains(matrix.target, 'musl')
+        with:
+          version: 0.15.2
+
+      - uses: taiki-e/install-action@v2
+        if: contains(matrix.target, 'musl')
+        with:
+          tool: cargo-zigbuild@0.23.4
+
       - name: Build
-        run: cargo build --release --locked -p sipress --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$TARGET" == *musl* ]]; then
+            cargo zigbuild --release --locked -p sipress --target "$TARGET"
+          else
+            cargo build --release --locked -p sipress --target "$TARGET"
+          fi
 
       - name: Package
         env:
