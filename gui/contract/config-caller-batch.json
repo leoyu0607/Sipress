@@ -28,6 +28,17 @@
   "codec": "pcma",
   "enable_rtp": false,
   "dtmf_sequence": null,
+  "caller_flow": {
+    "steps": [],
+    "hangup_when_done": true,
+    "tts": {
+      "provider": "azure",
+      "api_key": "",
+      "region": "",
+      "voice": "",
+      "cache_dir": "tts_cache"
+    }
+  },
   "mode": "caller",
   "agent_accounts": [],
   "agent_ack_timeout_secs": 10,

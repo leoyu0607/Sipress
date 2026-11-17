@@ -9,7 +9,7 @@
  * 改了 buildRustConfig / cliCommand 後，本機執行 `npm test -- -u` 更新 fixtures，並一起 commit。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestStore, sipxPresetFlow, newFlowStep, type TestConfig, type RustSnapshot, type RustReport } from '../stores/testStore'
+import { useTestStore, sipxPresetFlow, newFlowStep, newCallerStep, type TestConfig, type RustSnapshot, type RustReport } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
 import snapshotFixture from '../../contract/snapshot.json'
 import reportFixture from '../../contract/report.json'
@@ -64,6 +64,27 @@ const SCENARIOS: Scenario[] = [
       c.caller.callDuration = 15
       c.caller.refillDelay = 2.5
       c.caller.duration = 120
+    },
+  },
+  {
+    name: 'caller-flow',
+    apply: c => {
+      Object.assign(c.caller, {
+        calleeFixed: '1999', callDuration: 120,
+        // 舊的音檔與 DTMF 設定仍在，但有流程時不送出
+        enableAudio: true, audioFile: 'C:/audio/old.wav', dtmfSequence: '9,#',
+      })
+      c.caller.flow = {
+        steps: [
+          newCallerStep('wait', { secs: 10 }),
+          newCallerStep('dtmf', { digits: '1#' }),
+          newCallerStep('play', { files: ['C:/audio/a.wav', 'C:/audio/b.wav'] }),
+          newCallerStep('waitSilence', { silenceMs: 800, timeoutSecs: 20 }),
+          newCallerStep('say', { texts: ['我想查詢帳單', '請幫我查帳單'] }),
+        ],
+        hangupWhenDone: true,
+        tts: { provider: 'azure', apiKey: 'test-key', region: 'eastasia', voice: '' },
+      }
     },
   },
   {

@@ -1,4 +1,5 @@
 /// RTP session 傳輸測試：NAT / 媒體中繼下對端實際位址與 SDP 不同、對端 port 暫時不可達
+use sipress_core::rtp::script::MediaStep;
 use sipress_core::rtp::{RtpPacket, RtpSession, RtpSessionConfig};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -8,6 +9,14 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 
 async fn start_session(remote: SocketAddr, base_port: u16) -> RtpSession {
+    start_with_script(remote, base_port, None).await
+}
+
+async fn start_with_script(
+    remote: SocketAddr,
+    base_port: u16,
+    script: Option<Arc<Vec<MediaStep>>>,
+) -> RtpSession {
     let cfg = RtpSessionConfig {
         base_port,
         local_ip: "127.0.0.1".into(),
@@ -16,10 +25,73 @@ async fn start_session(remote: SocketAddr, base_port: u16) -> RtpSession {
         ssrc: None,
         local_port: None,
         codec_pt: 8,
+        script,
     };
     RtpSession::start(cfg, Arc::new(Mutex::new(base_port)), None)
         .await
         .unwrap()
+}
+
+/// 通話流程：按鍵事件與語音走同一個 SSRC、序號連續；對方講完才按鍵；跑完後回報結束
+#[tokio::test]
+async fn caller_script_runs_on_one_stream_and_waits_for_remote() {
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let script = Arc::new(vec![
+        MediaStep::WaitSilence {
+            silence_ms: 200,
+            timeout_secs: 5.0,
+        },
+        MediaStep::Dtmf { digits: "9".into() },
+    ]);
+    let session = start_with_script(peer.local_addr().unwrap(), 47000, Some(script)).await;
+    let local: SocketAddr = format!("127.0.0.1:{}", session.local_port())
+        .parse()
+        .unwrap();
+
+    // 對方先講 300 ms（A-law 大音量），之後安靜
+    let loud = vec![0xAAu8; 160];
+    for i in 0..15u16 {
+        let pkt = RtpPacket::new(8, i, i as u32 * 160, 0x1234, loud.clone()).encode();
+        peer.send_to(&pkt, local).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let spoke_until = tokio::time::Instant::now();
+
+    let mut buf = [0u8; 1500];
+    let mut ssrcs = std::collections::HashSet::new();
+    let mut last_seq: Option<u16> = None;
+    let mut first_event_at = None;
+    let deadline = spoke_until + Duration::from_secs(3);
+    while let Ok(Ok((n, _))) = tokio::time::timeout_at(deadline, peer.recv_from(&mut buf)).await {
+        let pkt = RtpPacket::decode(&buf[..n]).unwrap();
+        ssrcs.insert(pkt.ssrc);
+        if let Some(prev) = last_seq {
+            assert_eq!(pkt.sequence, prev.wrapping_add(1), "序號要連續");
+        }
+        last_seq = Some(pkt.sequence);
+        if pkt.payload_type == 101 && first_event_at.is_none() {
+            first_event_at = Some(tokio::time::Instant::now());
+        }
+        if session.script_finished() {
+            break;
+        }
+    }
+    assert_eq!(ssrcs.len(), 1, "按鍵與語音同一個 SSRC");
+    let pressed = first_event_at.expect("應送出按鍵");
+    let waited = pressed.duration_since(spoke_until);
+    assert!(
+        waited >= Duration::from_millis(150) && waited < Duration::from_millis(1500),
+        "對方講完約 200 ms 後才按鍵（實際 {waited:?}）"
+    );
+    // 按鍵 + 結束封包 + 間隔約 320 ms 後流程結束
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !session.script_finished() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("流程應結束");
+    session.stop();
 }
 
 /// 在 `wait` 時間內收集 sock 收到的封包數

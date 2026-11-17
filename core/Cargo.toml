@@ -15,6 +15,10 @@ hdrhistogram = { workspace = true }
 md-5         = { workspace = true }
 zip          = { workspace = true }
 socket2      = "0.6"
+# 雲端 TTS：TLS 用 ring（aws-lc 在 Windows 需要 cmake / NASM 才能編譯）
+reqwest      = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "system-proxy"] }
+rustls       = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+base64       = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = ["Win32_Networking_WinSock"] }

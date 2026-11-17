@@ -437,6 +437,10 @@ MOS    = 1 + 0.035R + R(R−60)(100−R) × 7×10⁻⁶  ← ITU-T G.107 §B.4
 ./sipress -s 192.168.1.100:5060 -c 100 --cps 10 -d 60 \
   --rtp --audio /path/to/sample.wav
 
+# 通話流程：測試 IVR（等待、按鍵、TTS 說話、等對方講完；流程檔由 GUI「通話流程」匯出）
+SIPRESS_TTS_KEY=<金鑰> ./sipress -s 192.168.1.100:5060 --to 1999 -c 20 --cps 2 -d 300 \
+  --rtp --caller-flow sipress_caller_flow.json
+
 # 輸出 HTML 報告
 ./sipress -s 192.168.1.100:5060 -c 100 --cps 10 -d 60 --html
 
@@ -543,6 +547,36 @@ agent 模式下 `--concurrent`、`--cps`、號碼設定等民眾端參數會被�
 | `--audio` | 無（靜音） | 音檔路徑（`.wav` / `.raw` G.711 μ-law） |
 | `--codec` | `pcma` | 偏好的 codec（`pcma` / `pcmu`）；實際使用的以 SDP 協商結果為準 |
 | `--dtmf` | — | 民眾端接通後經 RTP（RFC 4733）送出的 DTMF，例如 `1,w2000,2,#`（`wN` = 等待 N 毫秒）；需搭配 `--rtp` |
+| `--caller-flow` | — | 民眾端通話流程檔（JSON，GUI「通話流程」的「匯出」產生），取代 `--audio` 與 `--dtmf`；需搭配 `--rtp`。格式見下方「通話流程」 |
+
+### 通話流程（測試按鍵 IVR 與智能語音 IVR）
+
+民眾端接通後依序執行的步驟，GUI 在民眾端設定的「通話流程 → 設定…」編輯，視窗內有按鍵 IVR 與語音 IVR 的範例：
+
+| 步驟 | JSON | 說明 |
+|------|------|------|
+| 等待 | `{"type":"wait","secs":10}` | 送靜音 N 秒，例如先聽完招呼語 |
+| 按鍵 | `{"type":"dtmf","digits":"1"}` | 依序按下（`0-9 * # A-D`），與語音同一路 RTP 串流（同一個 SSRC、序號連續） |
+| 播放音檔 | `{"type":"play","files":["a.wav","b.wav"]}` | 播一次；列多個檔案時每通隨機挑一個 |
+| 說話（TTS） | `{"type":"say","texts":["我想查詢帳單","請幫我查帳單"]}` | 用雲端 TTS 合成後播放；列多段時每通隨機挑一段 |
+| 等對方講完 | `{"type":"wait_silence","silence_ms":800,"timeout_secs":20}` | 對方說過話後安靜 `silence_ms` 毫秒才進行下一步（音量 ≥ -40 dBFS 算說話）；超過 `timeout_secs` 仍沒等到就直接下一步 |
+
+```json
+{
+  "steps": [
+    {"type": "wait_silence", "silence_ms": 800, "timeout_secs": 20},
+    {"type": "say", "texts": ["我想查詢這個月的帳單"]},
+    {"type": "wait_silence", "silence_ms": 800, "timeout_secs": 20}
+  ],
+  "hangup_when_done": true,
+  "tts": {"provider": "azure", "region": "eastasia", "voice": ""}
+}
+```
+
+- `hangup_when_done`（預設 `true`）：流程跑完就掛斷；`false` 時送靜音直到 `--call-duration`。
+- TTS 支援 Azure AI Speech（`provider: "azure"`，需 `region`）與 Google Cloud Text-to-Speech（`provider: "google"`）；`voice` 留空 = 台灣華語預設聲音（`zh-TW-HsiaoChenNeural` / `cmn-TW-Wavenet-A`）。
+- 金鑰：流程檔的 `api_key`，或環境變數 `SIPRESS_TTS_KEY`（GUI 匯出的流程檔不含金鑰）。金鑰不會寫進結果檔。
+- 文字在**測試開始前**合成一次並快取在 `tts_cache/`（相同服務 + 聲音 + 文字不重複合成），壓測期間不連線到 TTS 服務；GUI 的「試聽」用同一份快取。
 
 ### 輸出與記錄
 

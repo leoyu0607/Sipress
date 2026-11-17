@@ -1,7 +1,9 @@
 /// 單通通話的 RTP Session
 use crate::rtp::{
     audio::{alaw_to_ulaw, AudioSource},
+    dtmf::PT_TELEPHONE_EVENT,
     packet::RtpPacket,
+    script::{MediaStep, Out, ScriptPlayer, VoiceActivity},
     stats::{RtpStats, RtpStatsSnapshot},
 };
 use anyhow::{Context, Result};
@@ -38,6 +40,8 @@ pub struct RtpSessionConfig {
     pub local_port: Option<u16>,
     /// Codec payload type（8=PCMA, 0=PCMU，預設 8）
     pub codec_pt: u8,
+    /// 民眾端通話流程（Some = 依步驟送出音檔 / 靜音 / 按鍵，取代 `audio_file` 的循環播放）
+    pub script: Option<Arc<Vec<MediaStep>>>,
 }
 
 /// RTP 送出目標
@@ -66,6 +70,14 @@ pub struct RtpSession {
     /// 傳送 DTMF（RFC 2833）用的同一個 RTP socket
     socket: Arc<UdpSocket>,
     local_rtp_port: u16,
+    /// 通話流程已全部跑完（沒有流程時一直是 false）
+    script_done: Arc<AtomicBool>,
+}
+
+/// 傳送 task 的聲音來源：舊的循環音檔，或通話流程
+enum Source {
+    Loop(AudioSource),
+    Script(ScriptPlayer),
 }
 
 impl RtpSession {
@@ -98,6 +110,10 @@ impl RtpSession {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_notify = Arc::new(Notify::new());
         let ssrc = config.ssrc.unwrap_or_else(|| rand::thread_rng().gen());
+        let script_done = Arc::new(AtomicBool::new(false));
+        // 傳送與接收共用的時間起點：「等對方講完」比較雙方的時間
+        let epoch = time::Instant::now();
+        let voice = Arc::new(VoiceActivity::default());
 
         // ── Task A：傳送（每 20ms 一個 frame）──
         {
@@ -106,11 +122,23 @@ impl RtpSession {
             let stop = Arc::clone(&stop_flag);
             let remote = Arc::clone(&remote);
             let audio_path = config.audio_file.clone();
+            let script = config.script.clone();
+            let script_done = Arc::clone(&script_done);
+            let voice = Arc::clone(&voice);
 
             let codec_pt = config.codec_pt;
             tokio::spawn(async move {
-                let mut source = match &audio_path {
-                    Some(p) => match AudioSource::from_file_cached(p).await {
+                let mut source = match (&script, &audio_path) {
+                    (Some(steps), _) => match ScriptPlayer::load(steps).await {
+                        Ok(p) => Source::Script(p),
+                        Err(e) => {
+                            // 音檔在測試開始前已預先載入驗證過，這裡失敗表示檔案中途被移走
+                            tracing::warn!("通話流程載入失敗，改送靜音: {}", e);
+                            script_done.store(true, Ordering::Relaxed);
+                            Source::Loop(AudioSource::silence())
+                        }
+                    },
+                    (None, Some(p)) => match AudioSource::from_file_cached(p).await {
                         Ok(src) => {
                             tracing::info!(
                                 "音檔載入成功: {:?}  frames={} duration={:.1}s PT={}",
@@ -119,14 +147,14 @@ impl RtpSession {
                                 src.duration_secs(),
                                 src.payload_type,
                             );
-                            src
+                            Source::Loop(src)
                         }
                         Err(e) => {
                             tracing::warn!("音檔載入失敗（{:?}），改用靜音: {}", p, e);
-                            AudioSource::silence()
+                            Source::Loop(AudioSource::silence())
                         }
                     },
-                    None => AudioSource::silence(),
+                    (None, None) => Source::Loop(AudioSource::silence()),
                 };
 
                 // 音檔快取一律是 A-law：協商出 PCMU 時逐 frame 轉碼，封包的 PT 與內容才會一致
@@ -141,10 +169,9 @@ impl RtpSession {
                 let mut seq: u16 = rand::thread_rng().gen();
                 let ts0: u32 = rand::thread_rng().gen();
                 let ptime = Duration::from_millis(20);
-                let mut interval = time::interval(ptime);
+                let mut interval = time::interval_at(epoch, ptime);
                 // CPU 卡頓錯過的 tick 直接略過，不事後補送（Burst 會讓接收端看到人為 jitter）
                 interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-                let start = time::Instant::now();
                 let mut last_tick: Option<u32> = None;
 
                 loop {
@@ -155,23 +182,47 @@ impl RtpSession {
 
                     // timestamp 依實際經過的 20ms 數計算：卡頓呈現為 timestamp 跳躍，
                     // 音檔進度也同步跳過（與真實話機卡頓時的行為一致）
-                    let tick = (tick_at.saturating_duration_since(start).as_millis() / 20) as u32;
+                    let tick = (tick_at.saturating_duration_since(epoch).as_millis() / 20) as u32;
                     if let Some(prev) = last_tick {
-                        source.skip(tick.saturating_sub(prev + 1) as usize);
+                        let missed = tick.saturating_sub(prev + 1) as usize;
+                        match &mut source {
+                            Source::Loop(s) => s.skip(missed),
+                            Source::Script(p) => p.skip(missed),
+                        }
                     }
                     last_tick = Some(tick);
                     let ts = ts0.wrapping_add(tick.wrapping_mul(160));
 
-                    let mut frame = match source.next_frame() {
-                        Some(f) => f,
-                        None => break,
+                    // 按鍵事件與語音共用同一個 SSRC 與序號，對端看到的是一路連續的串流
+                    let (pt, ts, mut frame) = match &mut source {
+                        Source::Loop(s) => match s.next_frame() {
+                            Some(f) => (payload_type, ts, f),
+                            None => break,
+                        },
+                        Source::Script(p) => {
+                            let out = p.next(tick as u64, &voice);
+                            if p.is_done() {
+                                script_done.store(true, Ordering::Relaxed);
+                            }
+                            match out {
+                                Out::Audio(f) => (payload_type, ts, f),
+                                Out::Event {
+                                    payload,
+                                    start_tick,
+                                } => (
+                                    PT_TELEPHONE_EVENT,
+                                    ts0.wrapping_add((start_tick as u32).wrapping_mul(160)),
+                                    payload,
+                                ),
+                            }
+                        }
                     };
-                    if to_ulaw {
+                    if to_ulaw && pt == payload_type {
                         frame.iter_mut().for_each(|b| *b = alaw_to_ulaw(*b));
                     }
 
                     let frame_len = frame.len();
-                    let bytes = RtpPacket::new(payload_type, seq, ts, ssrc, frame).encode();
+                    let bytes = RtpPacket::new(pt, seq, ts, ssrc, frame).encode();
 
                     let target = remote.lock().unwrap().addr;
                     match socket.send_to(&bytes, target).await {
@@ -191,6 +242,8 @@ impl RtpSession {
             let stats = Arc::clone(&stats);
             let notify = Arc::clone(&stop_notify);
             let remote = Arc::clone(&remote);
+            // 只有通話流程需要分析對方的聲音
+            let voice = config.script.is_some().then_some(voice);
 
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 1500];
@@ -210,6 +263,10 @@ impl RtpSession {
                                     .as_micros()
                                     as u64;
                                 stats.on_recv(pkt.ssrc, pkt.sequence, pkt.timestamp, now_us);
+                                if let Some(v) = &voice {
+                                    let ms = epoch.elapsed().as_millis() as u64;
+                                    v.on_frame(pkt.payload_type, &pkt.payload, ms);
+                                }
                                 debug!("RTP recv seq={} ts={}", pkt.sequence, pkt.timestamp);
                             }
                         }
@@ -230,7 +287,13 @@ impl RtpSession {
             remote,
             socket,
             local_rtp_port: local_port,
+            script_done,
         })
+    }
+
+    /// 通話流程是否已全部跑完（流程設定「跑完就掛斷」時，引擎據此送 BYE）
+    pub fn script_finished(&self) -> bool {
+        self.script_done.load(Ordering::Relaxed)
     }
 
     /// 停止 RTP session，回傳統計快照

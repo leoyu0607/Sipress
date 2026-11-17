@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { useTestStore, FLOW_CODE_NAMES, flowStepCount, type AgentFlowConfig, type FlowCodeKey } from '../stores/testStore'
+import { useTestStore, FLOW_CODE_NAMES, CALLER_STEP_NAMES, flowStepCount, type AgentFlowConfig, type CallerFlowConfig, type FlowCodeKey } from '../stores/testStore'
 import GenerateDialog from './GenerateDialog.vue'
 import AgentFlowDialog from './AgentFlowDialog.vue'
+import CallerFlowDialog from './CallerFlowDialog.vue'
 import Icon from './Icon.vue'
 
 const store = useTestStore()
@@ -30,6 +31,19 @@ const flowSummary = computed(() => {
   return `開始 ${f.onStart.length} 步 · 每通後 ${f.afterCall.length} 步 · 結束 ${f.onStop.length} 步`
 })
 const flowSampleExt = computed(() => store.config.agent.accounts[0]?.extension || '0000021113333001')
+
+// 民眾端通話流程（等待、按鍵、播放音檔、TTS 說話、等對方講完）
+const showCallerFlowDialog = ref(false)
+function handleCallerFlowSave(flow: CallerFlowConfig) {
+  store.config.caller.flow = flow
+  showCallerFlowDialog.value = false
+}
+const hasCallerFlow = computed(() => store.config.caller.flow.steps.length > 0)
+const callerFlowSummary = computed(() => {
+  const steps = store.config.caller.flow.steps
+  if (steps.length === 0) return '未設定'
+  return steps.map(st => CALLER_STEP_NAMES[st.type].replace('（TTS）', '')).join(' → ')
+})
 const agentRunning = computed(() => store.sessions.agent.status === 'running' && !store.sessions.agent.stopping)
 
 // 分批註冊：最後一個帳號開始註冊的時間
@@ -57,7 +71,7 @@ const durationHint = computed(() => {
   if (d > 0) return `${d} 秒後自動停止`
   return mode === 'agent' ? '0 = 不限時間（手動停止；雙端時建議比民眾端晚關）' : '0 = 不限時間（需搭配總通數或手動停止）'
 })
-const audioMissing  = computed(() => store.config.caller.enableAudio && !store.config.caller.audioFile.trim())
+const audioMissing  = computed(() => !hasCallerFlow.value && store.config.caller.enableAudio && !store.config.caller.audioFile.trim())
 
 // 清除全部帳號：兩段式確認
 const confirmClearAcc = ref(false)
@@ -382,8 +396,19 @@ function statusTitle(s: string) {
           <div class="field-hint">{{ store.config.caller.callDuration === 0 ? '0 = 不限（直到對方掛斷）' : `接通後約 ${store.config.caller.callDuration} 秒掛斷` }}</div>
         </div>
 
-        <!-- Audio -->
+        <!-- 通話流程 -->
         <div class="field">
+          <label>通話流程 <span class="tag">--caller-flow</span></label>
+          <div class="flow-row">
+            <span class="flow-summary" :title="hasCallerFlow ? callerFlowSummary : '接通後依序等待、按鍵、播放音檔、TTS 說話、等對方講完（測試按鍵 IVR 與智能語音 IVR）'">{{ callerFlowSummary }}</span>
+            <button class="btn btn-sm" @click="showCallerFlowDialog = true">設定…</button>
+            <button class="btn btn-sm" :disabled="!hasCallerFlow" @click="store.exportCallerFlowJson()" title="匯出 CLI --caller-flow 使用的 JSON（不含 TTS 金鑰）">匯出</button>
+          </div>
+          <div class="field-hint" v-if="hasCallerFlow">已設定通話流程：下方的播放音檔與 DTMF 序列不使用</div>
+        </div>
+
+        <!-- Audio -->
+        <div class="field" :class="{ superseded: hasCallerFlow }">
           <div class="toggle-row">
             <span id="sb-enable-audio-lbl">播放音檔</span>
             <label class="toggle">
@@ -393,7 +418,7 @@ function statusTitle(s: string) {
           </div>
         </div>
 
-        <div class="field" v-if="store.config.caller.enableAudio">
+        <div class="field" :class="{ superseded: hasCallerFlow }" v-if="store.config.caller.enableAudio">
           <label for="sb-audio-file">音檔路徑</label>
           <div class="file-pick-row">
             <input id="sb-audio-file" v-model="store.config.caller.audioFile" type="text" placeholder="audio.wav" class="file-path-input" :class="{ invalid: audioMissing }" :aria-invalid="audioMissing" :title="store.config.caller.audioFile">
@@ -404,7 +429,7 @@ function statusTitle(s: string) {
         </div>
 
         <!-- Codec -->
-        <div class="field" v-if="store.config.caller.enableAudio">
+        <div class="field" v-if="store.config.caller.enableAudio || hasCallerFlow">
           <label for="sb-codec">Codec</label>
           <select id="sb-codec" v-model="store.config.caller.codec">
             <option value="pcma">G.711A (PCMA)</option>
@@ -413,7 +438,7 @@ function statusTitle(s: string) {
         </div>
 
         <!-- DTMF -->
-        <div class="field">
+        <div class="field" :class="{ superseded: hasCallerFlow }">
           <label for="sb-dtmf">DTMF 序列</label>
           <input id="sb-dtmf" v-model="store.config.caller.dtmfSequence" type="text" placeholder="1,w2000,2,w500,#">
           <div class="field-hint">接通後自動送出（w=等待ms，如 1,w2000,# 表示按1→等2秒→按#）</div>
@@ -684,6 +709,9 @@ function statusTitle(s: string) {
       <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
       </div>
+      <div class="cli-warn" v-if="store.config.mode === 'caller' && hasCallerFlow">
+        流程檔請用通話流程的「匯出」存成 sipress_caller_flow.json<template v-if="store.config.caller.flow.steps.some(s => s.type === 'say')">；匯出檔不含 TTS 金鑰，執行前請設環境變數 SIPRESS_TTS_KEY</template>
+      </div>
       <div class="cli-warn" v-if="store.config.mode === 'agent'">
         帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv<template v-if="flowSummary !== '未設定'">；流程檔用座席流程的「匯出」存成 sipress_flow.json</template>
       </div>
@@ -696,6 +724,14 @@ function statusTitle(s: string) {
   :sample-ext="flowSampleExt"
   @save="handleFlowSave"
   @cancel="showFlowDialog = false"
+/>
+
+<!-- Caller Flow Dialog -->
+<CallerFlowDialog
+  :visible="showCallerFlowDialog"
+  :flow="store.config.caller.flow"
+  @save="handleCallerFlowSave"
+  @cancel="showCallerFlowDialog = false"
 />
 
 <!-- Generate Dialog -->
@@ -882,6 +918,7 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 .warn-tag { color: var(--warn); background: rgba(var(--warn-rgb), 0.12); }
 .flow-row { display: flex; align-items: center; gap: 6px; }
+.superseded { opacity: 0.45; }
 .flow-summary { flex: 1; font-size: 11px; color: var(--text1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-ctl { padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .ctl-title { font-size: 11px; color: var(--text1); margin-bottom: 6px; }

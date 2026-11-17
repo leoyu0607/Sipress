@@ -1,7 +1,7 @@
 /// Tauri commands：前端 ↔ core 橋接層
 use sipress_core::{
     agent_engine::AgentEngine,
-    config::{Config, FlowStep, Mode},
+    config::{Config, FlowStep, Mode, TtsConfig},
     correlate::{correlate, CorrelateOptions, CorrelationReport},
     correlation_html::CorrelationHtml,
     engine::{Engine, ProgressCallback},
@@ -103,7 +103,13 @@ impl AppState {
 pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Result<String, String> {
     config.validate().map_err(|e| e.to_string())?;
     // 音檔在開始前驗證：格式不支援時直接回報，而不是引擎改送靜音
-    if let (true, Some(path)) = (config.enable_rtp, config.audio_file.as_deref()) {
+    if config.mode == Mode::Caller && config.enable_rtp && !config.caller_flow.is_empty() {
+        // 通話流程：TTS 在這裡先合成並快取，金鑰 / 區域錯誤直接回報給畫面，
+        // 引擎開始後讀快取，不會在背景才失敗
+        sipress_core::rtp::script::prepare_flow(&config.caller_flow)
+            .await
+            .map_err(|e| format!("{:#}", e))?;
+    } else if let (true, Some(path)) = (config.enable_rtp, config.audio_file.as_deref()) {
         AudioSource::preload(path)
             .await
             .map_err(|e| format!("{:#}", e))?;
@@ -180,6 +186,21 @@ pub async fn start_test(state: State<'_, Arc<AppState>>, config: Config) -> Resu
     });
 
     Ok("started".to_string())
+}
+
+/// TTS 試聽：合成（或取用快取）一段文字，回傳 16-bit PCM WAV 的 base64（電話音質 8 kHz）
+/// 前端呼叫：await invoke('tts_preview', { tts: {...}, text: '您好' })
+#[tauri::command]
+pub async fn tts_preview(tts: TtsConfig, text: String) -> Result<String, String> {
+    tts.validate().map_err(|e| e.to_string())?;
+    let path = sipress_core::tts::synthesize(&tts, &text)
+        .await
+        .map_err(|e| format!("{:#}", e))?;
+    let wav = AudioSource::from_file(&path)
+        .map_err(|e| format!("{:#}", e))?
+        .to_pcm16_wav();
+    use base64::Engine as _;
+    Ok(base64::engine::general_purpose::STANDARD.encode(wav))
 }
 
 /// 手動停止指定模式的壓測

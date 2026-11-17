@@ -14,7 +14,7 @@ use crate::timeline::Timelines;
 use crate::trace::{now_ms, CallOutcome, CallTrace, TraceLog};
 use anyhow::Result;
 use rand::Rng;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,7 +94,21 @@ impl Engine {
 
         cfg.validate()?;
         // 音檔有問題時在開始前就失敗，而不是每通電話改送靜音
-        if let (true, Some(path)) = (cfg.enable_rtp, cfg.audio_file.as_deref()) {
+        // 通話流程：TTS 在這裡合成（或取用快取）、音檔預先載入；壓測期間不再連線到 TTS 服務
+        let caller_script: Option<Arc<Vec<crate::rtp::script::MediaStep>>> =
+            if cfg.enable_rtp && !cfg.caller_flow.is_empty() {
+                Some(Arc::new(
+                    crate::rtp::script::prepare_flow(&cfg.caller_flow).await?,
+                ))
+            } else {
+                None
+            };
+        let hangup_when_done = caller_script.is_some() && cfg.caller_flow.hangup_when_done;
+        if let (true, None, Some(path)) = (
+            cfg.enable_rtp,
+            caller_script.as_ref(),
+            cfg.audio_file.as_deref(),
+        ) {
             crate::rtp::audio::AudioSource::preload(path).await?;
         }
 
@@ -557,13 +571,18 @@ impl Engine {
                                             .unwrap_or_else(|| crate::net::join(&server_ip, 16384));
                                         let local_pre = dialog.local_rtp_port;
                                         let audio_path = cfg.audio_file.clone();
+                                        let audio_desc = match (&caller_script, &audio_path) {
+                                            (Some(s), _) => format!("通話流程（{} 步）", s.len()),
+                                            (None, Some(p)) => p.display().to_string(),
+                                            (None, None) => "silence".into(),
+                                        };
 
                                         let rtp_info = format!(
                                     "RTP START local={}:{} remote={} audio={:?} sdp_parsed={}",
                                     pure_ip,
                                     if local_pre > 0 { local_pre } else { cfg.rtp_base_port },
                                     remote_addr,
-                                    audio_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "silence".into()),
+                                    audio_desc,
                                     remote_rtp_addr.is_some(),
                                 );
                                         sip_log.log_event(&call_id, &rtp_info);
@@ -581,13 +600,17 @@ impl Engine {
                                                 None
                                             },
                                             codec_pt: dialog.codec_pt,
+                                            script: caller_script.clone(),
                                         };
                                         // 同步啟動並登記：確保之後處理的 BYE 一定找得到這個 session
                                         let pc = Arc::clone(&rtp_port_counter);
                                         match RtpSession::start(rtp_cfg, pc, pre_socket).await {
                                             Ok(session) => {
                                                 live.on_rtp_start();
-                                                if let Some(ref seq) = cfg.dtmf_sequence {
+                                                // 有通話流程時按鍵由流程送出，不另外送 DTMF 序列
+                                                if let (None, Some(seq)) =
+                                                    (&caller_script, &cfg.dtmf_sequence)
+                                                {
                                                     session.send_dtmf_sequence(
                                                         seq.clone(),
                                                         rand::thread_rng().gen::<u32>(),
@@ -812,6 +835,18 @@ impl Engine {
                 // 對端始終未回 487 的 CANCEL：超過 invite_timeout 即放棄等待
                 awaiting_invite_final.retain(|_, sent| now.duration_since(*sent) <= invite_to);
                 let mut to_send: Vec<String> = Vec::new();
+                // 通話流程已跑完、設定為跑完就掛斷的通話
+                let flow_done: HashSet<String> = if hangup_when_done {
+                    rtp_sessions
+                        .lock()
+                        .await
+                        .iter()
+                        .filter(|(_, s)| s.script_finished())
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
 
                 for dialog in dialogs.values_mut() {
                     match &dialog.state {
@@ -833,10 +868,12 @@ impl Engine {
                                 pre_bound_rtp.remove(&dialog.call_id);
                             }
                         }
-                        // 通話時長到 → 發 BYE（使用 Contact URI 作為 Request-URI）
+                        // 通話時長到、或通話流程跑完 → 發 BYE（使用 Contact URI 作為 Request-URI）
                         DialogState::Connected => {
                             if let Some(ans) = dialog.answered_at {
-                                if now.duration_since(ans) >= call_dur && call_dur.as_secs() > 0 {
+                                let time_up =
+                                    now.duration_since(ans) >= call_dur && call_dur.as_secs() > 0;
+                                if time_up || flow_done.contains(&dialog.call_id) {
                                     let bye = build_bye(dialog);
                                     dialog.on_bye_sent();
                                     dialog.arm_retransmit(bye.clone(), now);

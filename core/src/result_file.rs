@@ -73,7 +73,7 @@ fn redacted_config(cfg: &Config) -> Value {
 fn strip_passwords(v: &mut Value) {
     match v {
         Value::Object(obj) => {
-            obj.retain(|k, _| !k.contains("password"));
+            obj.retain(|k, _| !k.contains("password") && !k.contains("api_key"));
             obj.values_mut().for_each(strip_passwords);
         }
         Value::Array(items) => items.iter_mut().for_each(strip_passwords),
@@ -100,6 +100,7 @@ mod tests {
             domain: String::new(),
         }];
         cfg.agent_flow.agent_password = "flow-secret".into();
+        cfg.caller_flow.tts.api_key = "tts-secret".into();
         let mut report = FinalReport::build(
             &LiveStats::default().snapshot(),
             &DetailedStats::default(),

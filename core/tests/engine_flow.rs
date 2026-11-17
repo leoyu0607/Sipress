@@ -270,6 +270,43 @@ async fn unlimited_duration_does_not_panic_and_stops_on_signal() {
     assert!(report.calls_initiated > 0);
 }
 
+/// 通話流程跑完就掛斷：不等單通時長；不勾選時照單通時長掛斷
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn caller_flow_hangs_up_when_done() {
+    use sipress_core::config::{CallerFlow, CallerStep};
+    for (hangup_when_done, min_secs, max_secs) in [(true, 0.4, 2.5), (false, 4.0, 6.5)] {
+        let (uas, _) = spawn_uas(UasBehavior::Answer).await;
+        let cfg = Config {
+            cps: 10.0,
+            max_total_calls: Some(2),
+            call_duration_secs: 4,
+            duration_secs: 15,
+            enable_rtp: true,
+            // 舊的 DTMF 序列格式正確但會被流程取代
+            dtmf_sequence: Some("9".into()),
+            caller_flow: CallerFlow {
+                steps: vec![
+                    CallerStep::Wait { secs: 0.3 },
+                    CallerStep::Dtmf { digits: "1".into() },
+                ],
+                hangup_when_done,
+                ..Default::default()
+            },
+            ..test_config(uas)
+        };
+        let report = Engine::new(cfg).run(None).await.unwrap();
+        assert_eq!(
+            report.calls_completed, 2,
+            "hangup_when_done={hangup_when_done}"
+        );
+        assert!(
+            report.acd_secs >= min_secs && report.acd_secs <= max_secs,
+            "hangup_when_done={hangup_when_done}：通話時長 {} 秒應介於 {min_secs}–{max_secs}",
+            report.acd_secs
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rtp_session_is_stopped_when_server_bye_arrives_right_after_200_ok() {
     let (uas, _) = spawn_uas(UasBehavior::AnswerThenBye).await;

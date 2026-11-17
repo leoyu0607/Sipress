@@ -1,0 +1,1 @@
+./sipress -s 192.168.166.60:5066 --from 0938530031 --to 1999 -c 100 --cps 10 -d 60 --call-duration 120 --transport udp --local 0.0.0.0:5070 --rtp --rtp-port 16000 --caller-flow sipress_caller_flow.json --tui
