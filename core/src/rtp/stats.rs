@@ -26,12 +26,9 @@ pub struct RtpStats {
     last_recv_us: Mutex<Option<u64>>,
     /// 上一個封包的序號（用於 jitter / 亂序偵測）
     last_seq: Mutex<Option<u16>>,
-    /// 接收到的第一個序號（用於計算 expected，RFC 3550 §A.3）
-    first_seq: Mutex<Option<u16>>,
-    /// 接收到的最高序號
-    max_seq: Mutex<Option<u16>>,
-    /// 序號 wrap-around 次數（每次 u16 回繞 +1）
-    seq_cycles: AtomicU64,
+    /// 目前 SSRC 的序號範圍（用於計算 expected，RFC 3550 §A.3）；
+    /// `prior_expected` / `prior_received` 的更新與讀取也在這把鎖內，確保彼此一致
+    seq: Mutex<Option<SeqRange>>,
     /// 累計亂序封包數
     pub out_of_order: AtomicU64,
     /// 累計重複封包數
@@ -45,6 +42,46 @@ pub struct RtpStats {
     jb: Mutex<JitterBufferSim>,
     /// 上次 `take_interval` 時的累計值
     interval_mark: Mutex<IntervalMark>,
+}
+
+/// 一個 SSRC 的序號範圍：第一個收到的序號、最高序號、回繞次數
+#[derive(Clone, Copy)]
+struct SeqRange {
+    first: u16,
+    max: u16,
+    /// 序號 wrap-around 次數（每次 u16 回繞 +1）
+    cycles: u64,
+}
+
+impl SeqRange {
+    fn new(seq: u16) -> Self {
+        Self {
+            first: seq,
+            max: seq,
+            cycles: 0,
+        }
+    }
+
+    /// 序號往前推進時更新最高序號；跨過 65535 → 0 時回繞次數 +1。
+    /// 晚到的舊封包（落後最高序號）不影響範圍。
+    fn advance(&mut self, seq: u16) {
+        let diff = seq.wrapping_sub(self.max);
+        if diff > 0 && diff <= 0x7FFF {
+            if seq < self.max {
+                self.cycles += 1;
+            }
+            self.max = seq;
+        }
+    }
+
+    /// 應收封包數 = 延伸最高序號 − 第一個序號 + 1（RFC 3550 §A.3）。
+    ///
+    /// `cycles` 已包含回繞的 65536，`max − first` 必須用有號運算：回繞後 `max < first`
+    /// 時差值是負的，若用 u16 的 `wrapping_sub` 會再多加一次 65536。
+    fn expected(&self) -> u64 {
+        let ext_max = self.cycles as i64 * 65536 + self.max as i64;
+        (ext_max - self.first as i64 + 1).max(0) as u64
+    }
 }
 
 /// 固定 jitter buffer 的大小（ms）：50 = 小緩衝、200 = 一般話機
@@ -184,19 +221,20 @@ impl RtpStats {
                     *cur_ssrc = Some(ssrc);
                 }
                 Some(prev) if prev != ssrc => {
-                    let first = self.first_seq.lock().unwrap().take();
-                    let max = self.max_seq.lock().unwrap().take();
-                    if let (Some(f), Some(m)) = (first, max) {
-                        let cycles = self.seq_cycles.load(Ordering::Relaxed);
-                        let expected = cycles * 65536 + m.wrapping_sub(f) as u64 + 1;
-                        let recv_so_far = self.recv_packets.load(Ordering::Relaxed)
-                            - 1  // 不含本次
-                            - self.prior_received.load(Ordering::Relaxed);
-                        self.prior_expected.fetch_add(expected, Ordering::Relaxed);
-                        self.prior_received
-                            .fetch_add(recv_so_far, Ordering::Relaxed);
+                    {
+                        let mut range = self.seq.lock().unwrap();
+                        if let Some(r) = range.take() {
+                            let recv_so_far = self
+                                .recv_packets
+                                .load(Ordering::Relaxed)
+                                .saturating_sub(1) // 不含本次
+                                .saturating_sub(self.prior_received.load(Ordering::Relaxed));
+                            self.prior_expected
+                                .fetch_add(r.expected(), Ordering::Relaxed);
+                            self.prior_received
+                                .fetch_add(recv_so_far, Ordering::Relaxed);
+                        }
                     }
-                    self.seq_cycles.store(0, Ordering::Relaxed);
                     self.jitter_x16_us.store(0, Ordering::Relaxed);
                     self.jb.lock().unwrap().reset_reference();
                     *self.last_rtp_ts.lock().unwrap() = None;
@@ -242,20 +280,10 @@ impl RtpStats {
         drop(last_seq);
 
         // ── 序號追蹤（RFC 3550 §A.3 掉包率基礎）──
-        let mut first_seq = self.first_seq.lock().unwrap();
-        let mut max_seq = self.max_seq.lock().unwrap();
-
-        if first_seq.is_none() {
-            *first_seq = Some(seq);
-            *max_seq = Some(seq);
-        } else if let Some(prev_max) = *max_seq {
-            let diff = seq.wrapping_sub(prev_max);
-            if diff > 0 && diff <= 0x7FFF {
-                if seq < prev_max && diff < 0x8000 {
-                    self.seq_cycles.fetch_add(1, Ordering::Relaxed);
-                }
-                *max_seq = Some(seq);
-            }
+        let mut range = self.seq.lock().unwrap();
+        match range.as_mut() {
+            Some(r) => r.advance(seq),
+            None => *range = Some(SeqRange::new(seq)),
         }
     }
 
@@ -339,15 +367,14 @@ impl RtpStats {
     fn totals(&self) -> (u64, u64) {
         let sent = self.sent_packets.load(Ordering::Relaxed);
         let recv = self.recv_packets.load(Ordering::Relaxed);
-        let first = *self.first_seq.lock().unwrap();
-        let max = *self.max_seq.lock().unwrap();
-        let cycles = self.seq_cycles.load(Ordering::Relaxed);
-        let prior_e = self.prior_expected.load(Ordering::Relaxed);
-        let prior_r = self.prior_received.load(Ordering::Relaxed);
-
-        let cur_expected = match (first, max) {
-            (Some(f), Some(m)) => cycles * 65536 + m.wrapping_sub(f) as u64 + 1,
-            _ => 0,
+        // 序號範圍與 prior_* 在同一把鎖內讀取，避免讀到回繞或 SSRC 切換更新到一半的狀態
+        let (cur_expected, prior_e, prior_r) = {
+            let range = self.seq.lock().unwrap();
+            (
+                range.map_or(0, |r| r.expected()),
+                self.prior_expected.load(Ordering::Relaxed),
+                self.prior_received.load(Ordering::Relaxed),
+            )
         };
         let cur_recv = recv.saturating_sub(prior_r);
         let total_expected = prior_e + cur_expected;
@@ -617,6 +644,128 @@ mod tests {
             snap.loss_rate_pct
         );
         assert_eq!(snap.recv_packets, 10);
+    }
+
+    /// 從序號 `start` 起連續 `n` 個封包（序號自動回繞），每 20 ms 一包；`lost(i)` 為 true 的不送達。
+    /// `at` 是這段的第一個封包在整通電話中的位置，用來讓到達時間接續前一段。
+    fn feed_seq(
+        stats: &RtpStats,
+        ssrc: u32,
+        start: u16,
+        n: u32,
+        at: u64,
+        lost: impl Fn(u32) -> bool,
+    ) {
+        for i in (0..n).filter(|&i| !lost(i)) {
+            stats.on_send(160);
+            stats.on_recv(
+                ssrc,
+                start.wrapping_add(i as u16),
+                ((at + i as u64) as u32).wrapping_mul(160),
+                (at + i as u64) * 20_000,
+            );
+        }
+    }
+
+    /// issue #40：65534 → 65535 → 0 連續收到，應收 3、掉包 0（修正前應收 65539、掉包 65536）
+    #[test]
+    fn seq_wraparound_no_phantom_loss() {
+        let stats = RtpStats::new();
+        feed_seq(&stats, 1, 65534, 3, 0, |_| false);
+        let snap = stats.snapshot();
+        assert_eq!(snap.recv_packets, 3);
+        assert_eq!(snap.lost_packets, 0);
+        assert_eq!(snap.loss_rate_pct, 0.0);
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (3, 0));
+    }
+
+    /// issue #40：跨越回繞時實際缺一包（65535 沒到），掉包應為 1
+    #[test]
+    fn seq_wraparound_counts_real_loss() {
+        let stats = RtpStats::new();
+        feed_seq(&stats, 1, 65534, 3, 0, |i| i == 1);
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (3, 1));
+        assert_eq!(stats.snapshot().lost_packets, 1);
+
+        // 缺的剛好是回繞後的第一包（0 沒到，直接跳到 1）
+        let stats = RtpStats::new();
+        feed_seq(&stats, 1, 65534, 4, 0, |i| i == 2);
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (4, 1));
+    }
+
+    /// issue #40：回繞後最高序號還沒追過第一個序號（max < first）與追過之後，應收都要正確
+    #[test]
+    fn seq_wraparound_any_position_after_wrap() {
+        for n in [10_000u32, 65_536, 65_537, 100_000] {
+            let stats = RtpStats::new();
+            feed_seq(&stats, 1, 60_000, n, 0, |_| false);
+            let iv = stats.take_interval();
+            assert_eq!((iv.expected, iv.lost), (n as u64, 0), "n={n}");
+        }
+    }
+
+    /// issue #40：多次回繞，以及回繞後 SSRC 切換
+    #[test]
+    fn seq_multiple_wraparounds_and_ssrc_change() {
+        let stats = RtpStats::new();
+        // SSRC 1：從 60000 起 140000 包（回繞 3 次，結束時 max < first），中間掉 5 包
+        feed_seq(&stats, 1, 60_000, 140_000, 0, |i| {
+            (70_000..70_005).contains(&i)
+        });
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (140_000, 5));
+
+        // SSRC 2：從 65530 起 20 包（再回繞一次），掉 1 包
+        feed_seq(&stats, 2, 65_530, 20, 140_000, |i| i == 10);
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (20, 1));
+
+        // SSRC 3：不回繞
+        feed_seq(&stats, 3, 100, 50, 140_020, |_| false);
+        let iv = stats.take_interval();
+        assert_eq!((iv.expected, iv.lost), (50, 0));
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.recv_packets, 140_000 - 5 + 19 + 50);
+        assert_eq!(snap.lost_packets, 6);
+    }
+
+    /// issue #40：回繞前後的單通快照、時段掉包率、整體掉包率與 MOS 都不受回繞影響
+    #[test]
+    fn seq_wraparound_keeps_snapshot_interval_and_mos() {
+        let clean = estimate_mos(0.0, 0.0);
+        let stats = RtpStats::new();
+
+        // 回繞前的時段：序號 65036–65535
+        feed_seq(&stats, 1, 65_036, 500, 0, |_| false);
+        let before = stats.take_interval();
+        assert_eq!((before.expected, before.lost), (500, 0));
+
+        // 跨越回繞的時段：序號 0–499
+        feed_seq(&stats, 1, 0, 500, 500, |_| false);
+        let across = stats.take_interval();
+        assert_eq!((across.expected, across.lost), (500, 0));
+        assert_eq!(across.loss_rate(), 0.0);
+        assert!((across.mos() - clean).abs() < 1e-9, "mos={}", across.mos());
+        assert!((across.mos_jb_large() - clean).abs() < 1e-9);
+
+        // 單通快照
+        let snap = stats.snapshot();
+        assert_eq!((snap.recv_packets, snap.lost_packets), (1000, 0));
+        assert_eq!(snap.loss_rate_pct, 0.0);
+        assert_eq!(stats.packet_loss_rate(), 0.0);
+        assert!((snap.mos - clean).abs() < 1e-9, "mos={}", snap.mos);
+        assert!((snap.mos_jb200 - clean).abs() < 1e-9);
+        assert!((snap.mos_jb50 - clean).abs() < 1e-9);
+
+        // 整體（多通彙總）掉包率與 MOS
+        let agg = aggregate_snapshots(&[snap.clone(), snap]).unwrap();
+        assert_eq!(agg.lost_packets, 0);
+        assert_eq!(agg.loss_rate_pct, 0.0);
+        assert!((agg.mos - clean).abs() < 1e-9);
     }
 
     #[test]
