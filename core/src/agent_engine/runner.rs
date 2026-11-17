@@ -751,6 +751,7 @@ impl AccountRunner {
                     ssrc: None,
                     local_port: Some(rtp_port),
                     codec_pt,
+                    script: None,
                 };
                 match RtpSession::start(rtp_cfg, Arc::clone(&self.sh.port_counter), pre_bound).await
                 {

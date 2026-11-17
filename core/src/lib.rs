@@ -18,3 +18,4 @@ pub mod stats;
 pub mod thresholds;
 pub mod timeline;
 pub mod trace;
+pub mod tts;

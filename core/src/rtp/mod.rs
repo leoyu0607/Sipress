@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod dtmf;
 pub mod packet;
+pub mod script;
 pub mod session;
 pub mod stats;
 

@@ -169,6 +169,34 @@ impl AudioSource {
         self.cursor = 0;
     }
 
+    /// 轉成 16-bit PCM 的 8 kHz 單聲道 WAV（給 GUI 試聽；瀏覽器不一定能播 A-law WAV）
+    pub fn to_pcm16_wav(&self) -> Vec<u8> {
+        let samples: Vec<i16> = self
+            .frames
+            .iter()
+            .flatten()
+            .map(|&b| alaw_to_linear(b))
+            .collect();
+        let data_len = (samples.len() * 2) as u32;
+        let mut w = Vec::with_capacity(44 + data_len as usize);
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + data_len).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        w.extend_from_slice(&1u16.to_le_bytes()); // mono
+        w.extend_from_slice(&8000u32.to_le_bytes());
+        w.extend_from_slice(&16000u32.to_le_bytes()); // byte rate
+        w.extend_from_slice(&2u16.to_le_bytes()); // block align
+        w.extend_from_slice(&16u16.to_le_bytes());
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_len.to_le_bytes());
+        for s in samples {
+            w.extend_from_slice(&s.to_le_bytes());
+        }
+        w
+    }
+
     /// 總 frame 數（每 frame 20ms）
     pub fn frame_count(&self) -> usize {
         self.frames.len()

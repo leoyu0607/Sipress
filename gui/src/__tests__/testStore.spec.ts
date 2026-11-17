@@ -5,6 +5,7 @@ import { save } from '@tauri-apps/plugin-dialog'
 import {
   useTestStore, mosGrade, isValidDtmf, MAX_SERIES, AGENT_REGISTER_TIMEOUT_MS,
   sipxPresetFlow, newFlowStep, expandFlowCode, flowErrors, flowToRust,
+  newCallerStep, callerFlowErrors, callerFlowToRust,
   type RustSnapshot, type RustReport,
 } from '../stores/testStore'
 import { routeInvoke, freshPinia } from './helpers'
@@ -649,6 +650,72 @@ describe('座席流程', () => {
       { type: 'wait', secs: 1 },
       { type: 'dial', code: '*96', label: '就緒' },
     ])
+  })
+
+  it('民眾端通話流程：驗證與 core 一致、取代音檔與 DTMF、啟用 RTP', async () => {
+    const s = useTestStore()
+    const f = s.config.caller.flow
+    s.config.caller.dtmfSequence = '12'          // 格式錯誤，但有流程時不使用
+    f.steps = [newCallerStep('dtmf', { digits: '1,2' }), newCallerStep('play', { files: [' '] })]
+    expect(callerFlowErrors(f)).toEqual([
+      '通話流程的按鍵「1,2」含不支援的字元（只能是 0-9 * # A-D）',
+      '通話流程的播放音檔尚未選擇檔案',
+    ])
+    f.steps = [
+      newCallerStep('waitSilence', { silenceMs: 50, timeoutSecs: 0 }),
+      newCallerStep('say', { texts: ['您好', ''] }),
+    ]
+    expect(callerFlowErrors(f)).toEqual([
+      '「等對方講完」的安靜時間需介於 100–10000 毫秒',
+      '「等對方講完」的最長等待秒數需 > 0',
+      '通話流程的說話文字不可空白',
+      'Azure TTS 需要填寫區域（例如 eastasia）',
+    ])
+    f.steps = [newCallerStep('wait', { secs: 3 }), newCallerStep('say', { texts: ['您好'] })]
+    f.tts.region = 'eastasia'
+    f.tts.apiKey = 'k'
+    expect(s.validationErrors).toEqual([])
+
+    const calls = routeInvoke({ start_test: () => 'started' })
+    await s.startTest()
+    const sent = calls.find(c => c.cmd === 'start_test')?.args?.config as Record<string, unknown>
+    expect(sent.enable_rtp).toBe(true)
+    expect(sent.dtmf_sequence).toBeNull()
+    expect(sent.audio_file).toBeNull()
+    expect(sent.caller_flow).toEqual({
+      steps: [{ type: 'wait', secs: 3 }, { type: 'say', texts: ['您好'] }],
+      hangup_when_done: true,
+      tts: { provider: 'azure', api_key: 'k', region: 'eastasia', voice: '', cache_dir: 'tts_cache' },
+    })
+    expect(s.cliCommand).toContain('--rtp --rtp-port 16000 --caller-flow sipress_caller_flow.json')
+    expect(s.cliCommand).not.toContain('--dtmf')
+  })
+
+  it('匯出的通話流程檔不含 TTS 金鑰', () => {
+    const f = useTestStore().config.caller.flow
+    f.steps = [newCallerStep('say', { texts: ['您好'] })]
+    f.tts.apiKey = 'secret-key'
+    expect(callerFlowToRust(f).tts.api_key).toBe('secret-key')
+    expect(JSON.stringify(callerFlowToRust(f, false))).not.toContain('secret-key')
+  })
+
+  it('TTS 試聽回傳可播放的 data URL', async () => {
+    const calls = routeInvoke({ tts_preview: () => 'UklGRg==' })
+    const s = useTestStore()
+    const url = await s.previewTts({ provider: 'google', apiKey: ' k ', region: '', voice: '' }, ' 您好 ')
+    expect(url).toBe('data:audio/wav;base64,UklGRg==')
+    expect(calls.find(c => c.cmd === 'tts_preview')?.args).toEqual({
+      tts: { provider: 'google', api_key: 'k', region: '', voice: '', cache_dir: 'tts_cache' },
+      text: '您好',
+    })
+  })
+
+  it('舊設定沒有通話流程欄位時補上預設值', () => {
+    localStorage.setItem('sipress-config', JSON.stringify({ caller: { accessNumber: '0911', flow: { tts: { region: 'japaneast' } } } }))
+    const f = useTestStore().config.caller.flow
+    expect(f.steps).toEqual([])
+    expect(f.hangupWhenDone).toBe(true)
+    expect(f.tts).toEqual({ provider: 'azure', apiKey: '', region: 'japaneast', voice: '' })
   })
 
   it('舊設定沒有 flow 欄位時補上預設值（含常用碼）', () => {

@@ -57,6 +57,115 @@ export interface CallerProfile {
   dtmfSequence:  string
   codec:         'pcma' | 'pcmu'
   duration:      number   // 壓測持續秒數（0 = 不限）
+  flow:          CallerFlowConfig   // 通話流程（有步驟時取代播放音檔與 DTMF 序列）
+}
+
+/** 民眾端通話流程的一個步驟 */
+export type CallerStepType = 'wait' | 'dtmf' | 'play' | 'say' | 'waitSilence'
+export interface CallerStepConfig {
+  id:          string
+  type:        CallerStepType
+  secs:        number     // wait：秒數
+  digits:      string     // dtmf：按鍵，例如 1 或 0912345678#
+  files:       string[]   // play：音檔（多個 = 每通隨機挑一個）
+  texts:       string[]   // say：TTS 文字（多段 = 每通隨機挑一段）
+  silenceMs:   number     // waitSilence：對方安靜多久算講完（毫秒）
+  timeoutSecs: number     // waitSilence：最長等待秒數
+}
+
+export type TtsProviderName = 'azure' | 'google'
+export interface TtsSettings {
+  provider: TtsProviderName
+  apiKey:   string   // 空白 = 執行時讀環境變數 SIPRESS_TTS_KEY
+  region:   string   // Azure 區域（例如 eastasia）
+  voice:    string   // 空白 = 台灣華語預設聲音
+}
+
+/** 民眾端通話流程：接通後依序執行 */
+export interface CallerFlowConfig {
+  steps:          CallerStepConfig[]
+  hangupWhenDone: boolean   // 流程跑完就掛斷（否則送靜音直到單通時長）
+  tts:            TtsSettings
+}
+
+export const CALLER_STEP_NAMES: Record<CallerStepType, string> = {
+  wait: '等待', dtmf: '按鍵', play: '播放音檔', say: '說話（TTS）', waitSilence: '等對方講完',
+}
+export const TTS_DEFAULT_VOICE: Record<TtsProviderName, string> = {
+  azure: 'zh-TW-HsiaoChenNeural', google: 'cmn-TW-Wavenet-A',
+}
+export const TTS_KEY_ENV = 'SIPRESS_TTS_KEY'
+
+export function newCallerStep(type: CallerStepType, init: Partial<CallerStepConfig> = {}): CallerStepConfig {
+  return {
+    id: uid(), type, secs: 2, digits: '', files: [''], texts: [''], silenceMs: 800, timeoutSecs: 15,
+    ...init,
+  }
+}
+
+function callerStepToRust(st: CallerStepConfig) {
+  switch (st.type) {
+    case 'wait':        return { type: 'wait', secs: st.secs }
+    case 'dtmf':        return { type: 'dtmf', digits: st.digits.trim() }
+    case 'play':        return { type: 'play', files: st.files.map(f => f.trim()) }
+    case 'say':         return { type: 'say', texts: st.texts.map(t => t.trim()) }
+    case 'waitSilence': return { type: 'wait_silence', silence_ms: st.silenceMs, timeout_secs: st.timeoutSecs }
+  }
+}
+
+/**
+ * 送給 Rust 的 CallerFlow（也是 --caller-flow 檔案的格式）。
+ * 匯出檔案時不帶金鑰（`withKey = false`），改由環境變數 SIPRESS_TTS_KEY 提供。
+ */
+export function callerFlowToRust(f: CallerFlowConfig, withKey = true) {
+  return {
+    steps:            f.steps.map(callerStepToRust),
+    hangup_when_done: f.hangupWhenDone,
+    tts: {
+      provider:  f.tts.provider,
+      api_key:   withKey ? f.tts.apiKey.trim() : '',
+      region:    f.tts.region.trim(),
+      voice:     f.tts.voice.trim(),
+      cache_dir: 'tts_cache',
+    },
+  }
+}
+
+export function callerFlowNeedsTts(f: CallerFlowConfig): boolean {
+  return f.steps.some(st => st.type === 'say')
+}
+
+/** 通話流程的錯誤（空陣列 = 沒問題）；與 core 的 CallerFlow::validate 一致 */
+export function callerFlowErrors(f: CallerFlowConfig): string[] {
+  const errs: string[] = []
+  for (const st of f.steps) {
+    switch (st.type) {
+      case 'wait':
+        if (!(Number.isFinite(st.secs) && st.secs >= 0)) errs.push('通話流程的等待秒數需 ≥ 0')
+        break
+      case 'dtmf':
+        if (!st.digits.trim()) errs.push('通話流程的按鍵不可空白')
+        else if (!/^[0-9*#A-Da-d]+$/.test(st.digits.trim())) errs.push(`通話流程的按鍵「${st.digits.trim()}」含不支援的字元（只能是 0-9 * # A-D）`)
+        break
+      case 'play':
+        if (st.files.length === 0 || st.files.some(x => !x.trim())) errs.push('通話流程的播放音檔尚未選擇檔案')
+        break
+      case 'say':
+        if (st.texts.length === 0 || st.texts.some(x => !x.trim())) errs.push('通話流程的說話文字不可空白')
+        break
+      case 'waitSilence':
+        if (!(Number.isInteger(st.silenceMs) && st.silenceMs >= 100 && st.silenceMs <= 10000))
+          errs.push('「等對方講完」的安靜時間需介於 100–10000 毫秒')
+        if (!(Number.isFinite(st.timeoutSecs) && st.timeoutSecs > 0)) errs.push('「等對方講完」的最長等待秒數需 > 0')
+        break
+    }
+  }
+  if (callerFlowNeedsTts(f)) {
+    // 金鑰可留空改用環境變數，GUI 無法得知，交給開始測試時由 Rust 檢查
+    if (f.tts.provider === 'azure' && !/^[A-Za-z0-9]+$/.test(f.tts.region.trim()))
+      errs.push('Azure TTS 需要填寫區域（例如 eastasia）')
+  }
+  return [...new Set(errs)]
 }
 
 /** 座席行為模擬（秒數區間在 min–max 內隨機；max = 0 停用） */
@@ -517,6 +626,11 @@ function defaultConfig(): TestConfig {
       dtmfSequence: '',
       codec:        'pcma',
       duration:     60,
+      flow: {
+        steps: [],
+        hangupWhenDone: true,
+        tts: { provider: 'azure', apiKey: '', region: '', voice: '' },
+      },
     },
     agent: {
       count: 0,
@@ -557,6 +671,11 @@ function loadConfig(): TestConfig {
         ...legacyDuration,
         ...saved.caller,
         cpsPattern: { ...def.caller.cpsPattern, ...saved.caller?.cpsPattern },
+        flow: {
+          ...def.caller.flow,
+          ...saved.caller?.flow,
+          tts: { ...def.caller.flow.tts, ...saved.caller?.flow?.tts },
+        },
       },
       agent: {
         ...def.agent,
@@ -680,9 +799,14 @@ export const useTestStore = defineStore('test', () => {
       if (!(Number.isFinite(p.refillDelay) && p.refillDelay >= 0)) errs.push('補話延遲需 ≥ 0 秒')
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
-      if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
-      if (p.dtmfSequence.trim() && !isValidDtmf(p.dtmfSequence))
-        errs.push('DTMF 序列格式錯誤：每段為單一按鍵（0-9 * # A-D）或 wN（等待毫秒），以逗號分隔')
+      if (p.flow.steps.length > 0) {
+        // 通話流程取代播放音檔與 DTMF 序列，這兩項不檢查
+        errs.push(...callerFlowErrors(p.flow))
+      } else {
+        if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
+        if (p.dtmfSequence.trim() && !isValidDtmf(p.dtmfSequence))
+          errs.push('DTMF 序列格式錯誤：每段為單一按鍵（0-9 * # A-D）或 wN（等待毫秒），以逗號分隔')
+      }
     } else {
       if (c.agent.accounts.length === 0) errs.push('座席模式需要至少一個帳號')
       const b = c.agent.behavior
@@ -744,7 +868,10 @@ export const useTestStore = defineStore('test', () => {
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
     }
     if (p.codec !== 'pcma') parts.push(`--codec ${p.codec}`)
-    if (p.enableAudio && p.audioFile) {
+    if (c.mode === 'caller' && p.flow.steps.length > 0) {
+      // 流程檔由「通話流程」的「匯出」產生（不含 TTS 金鑰，改用環境變數）
+      parts.push('--rtp --rtp-port 16000 --caller-flow sipress_caller_flow.json')
+    } else if (p.enableAudio && p.audioFile) {
       parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
       // DTMF 經 RTP 送出，沒有 RTP 時 GUI 也不會送
       if (c.mode === 'caller' && p.dtmfSequence.trim()) parts.push(`--dtmf "${p.dtmfSequence.trim()}"`)
@@ -792,6 +919,7 @@ export const useTestStore = defineStore('test', () => {
   // ── Rust config builder ───────────────────────────────────────────────────────
   function buildRustConfig(mode: CallMode = config.value.mode) {
     const c = config.value
+    const flow = mode === 'caller' && c.caller.flow.steps.length > 0 ? c.caller.flow : null
     return {
       server_addr:          c.server.trim(),
       // 座席端每個帳號各自綁定隨機 port，本地埠只套用在民眾端
@@ -815,10 +943,12 @@ export const useTestStore = defineStore('test', () => {
       transport:            c.transport.toLowerCase(),
       logs_dir:             'logs',
       rtp_base_port:        16000,
-      audio_file:           c.caller.enableAudio && c.caller.audioFile ? c.caller.audioFile : null,
+      // 有通話流程時聲音全部由流程決定，不帶舊的音檔與 DTMF 序列
+      audio_file:           !flow && c.caller.enableAudio && c.caller.audioFile ? c.caller.audioFile : null,
       codec:                c.caller.codec,
-      enable_rtp:           c.caller.enableAudio && !!c.caller.audioFile,
-      dtmf_sequence:        c.caller.dtmfSequence || null,
+      enable_rtp:           !!flow || (c.caller.enableAudio && !!c.caller.audioFile),
+      dtmf_sequence:        flow ? null : c.caller.dtmfSequence || null,
+      caller_flow:          flow ? callerFlowToRust(flow) : callerFlowToRust(defaultConfig().caller.flow),
       mode,                                                                  // 'caller' | 'agent'
       agent_accounts:       mode === 'agent'
         ? c.agent.accounts.map(a => ({
@@ -1027,7 +1157,10 @@ export const useTestStore = defineStore('test', () => {
       addLog('ok',   `測試開始 → ${c.server}  [${MODE_LABEL[mode]}]`, mode)
       if (mode === 'caller') {
         addLog('info', `持續時間: ${fmtDuration(c.caller.duration)}  cps: ${c.caller.cps}  併發: ${c.caller.concurrency}${c.caller.totalCalls > 0 ? `  總通數: ${c.caller.totalCalls}` : ''}`, mode)
-        if (c.caller.enableAudio && c.caller.audioFile) {
+        if (c.caller.flow.steps.length > 0) {
+          const f = c.caller.flow
+          addLog('info', `RTP codec=${codecLabel.value.full}  通話流程 ${f.steps.length} 步${f.hangupWhenDone ? '，跑完就掛斷' : ''}`, mode)
+        } else if (c.caller.enableAudio && c.caller.audioFile) {
           const fname = c.caller.audioFile.replace(/\\/g, '/').split('/').pop() ?? c.caller.audioFile
           addLog('info', `RTP codec=${codecLabel.value.full}  audio="${fname}"  port=${buildRustConfig(mode).rtp_base_port}`, mode)
         } else {
@@ -1317,6 +1450,22 @@ export const useTestStore = defineStore('test', () => {
       saveTextFile('sipress_flow.json', 'json', 'JSON', JSON.stringify(flowToRust(config.value.agent.flow), null, 2) + '\n'))
   }
 
+  /** 匯出民眾端通話流程（CLI --caller-flow 使用的 JSON）；不含 TTS 金鑰 */
+  function exportCallerFlowJson() {
+    return exportWith('通話流程', () =>
+      saveTextFile('sipress_caller_flow.json', 'json', 'JSON',
+        JSON.stringify(callerFlowToRust(config.value.caller.flow, false), null, 2) + '\n'))
+  }
+
+  /** TTS 試聽：合成（或取用快取）後回傳可播放的 WAV（data URL）；失敗時丟出錯誤訊息 */
+  async function previewTts(tts: TtsSettings, text: string): Promise<string> {
+    const b64 = await invoke<string>('tts_preview', {
+      tts: callerFlowToRust({ steps: [], hangupWhenDone: true, tts }).tts,
+      text: text.trim(),
+    })
+    return `data:audio/wav;base64,${b64}`
+  }
+
   /** 手動撥碼：座席端執行中，所有已註冊座席依註冊間隔逐一撥出常用碼 */
   async function runAgentCode(key: FlowCodeKey) {
     const flow = config.value.agent.flow
@@ -1442,6 +1591,6 @@ export const useTestStore = defineStore('test', () => {
     startTest, stopTest, startBoth, stopAll,
     exportJson, exportCsv, exportHtml, exportResult, exportAccountsCsv,
     exportIntegratedHtml, exportIntegratedPdf, openIntegratedReport, exportE2eHtml, canExportE2e,
-    exportFlowJson, runAgentCode,
+    exportFlowJson, runAgentCode, exportCallerFlowJson, previewTts,
   }
 })

@@ -2,7 +2,7 @@ mod commands;
 use commands::{
     agent_run_steps, export_integrated_pdf, get_correlation_html, get_html_report, get_report,
     get_result_json, get_snapshot, integrated_report_html, open_integrated_report, pdf_available,
-    register_account, save_text_file, start_test, stop_test, AppState,
+    register_account, save_text_file, start_test, stop_test, tts_preview, AppState,
 };
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -32,6 +32,7 @@ pub fn run() {
             register_account,
             agent_run_steps,
             save_text_file,
+            tts_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

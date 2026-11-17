@@ -449,6 +449,211 @@ impl AgentFlow {
     }
 }
 
+/// 民眾端通話流程的一個步驟（接通後依序執行，用來測試傳統按鍵 IVR 與智能語音 IVR）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CallerStep {
+    /// 送靜音 N 秒（例如先聽完招呼語）
+    Wait { secs: f64 },
+    /// 依序按鍵（RFC 4733），例如 `"1"`、`"0912345678#"`
+    Dtmf { digits: String },
+    /// 播放一次音檔；列多個檔案時每通隨機挑一個（讓每通講的話不完全一樣）
+    Play { files: Vec<std::path::PathBuf> },
+    /// 用 TTS 把文字合成語音後播放（測試開始前合成並快取）；列多段時每通隨機挑一段
+    Say { texts: Vec<String> },
+    /// 等對方講完：對方說過話後安靜 `silence_ms` 毫秒才進行下一步；
+    /// 超過 `timeout_secs` 仍沒等到就直接進行下一步
+    WaitSilence { silence_ms: u32, timeout_secs: f64 },
+}
+
+impl CallerStep {
+    fn validate(&self) -> anyhow::Result<()> {
+        match self {
+            Self::Wait { secs } => {
+                if !(secs.is_finite() && *secs >= 0.0) {
+                    anyhow::bail!("通話流程的等待秒數需為 ≥ 0 的數字（目前為 {}）", secs);
+                }
+            }
+            Self::Dtmf { digits } => {
+                if digits.trim().is_empty() {
+                    anyhow::bail!("通話流程的按鍵不可空白");
+                }
+                if let Some(c) = digits
+                    .chars()
+                    .find(|&c| crate::rtp::dtmf::digit_to_event(c).is_none())
+                {
+                    anyhow::bail!(
+                        "通話流程的按鍵「{}」含不支援的字元「{}」（只能是 0-9 * # A-D）",
+                        digits,
+                        c
+                    );
+                }
+            }
+            Self::Play { files } => {
+                if files.is_empty() || files.iter().any(|f| f.as_os_str().is_empty()) {
+                    anyhow::bail!("通話流程的播放音檔尚未選擇檔案");
+                }
+            }
+            Self::Say { texts } => {
+                if texts.is_empty() || texts.iter().any(|t| t.trim().is_empty()) {
+                    anyhow::bail!("通話流程的說話文字不可空白");
+                }
+            }
+            Self::WaitSilence {
+                silence_ms,
+                timeout_secs,
+            } => {
+                if !(100..=10_000).contains(silence_ms) {
+                    anyhow::bail!(
+                        "通話流程的「等對方講完」安靜時間需介於 100–10000 毫秒（目前為 {}）",
+                        silence_ms
+                    );
+                }
+                if !(timeout_secs.is_finite() && *timeout_secs > 0.0) {
+                    anyhow::bail!(
+                        "通話流程的「等對方講完」最長等待秒數需大於 0（目前為 {}）",
+                        timeout_secs
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 雲端 TTS 服務
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TtsProvider {
+    /// Azure AI Speech（需要金鑰與區域）
+    #[default]
+    Azure,
+    /// Google Cloud Text-to-Speech（需要 API 金鑰）
+    Google,
+}
+
+impl TtsProvider {
+    /// 台灣華語的預設聲音
+    pub fn default_voice(self) -> &'static str {
+        match self {
+            Self::Azure => "zh-TW-HsiaoChenNeural",
+            Self::Google => "cmn-TW-Wavenet-A",
+        }
+    }
+}
+
+/// 雲端 TTS 設定：通話流程的「說話」步驟在測試開始前呼叫一次並快取
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    pub provider: TtsProvider,
+    /// API 金鑰；空白時改讀環境變數 `SIPRESS_TTS_KEY`（不寫進結果檔）
+    pub api_key: String,
+    /// Azure 的區域（例如 `eastasia`）；Google 不需要
+    pub region: String,
+    /// 聲音名稱；空白 = 服務的台灣華語預設聲音
+    pub voice: String,
+    /// 合成結果的快取資料夾（相同服務 + 聲音 + 文字只合成一次）
+    pub cache_dir: String,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider: TtsProvider::default(),
+            api_key: String::new(),
+            region: String::new(),
+            voice: String::new(),
+            cache_dir: "tts_cache".to_string(),
+        }
+    }
+}
+
+impl TtsConfig {
+    /// 環境變數：未在設定中填寫金鑰時使用，避免金鑰出現在指令或設定檔
+    pub const KEY_ENV: &'static str = "SIPRESS_TTS_KEY";
+
+    /// 實際使用的金鑰（設定優先，其次環境變數）
+    pub fn key(&self) -> Option<String> {
+        let k = self.api_key.trim();
+        if !k.is_empty() {
+            return Some(k.to_string());
+        }
+        std::env::var(Self::KEY_ENV)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// 實際使用的聲音
+    pub fn voice(&self) -> &str {
+        match self.voice.trim() {
+            "" => self.provider.default_voice(),
+            v => v,
+        }
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.key().is_none() {
+            anyhow::bail!(
+                "通話流程有「說話」步驟，但尚未設定 TTS 金鑰（設定中填寫或設環境變數 {}）",
+                Self::KEY_ENV
+            );
+        }
+        if self.provider == TtsProvider::Azure {
+            let r = self.region.trim();
+            if r.is_empty() || !r.chars().all(|c| c.is_ascii_alphanumeric()) {
+                anyhow::bail!("Azure TTS 需要填寫區域（例如 eastasia）");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 民眾端通話流程：接通後依序執行的步驟。有步驟時取代「播放音檔」與「DTMF 序列」
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallerFlow {
+    pub steps: Vec<CallerStep>,
+    /// 流程跑完就掛斷（否則送靜音直到單通時長）
+    pub hangup_when_done: bool,
+    /// 「說話」步驟使用的 TTS
+    pub tts: TtsConfig,
+}
+
+impl Default for CallerFlow {
+    fn default() -> Self {
+        Self {
+            steps: Vec::new(),
+            hangup_when_done: true,
+            tts: TtsConfig::default(),
+        }
+    }
+}
+
+impl CallerFlow {
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// 是否有需要 TTS 的步驟
+    pub fn needs_tts(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s, CallerStep::Say { .. }))
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for step in &self.steps {
+            step.validate()?;
+        }
+        if self.needs_tts() {
+            self.tts.validate()?;
+        }
+        Ok(())
+    }
+}
+
 /// 傳輸層協定
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -596,6 +801,11 @@ pub struct Config {
     /// 避免新來電剛好在座席掛線的瞬間進線（真實話務不會每通都緊接著前一通）
     #[serde(default)]
     pub refill_delay_secs: f64,
+
+    /// Caller 模式：接通後的通話流程（等待、按鍵、播放音檔、TTS 說話、等對方講完）。
+    /// 有步驟時取代 `audio_file` 與 `dtmf_sequence`，且需要啟用 RTP
+    #[serde(default)]
+    pub caller_flow: CallerFlow,
 }
 
 fn default_register_expires() -> u32 {
@@ -651,6 +861,7 @@ impl Default for Config {
             agent_register_expires: default_register_expires(),
             agent_flow: AgentFlow::default(),
             refill_delay_secs: 0.0,
+            caller_flow: CallerFlow::default(),
         }
     }
 }
@@ -716,6 +927,12 @@ impl Config {
             }
             if let Some(seq) = self.dtmf_sequence.as_deref() {
                 crate::rtp::dtmf::validate_dtmf_sequence(seq).map_err(anyhow::Error::msg)?;
+            }
+            if !self.caller_flow.is_empty() {
+                if !self.enable_rtp {
+                    anyhow::bail!("通話流程需要啟用 RTP");
+                }
+                self.caller_flow.validate()?;
             }
         }
         if self.mode == Mode::Agent {
@@ -862,6 +1079,103 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn caller_flow_validation() {
+        let with = |steps: Vec<CallerStep>| Config {
+            enable_rtp: true,
+            caller_flow: CallerFlow {
+                steps,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let ok = with(vec![
+            CallerStep::Wait { secs: 10.0 },
+            CallerStep::Dtmf {
+                digits: "1*#A".into(),
+            },
+            CallerStep::Play {
+                files: vec!["a.wav".into()],
+            },
+            CallerStep::WaitSilence {
+                silence_ms: 800,
+                timeout_secs: 15.0,
+            },
+        ]);
+        assert!(ok.validate().is_ok());
+        assert!(
+            Config {
+                enable_rtp: false,
+                ..ok.clone()
+            }
+            .validate()
+            .is_err(),
+            "通話流程需要 RTP"
+        );
+        for bad in [
+            CallerStep::Wait { secs: -1.0 },
+            CallerStep::Dtmf { digits: " ".into() },
+            CallerStep::Dtmf {
+                digits: "1,2".into(),
+            },
+            CallerStep::Play { files: vec![] },
+            CallerStep::Say {
+                texts: vec!["".into()],
+            },
+            CallerStep::WaitSilence {
+                silence_ms: 50,
+                timeout_secs: 5.0,
+            },
+            CallerStep::WaitSilence {
+                silence_ms: 500,
+                timeout_secs: 0.0,
+            },
+        ] {
+            assert!(with(vec![bad.clone()]).validate().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn caller_flow_say_needs_tts_settings() {
+        let mut cfg = Config {
+            enable_rtp: true,
+            ..Default::default()
+        };
+        cfg.caller_flow.steps = vec![CallerStep::Say {
+            texts: vec!["我要查詢帳單".into()],
+        }];
+        // 測試環境可能設了環境變數，這裡只檢查設定中直接填寫的情況
+        if std::env::var(TtsConfig::KEY_ENV).is_err() {
+            assert!(cfg.validate().is_err(), "沒有金鑰");
+        }
+        cfg.caller_flow.tts.api_key = "k".into();
+        assert!(cfg.validate().is_err(), "Azure 需要區域");
+        cfg.caller_flow.tts.region = "eastasia".into();
+        assert!(cfg.validate().is_ok());
+        cfg.caller_flow.tts.region = "east asia/../x".into();
+        assert!(cfg.validate().is_err(), "區域只能是英數字（會組進網址）");
+        cfg.caller_flow.tts.provider = TtsProvider::Google;
+        assert!(cfg.validate().is_ok(), "Google 不需要區域");
+        assert_eq!(cfg.caller_flow.tts.voice(), "cmn-TW-Wavenet-A");
+    }
+
+    #[test]
+    fn caller_flow_json_format() {
+        let json = r#"{"steps":[{"type":"wait","secs":10},{"type":"dtmf","digits":"1"},
+            {"type":"say","texts":["您好"]},{"type":"wait_silence","silence_ms":800,"timeout_secs":15}],
+            "tts":{"provider":"google","api_key":"k"}}"#;
+        let f: CallerFlow = serde_json::from_str(json).unwrap();
+        assert_eq!(f.steps.len(), 4);
+        assert!(f.hangup_when_done, "未指定時預設跑完就掛斷");
+        assert_eq!(f.tts.provider, TtsProvider::Google);
+        assert_eq!(f.tts.cache_dir, "tts_cache");
+        // 舊設定檔沒有 caller_flow 欄位
+        let mut old = serde_json::to_value(Config::default()).unwrap();
+        old.as_object_mut().unwrap().remove("caller_flow");
+        let cfg: Config = serde_json::from_value(old).unwrap();
+        assert!(cfg.caller_flow.is_empty());
     }
 
     #[test]

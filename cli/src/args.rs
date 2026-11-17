@@ -194,6 +194,12 @@ pub struct Args {
     #[arg(long = "dtmf", value_parser = parse_dtmf, requires = "enable_rtp")]
     pub dtmf: Option<String>,
 
+    /// 民眾端通話流程檔（JSON，GUI「通話流程」可匯出）：接通後依序等待、按鍵、播放音檔、
+    /// TTS 說話、等對方講完；取代 --audio 與 --dtmf，需搭配 --rtp。
+    /// TTS 金鑰可不寫在檔案裡，改設環境變數 SIPRESS_TTS_KEY
+    #[arg(long = "caller-flow", requires = "enable_rtp")]
+    pub caller_flow_file: Option<std::path::PathBuf>,
+
     /// RTP 起始 port（偶數，預設 10000）
     #[arg(long = "rtp-port", default_value_t = 10000)]
     pub rtp_base_port: u16,
@@ -476,6 +482,15 @@ mod tests {
         assert_eq!(a.dtmf.as_deref(), Some("1,w500,#"));
         assert!(parse(&["--rtp", "--dtmf", "12"]).is_err(), "格式錯誤");
         assert!(parse(&["--dtmf", "1"]).is_err(), "DTMF 需要 --rtp");
+        assert!(
+            parse(&["--caller-flow", "f.json"]).is_err(),
+            "通話流程需要 --rtp"
+        );
+        let a = parse(&["--rtp", "--caller-flow", "f.json"]).unwrap();
+        assert_eq!(
+            a.caller_flow_file.as_deref(),
+            Some(std::path::Path::new("f.json"))
+        );
     }
 
     #[test]

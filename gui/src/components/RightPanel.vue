@@ -39,9 +39,9 @@ const respList = computed(() =>
 
 const rtp = computed(() => store.rtpMetrics)
 
-// RTP 是否「已設定啟用」（enableAudio=true 且有音檔）
+// RTP 是否「已設定啟用」（enableAudio=true 且有音檔，或設定了通話流程）
 const rtpConfigured = computed(() =>
-  store.config.caller.enableAudio && !!store.config.caller.audioFile
+  (store.config.caller.enableAudio && !!store.config.caller.audioFile) || store.config.caller.flow.steps.length > 0
 )
 
 const mos = computed(() => mosGrade(rtp.value.mos))
