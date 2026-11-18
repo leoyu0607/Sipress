@@ -236,8 +236,16 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
-      - name: npm audit
+      # 會打包進 App 的執行期相依：高風險弱點擋 PR
+      - name: npm audit (runtime)
         working-directory: gui
+        run: npm audit --omit=dev --audit-level=high
+
+      # 建置 / 測試工具（vite、vitest、vue-tsc…）不進安裝檔；列出供追蹤，不擋 PR
+      # （例如 picomatch GHSA-fc5q-39xc-vjpf 至今沒有修補版）
+      - name: npm audit (dev tools, informational)
+        working-directory: gui
+        continue-on-error: true
         run: npm audit --audit-level=high
 
   # 彙整關卡：任一必要 job 失敗或被取消即失敗
