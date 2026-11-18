@@ -57,10 +57,10 @@ describe('validationErrors', () => {
     s.config.caller.accessNumber = ' '
     s.config.caller.concurrency = 0
     s.config.caller.cps = 0
-    s.config.caller.enableAudio = true
+    s.config.caller.audioMode = 'loop'
     s.config.caller.audioFile = ''
     expect(s.validationErrors).toEqual([
-      '主叫號碼不可空白', '併發數量需 ≥ 1', 'CPS 需 > 0', '已啟用播放音檔但尚未選擇檔案',
+      '主叫號碼不可空白', '併發數量需 ≥ 1', 'CPS 需 > 0', '通話聲音選了「循環播放音檔」，但尚未選擇檔案',
     ])
   })
 
@@ -528,7 +528,7 @@ describe('CLI 預覽', () => {
     const s = useTestStore()
     s.config.mode = 'agent'
     s.config.caller.cpsPattern.type = 'step'
-    s.config.caller.enableAudio = true
+    s.config.caller.audioMode = 'loop'
     s.config.caller.audioFile = 'a.wav'
     s.config.caller.dtmfSequence = '1,#'
     expect(s.cliCommand).toContain('--mode agent --accounts sipress_accounts.csv')
@@ -555,7 +555,7 @@ describe('CLI 預覽', () => {
 
     s.config.caller.dtmfSequence = '1,w2000,#'
     expect(s.cliCommand).not.toContain('--dtmf')   // 沒有 RTP 時不會送 DTMF
-    s.config.caller.enableAudio = true
+    s.config.caller.audioMode = 'loop'
     s.config.caller.audioFile = 'a.wav'
     expect(s.cliCommand).toContain('--rtp --rtp-port 16000 --audio "a.wav" --dtmf "1,w2000,#"')
   })
@@ -568,9 +568,12 @@ describe('DTMF 驗證', () => {
     for (const bad of ['', ',', '12', 'x', 'w', 'wabc', '1;2']) expect(isValidDtmf(bad)).toBe(false)
   })
 
-  it('格式錯誤時無法開始民眾端', () => {
+  it('格式錯誤時無法開始民眾端（循環播放音檔時才檢查）', () => {
     const s = useTestStore()
     s.config.caller.dtmfSequence = '12#'
+    expect(s.validationErrors).toEqual([])          // 不送語音：DTMF 序列不使用
+    s.config.caller.audioMode = 'loop'
+    s.config.caller.audioFile = 'a.wav'
     expect(s.validationErrors.some(e => e.startsWith('DTMF 序列格式錯誤'))).toBe(true)
     s.config.caller.dtmfSequence = '1,2,#'
     expect(s.validationErrors).toEqual([])
@@ -655,7 +658,8 @@ describe('座席流程', () => {
   it('民眾端通話流程：驗證與 core 一致、取代音檔與 DTMF、啟用 RTP', async () => {
     const s = useTestStore()
     const f = s.config.caller.flow
-    s.config.caller.dtmfSequence = '12'          // 格式錯誤，但有流程時不使用
+    s.config.caller.audioMode = 'flow'
+    s.config.caller.dtmfSequence = '12'          // 格式錯誤，但選了流程時不使用
     f.steps = [newCallerStep('dtmf', { digits: '1,2' }), newCallerStep('play', { files: [' '] })]
     expect(callerFlowErrors(f)).toEqual([
       '通話流程的按鍵「1,2」含不支援的字元（只能是 0-9 * # A-D）',

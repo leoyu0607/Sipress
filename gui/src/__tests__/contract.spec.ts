@@ -35,7 +35,7 @@ const SCENARIOS: Scenario[] = [
       Object.assign(c.caller, {
         calleeFixed: '0912345678', totalCalls: 500, callDuration: 0, numberSeq: true,
         authUser: 'trunk01', authPass: 'p@ss',
-        enableAudio: true, audioFile: 'C:/audio/prompt 1.wav', codec: 'pcmu', dtmfSequence: '1,2,3,#',
+        audioMode: 'loop', audioFile: 'C:/audio/prompt 1.wav', codec: 'pcmu', dtmfSequence: '1,2,3,#',
       })
       Object.assign(c.caller.cpsPattern, { type: 'ramp', rampStart: 2, rampEnd: 40 })
     },
@@ -71,8 +71,8 @@ const SCENARIOS: Scenario[] = [
     apply: c => {
       Object.assign(c.caller, {
         calleeFixed: '1999', callDuration: 120,
-        // 舊的音檔與 DTMF 設定仍在，但有流程時不送出
-        enableAudio: true, audioFile: 'C:/audio/old.wav', dtmfSequence: '9,#',
+        // 音檔與 DTMF 設定仍在，但選了流程時不送出
+        audioMode: 'flow', audioFile: 'C:/audio/old.wav', dtmfSequence: '9,#',
       })
       c.caller.flow = {
         steps: [

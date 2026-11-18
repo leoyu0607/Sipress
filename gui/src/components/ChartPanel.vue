@@ -179,7 +179,7 @@ function draw() {
     ctx.font = '11px JetBrains Mono, Microsoft JhengHei, monospace'
     ctx.textAlign = 'center'
     const msg =
-        key === 'mos' && mosDisabled.value ? '未啟用 RTP（勾選「播放音檔」並選擇檔案）'
+        key === 'mos' && mosDisabled.value ? '未啟用 RTP（民眾端「通話聲音」選音檔或流程）'
       : store.status === 'idle'            ? '開始測試後顯示即時圖表'
       : key === 'pdd'                      ? '等待第一通接通…'
       : '等待資料…'
@@ -384,7 +384,7 @@ onUnmounted(() => ro.disconnect())
           :aria-selected="activeChart === key"
           :class="{ active: activeChart === key, 'tab-rtp': key === 'mos' }"
           :disabled="key === 'mos' && mosDisabled"
-          :title="key === 'mos' && mosDisabled ? '啟用「播放音檔」後顯示' : CHART_LABELS[key]"
+          :title="key === 'mos' && mosDisabled ? '民眾端「通話聲音」選音檔或流程後顯示' : CHART_LABELS[key]"
           @click="switchChart(key)"
         >{{ key === 'conc' ? 'CONC' : key.toUpperCase() }}</button>
       </div>

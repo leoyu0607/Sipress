@@ -39,10 +39,11 @@ const respList = computed(() =>
 
 const rtp = computed(() => store.rtpMetrics)
 
-// RTP 是否「已設定啟用」（enableAudio=true 且有音檔，或設定了通話流程）
-const rtpConfigured = computed(() =>
-  (store.config.caller.enableAudio && !!store.config.caller.audioFile) || store.config.caller.flow.steps.length > 0
-)
+// RTP 是否「已設定啟用」（通話聲音選了循環播放且有音檔，或選了通話流程且有步驟）
+const rtpConfigured = computed(() => {
+  const c = store.config.caller
+  return (c.audioMode === 'loop' && !!c.audioFile) || (c.audioMode === 'flow' && c.flow.steps.length > 0)
+})
 
 const mos = computed(() => mosGrade(rtp.value.mos))
 const mosJb = computed(() => rtp.value.mosJb200 === null ? null : mosGrade(rtp.value.mosJb200))
@@ -171,8 +172,8 @@ const jitter = computed(() => jitterGrade(rtp.value.jitter))
       </div>
 
       <div v-else class="rtp-hint">
-        在左側「民眾端設定」開啟<br>
-        <code>播放音檔</code> 並選擇檔案即可量測
+        在左側民眾端的「通話聲音」選<br>
+        <code>循環播放音檔</code> 或 <code>通話流程</code> 即可量測
       </div>
     </div>
 

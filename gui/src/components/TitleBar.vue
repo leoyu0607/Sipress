@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue'
+import { computed, inject, type ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTestStore, MODE_LABEL } from '../stores/testStore'
-import IntegratedReportDialog from './IntegratedReportDialog.vue'
 import ExportMenu from './ExportMenu.vue'
 import TemplateMenu from './TemplateMenu.vue'
+import StartButton from './StartButton.vue'
 import Icon from './Icon.vue'
 
 const store = useTestStore()
 const appWindow = getCurrentWindow()
-const reportOpen = ref(false)
 
 // Theme (provided by App.vue)
 const isDark      = inject<ReturnType<typeof ref<boolean>>>('isDark')!
@@ -30,41 +29,10 @@ const STATUS_LABEL: Record<string, string> = {
   idle: '待命', running: '執行中', done: '已完成', error: '錯誤',
 }
 
-const btnLabel = computed(() =>
-  store.stopping ? '停止中…'
-  : store.status === 'running' ? '停止測試' : '開始測試'
-)
-const startBlocked = computed(() =>
-  store.status !== 'running' && store.validationErrors.length > 0
-)
-
-// 雙端：同時跑民眾端 + 座席端（先座席 REGISTER，再民眾撥號）
+// 雙端同時執行時另外標示（側欄模式分頁的執行點也看得到）
 const bothRunning = computed(() =>
   store.sessions.caller.status === 'running' && store.sessions.agent.status === 'running'
 )
-const bothLabel = computed(() => store.anyRunning ? '全部停止' : '雙端啟動')
-const bothBlocked = computed(() => !store.anyRunning && store.bothValidationErrors.length > 0)
-const bothTitle = computed(() =>
-  bothBlocked.value ? ['無法雙端啟動：', ...store.bothValidationErrors.map(e => `• ${e}`)].join('\n')
-  : store.anyRunning ? '停止民眾端與座席端'
-  : '先啟動座席端註冊，再啟動民眾端撥號'
-)
-function toggleBoth() {
-  if (store.anyRunning) store.stopAll()
-  else store.startBoth()
-}
-const btnTitle = computed(() =>
-  startBlocked.value ? ['無法開始：', ...store.validationErrors.map(e => `• ${e}`)].join('\n') : ''
-)
-// 主要按鈕：待命時實心 accent、執行中實心 danger
-const btnClass = computed(() =>
-  store.status === 'running' ? 'btn btn-primary is-danger start-btn' : 'btn btn-primary start-btn'
-)
-
-function toggleTest() {
-  if (store.status === 'running') store.stopTest()
-  else store.startTest()
-}
 </script>
 
 <template>
@@ -100,11 +68,6 @@ function toggleTest() {
     <div class="actions">
       <TemplateMenu />
       <ExportMenu />
-      <button class="btn btn-sm"
-              @click="reportOpen = true"
-              title="整合報告：結論、通話量與聲音品質圖表、受測主機資源，依門檻判定；可匯出 PDF">
-        <Icon name="file-text" :size="13" />整合報告
-      </button>
 
       <div class="sep-v"></div>
 
@@ -117,16 +80,7 @@ function toggleTest() {
 
       <div class="sep-v"></div>
 
-      <span class="start-wrap" :title="bothTitle">
-        <button class="btn" :disabled="bothBlocked" @click="toggleBoth">
-          <Icon :name="store.anyRunning ? 'stop' : 'arrow-left-right'" :size="13" />{{ bothLabel }}
-        </button>
-      </span>
-      <span class="start-wrap" :title="btnTitle">
-        <button :class="btnClass" :disabled="startBlocked || store.stopping" @click="toggleTest">
-          <Icon :name="store.status === 'running' ? 'stop' : 'play'" :size="13" />{{ btnLabel }}
-        </button>
-      </span>
+      <StartButton />
     </div>
 
     <!-- Window controls (Windows style) -->
@@ -141,7 +95,6 @@ function toggleTest() {
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0L10 10M10 0L0 10" stroke="currentColor"/></svg>
       </button>
     </div>
-    <IntegratedReportDialog :visible="reportOpen" @close="reportOpen = false" />
   </header>
 </template>
 
@@ -172,7 +125,6 @@ function toggleTest() {
 .wc:hover { background: var(--bg3); color: var(--text0); }
 .wc-close:hover { background: #e81123; color: #fff; }
 
-.start-wrap { display: inline-flex; }
 
 .logo {
   font-family: var(--mono);
@@ -281,8 +233,6 @@ function toggleTest() {
 .theme-btn { padding: 4px 7px; }
 .theme-btn .icon { transition: transform 0.3s ease; }
 .theme-btn:hover .icon { transform: rotate(20deg); }
-
-.start-btn { min-width: 96px; justify-content: center; }
 
 /* 窄視窗（最小 960px）：收緊間距；「雙端執行中」在側欄模式分頁的執行點也看得到 */
 @media (max-width: 1100px) {

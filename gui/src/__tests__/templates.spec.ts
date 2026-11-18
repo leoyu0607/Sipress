@@ -4,8 +4,10 @@ import { setActivePinia, createPinia } from 'pinia'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
   useTestStore, builtinTemplates, parseTemplateFile, loadReportSettings, saveReportSettings,
-  DEFAULT_THRESHOLDS, TEMPLATE_FILE_FORMAT,
+  DEFAULT_THRESHOLDS, TEMPLATE_FILE_FORMAT, mergeConfig, defaultConfig, newCallerStep,
 } from '../stores/testStore'
+
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 import { routeInvoke, freshPinia } from './helpers'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -188,6 +190,27 @@ describe('範本', () => {
     const one = parseTemplateFile(JSON.stringify({ name: 'X', config: { caller: { cps: 3 } } }))
     expect(one).toHaveLength(1)
     expect(one[0]).toMatchObject({ name: 'X', kind: 'full', description: '' })
+  })
+
+  it.each([
+    [{ enableAudio: true, audioFile: 'a.wav' }, 'loop'],
+    [{ enableAudio: false }, 'silence'],
+    [{ enableAudio: true, flow: { steps: [newCallerStep('wait', { secs: 1 })] } }, 'flow'],   // 舊版流程優先
+    [{ enableAudio: false, flow: { steps: [] } }, 'silence'],
+    [{ audioMode: 'loop', enableAudio: false }, 'loop'],
+  ] as const)('舊版播放音檔設定 %j 轉成通話聲音 %s', (caller, mode) => {
+    const cfg = mergeConfig(defaultConfig(), { caller: clone(caller) as never })
+    expect(cfg.caller.audioMode).toBe(mode)
+    expect('enableAudio' in cfg.caller).toBe(false)
+  })
+
+  it('內建情境沒提到通話聲音時保留目前的選擇', () => {
+    const s = useTestStore()
+    s.config.caller.audioMode = 'loop'
+    s.applyTemplate(builtinTemplates().find(t => t.id === 'builtin-soak')!)
+    expect(s.config.caller.audioMode).toBe('loop')
+    s.applyTemplate(builtinTemplates().find(t => t.id === 'builtin-dtmf-ivr')!)
+    expect(s.config.caller.audioMode).toBe('flow')
   })
 
   it('舊版本存的範本缺少新欄位時，套用後補上預設值', () => {

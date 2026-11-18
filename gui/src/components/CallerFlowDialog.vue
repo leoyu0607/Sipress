@@ -156,7 +156,7 @@ function save() {
 
             <div class="dialog-body">
               <div class="intro">
-                每通接通後依序執行，用來測試傳統按鍵 IVR 與智能語音 IVR。設定流程後會取代側欄的「播放音檔」與「DTMF 序列」。
+                每通接通後依序執行，用來測試傳統按鍵 IVR 與智能語音 IVR。儲存後側欄的「通話聲音」會切換成「通話流程」。
                 按住 <span class="grip-demo">⠿</span> 拖曳可調整順序。
               </div>
 
