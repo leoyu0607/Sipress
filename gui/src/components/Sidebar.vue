@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
-import { useTestStore, FLOW_CODE_NAMES, CALLER_STEP_NAMES, flowStepCount, type AgentFlowConfig, type CallerFlowConfig, type FlowCodeKey } from '../stores/testStore'
+import { useTestStore, FLOW_CODE_NAMES, CALLER_STEP_NAMES, flowStepCount, type AgentFlowConfig, type CallerFlowConfig, type CallerAudioMode, type FlowCodeKey } from '../stores/testStore'
 import GenerateDialog from './GenerateDialog.vue'
 import AgentFlowDialog from './AgentFlowDialog.vue'
 import CallerFlowDialog from './CallerFlowDialog.vue'
@@ -36,9 +36,40 @@ const flowSampleExt = computed(() => store.config.agent.accounts[0]?.extension |
 const showCallerFlowDialog = ref(false)
 function handleCallerFlowSave(flow: CallerFlowConfig) {
   store.config.caller.flow = flow
+  // 在流程視窗按儲存 = 要用流程；清空步驟後儲存就回到不送語音
+  store.config.caller.audioMode = flow.steps.length > 0 ? 'flow' : 'silence'
   showCallerFlowDialog.value = false
 }
 const hasCallerFlow = computed(() => store.config.caller.flow.steps.length > 0)
+
+// 通話聲音三選一：只顯示選到的那組欄位
+const AUDIO_MODES: { value: CallerAudioMode; label: string; desc: string }[] = [
+  { value: 'silence', label: '不送語音', desc: '只測 SIP 撥號與接通，不量測聲音品質' },
+  { value: 'loop',    label: '循環播放音檔', desc: '接通後一直播放同一個音檔，可加按鍵序列' },
+  { value: 'flow',    label: '通話流程', desc: '依序等待、按鍵、播放、TTS 說話，測試 IVR' },
+]
+const audioMode = computed(() => store.config.caller.audioMode)
+const audioModeDesc = computed(() => AUDIO_MODES.find(m => m.value === audioMode.value)?.desc ?? '')
+function setAudioMode(m: CallerAudioMode) {
+  store.config.caller.audioMode = m
+  // 選了通話流程但還沒有步驟 → 直接開流程視窗
+  if (m === 'flow' && !hasCallerFlow.value) showCallerFlowDialog.value = true
+}
+function onAudioModeKey(e: KeyboardEvent) {
+  const i = AUDIO_MODES.findIndex(m => m.value === audioMode.value)
+  const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+  if (!step) return
+  e.preventDefault()
+  const next = AUDIO_MODES[(i + step + AUDIO_MODES.length) % AUDIO_MODES.length]
+  store.config.caller.audioMode = next.value
+  ;(e.currentTarget as HTMLElement).querySelector<HTMLButtonElement>(`[data-mode="${next.value}"]`)?.focus()
+}
+// 座席端接通後的聲音沿用民眾端「循環播放音檔」的設定
+const agentAudioLabel = computed(() => {
+  const c = store.config.caller
+  if (c.audioMode !== 'loop' || !c.audioFile.trim()) return '不送語音（只測 SIP）'
+  return `循環播放 ${c.audioFile.replace(/\\/g, '/').split('/').pop()}`
+})
 const callerFlowSummary = computed(() => {
   const steps = store.config.caller.flow.steps
   if (steps.length === 0) return '未設定'
@@ -63,6 +94,14 @@ function sliderMax(base: number, value: number) {
 // Section collapse state（民眾端 / 座席端各自記憶）
 const sec = ref({ target:true, caller:true, agent:true, cliOpts:false })
 
+// CLI 相關（指令預覽、欄位旁的 --參數）預設收起；展開狀態記在本機
+const CLI_KEY = 'sipress-show-cli'
+const showCli = ref((() => { try { return localStorage.getItem(CLI_KEY) === '1' } catch { return false } })())
+function toggleCli() {
+  showCli.value = !showCli.value
+  try { localStorage.setItem(CLI_KEY, showCli.value ? '1' : '0') } catch { /* 無法保存就只在本次有效 */ }
+}
+
 const locked = computed(() => store.isRunning)
 const serverInvalid = computed(() => !/^[^\s:]+:\d{1,5}$/.test(store.config.server.trim()))
 const durationHint = computed(() => {
@@ -71,7 +110,7 @@ const durationHint = computed(() => {
   if (d > 0) return `${d} 秒後自動停止`
   return mode === 'agent' ? '0 = 不限時間（手動停止；雙端時建議比民眾端晚關）' : '0 = 不限時間（需搭配總通數或手動停止）'
 })
-const audioMissing  = computed(() => !hasCallerFlow.value && store.config.caller.enableAudio && !store.config.caller.audioFile.trim())
+const audioMissing  = computed(() => store.config.caller.audioMode === 'loop' && !store.config.caller.audioFile.trim())
 
 // 清除全部帳號：兩段式確認
 const confirmClearAcc = ref(false)
@@ -146,7 +185,7 @@ function statusTitle(s: string) {
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ 'show-cli': showCli }">
     <div class="lock-banner" v-if="locked"><Icon name="lock" :size="12" />測試執行中，設定已鎖定</div>
     <!-- 「開始測試」被擋住的原因直接列出，不只放在按鈕的 hover 提示裡 -->
     <div class="start-blockers" v-else-if="store.validationErrors.length > 0" aria-live="polite">
@@ -396,52 +435,52 @@ function statusTitle(s: string) {
           <div class="field-hint">{{ store.config.caller.callDuration === 0 ? '0 = 不限（直到對方掛斷）' : `接通後約 ${store.config.caller.callDuration} 秒掛斷` }}</div>
         </div>
 
-        <!-- 通話流程 -->
+        <!-- 通話聲音：三選一 -->
         <div class="field">
-          <label>通話流程 <span class="tag">--caller-flow</span></label>
+          <span class="field-title" id="sb-audio-mode-lbl">通話聲音</span>
+          <div class="seg" role="radiogroup" aria-labelledby="sb-audio-mode-lbl" @keydown="onAudioModeKey">
+            <button v-for="m in AUDIO_MODES" :key="m.value" type="button" role="radio" class="seg-btn"
+                    :data-mode="m.value" :aria-checked="audioMode === m.value" :class="{ active: audioMode === m.value }"
+                    :tabindex="audioMode === m.value ? 0 : -1" :title="m.desc" @click="setAudioMode(m.value)">{{ m.label }}</button>
+          </div>
+          <div class="field-hint">{{ audioModeDesc }}</div>
+        </div>
+
+        <!-- 循環播放音檔 -->
+        <template v-if="audioMode === 'loop'">
+          <div class="field">
+            <label for="sb-audio-file">音檔 <span class="tag">--audio</span></label>
+            <div class="file-pick-row">
+              <input id="sb-audio-file" v-model="store.config.caller.audioFile" type="text" placeholder="audio.wav" class="file-path-input" :class="{ invalid: audioMissing }" :aria-invalid="audioMissing" :title="store.config.caller.audioFile">
+              <button class="btn btn-sm" @click="pickAudioFile">瀏覽</button>
+            </div>
+            <div class="field-err" v-if="audioMissing">請選擇音檔，否則無法開始測試</div>
+            <div class="field-hint" v-else>WAV（16-bit PCM 或 G.711，自動轉 8kHz）或 G.711 原始檔（.al / .ul）；座席端也播這個音檔</div>
+          </div>
+          <div class="field">
+            <label for="sb-dtmf">按鍵序列（可不填） <span class="tag">--dtmf</span></label>
+            <input id="sb-dtmf" v-model="store.config.caller.dtmfSequence" type="text" placeholder="1,w2000,2,w500,#">
+            <div class="field-hint">接通後自動送出（w=等待ms，如 1,w2000,# 表示按1→等2秒→按#）</div>
+          </div>
+        </template>
+
+        <!-- 通話流程 -->
+        <div class="field" v-if="audioMode === 'flow'">
+          <span class="field-title">流程步驟 <span class="tag">--caller-flow</span></span>
           <div class="flow-row">
-            <span class="flow-summary" :title="hasCallerFlow ? callerFlowSummary : '接通後依序等待、按鍵、播放音檔、TTS 說話、等對方講完（測試按鍵 IVR 與智能語音 IVR）'">{{ callerFlowSummary }}</span>
-            <button class="btn btn-sm" @click="showCallerFlowDialog = true">設定…</button>
+            <span class="flow-summary" :title="callerFlowSummary">{{ callerFlowSummary }}</span>
+            <button class="btn btn-sm" @click="showCallerFlowDialog = true">設定流程…</button>
             <button class="btn btn-sm" :disabled="!hasCallerFlow" @click="store.exportCallerFlowJson()" title="匯出 CLI --caller-flow 使用的 JSON（不含 TTS 金鑰）">匯出</button>
           </div>
-          <div class="field-hint" v-if="hasCallerFlow">已設定通話流程：下方的播放音檔與 DTMF 序列不使用</div>
         </div>
 
-        <!-- Audio -->
-        <div class="field" :class="{ superseded: hasCallerFlow }">
-          <div class="toggle-row">
-            <span id="sb-enable-audio-lbl">播放音檔</span>
-            <label class="toggle">
-              <input aria-labelledby="sb-enable-audio-lbl" type="checkbox" v-model="store.config.caller.enableAudio">
-              <span class="track"><span class="thumb"></span></span>
-            </label>
-          </div>
-        </div>
-
-        <div class="field" :class="{ superseded: hasCallerFlow }" v-if="store.config.caller.enableAudio">
-          <label for="sb-audio-file">音檔路徑</label>
-          <div class="file-pick-row">
-            <input id="sb-audio-file" v-model="store.config.caller.audioFile" type="text" placeholder="audio.wav" class="file-path-input" :class="{ invalid: audioMissing }" :aria-invalid="audioMissing" :title="store.config.caller.audioFile">
-            <button class="btn btn-sm" @click="pickAudioFile">瀏覽</button>
-          </div>
-          <div class="field-err" v-if="audioMissing">請選擇音檔，否則無法開始測試</div>
-          <div class="field-hint" v-else>WAV（16-bit PCM 或 G.711，自動轉 8kHz）或 G.711 原始檔（.al / .ul）</div>
-        </div>
-
-        <!-- Codec -->
-        <div class="field" v-if="store.config.caller.enableAudio || hasCallerFlow">
-          <label for="sb-codec">Codec</label>
+        <!-- Codec：有送聲音時才需要 -->
+        <div class="field" v-if="audioMode !== 'silence'">
+          <label for="sb-codec">Codec <span class="tag">--codec</span></label>
           <select id="sb-codec" v-model="store.config.caller.codec">
             <option value="pcma">G.711A (PCMA)</option>
             <option value="pcmu">G.711U (PCMU)</option>
           </select>
-        </div>
-
-        <!-- DTMF -->
-        <div class="field" :class="{ superseded: hasCallerFlow }">
-          <label for="sb-dtmf">DTMF 序列</label>
-          <input id="sb-dtmf" v-model="store.config.caller.dtmfSequence" type="text" placeholder="1,w2000,2,w500,#">
-          <div class="field-hint">接通後自動送出（w=等待ms，如 1,w2000,# 表示按1→等2秒→按#）</div>
         </div>
 
       </div>
@@ -538,6 +577,12 @@ function statusTitle(s: string) {
             <input aria-labelledby="sb-rereg-lbl" type="checkbox" v-model="store.config.agent.reregisterAfterCall">
             <span class="track"><span class="thumb"></span></span>
           </label>
+        </div>
+
+        <!-- 接通後的聲音（沿用民眾端設定） -->
+        <div class="field">
+          <span class="field-title">接通後的聲音</span>
+          <div class="field-hint agent-audio">{{ agentAudioLabel }}<br>在民眾端分頁的「通話聲音」選「循環播放音檔」來設定</div>
         </div>
 
         <!-- 座席流程 -->
@@ -681,9 +726,14 @@ function statusTitle(s: string) {
     <!-- ── CLI Preview ────────────────────────────────────── -->
     <div class="cli-section">
       <div class="cli-label-row">
-        <span class="cli-label">CLI 指令預覽</span>
-        <button class="cli-opts-btn" :aria-expanded="sec.cliOpts" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.cliOpts }" /></button>
+        <button type="button" class="cli-toggle" :aria-expanded="showCli" aria-controls="sb-cli-body" @click="toggleCli"
+                title="用指令列（CLI）跑同樣的測試：顯示指令預覽與各欄位對應的參數">
+          <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: showCli }" />
+          <span class="cli-label">CLI 指令</span>
+        </button>
+        <button v-if="showCli" class="cli-opts-btn" :aria-expanded="sec.cliOpts" @click="sec.cliOpts = !sec.cliOpts" :class="{ open: sec.cliOpts }">選項 <Icon name="chevron-right" :size="12" class="arrow" :class="{ open: sec.cliOpts }" /></button>
       </div>
+      <div id="sb-cli-body" v-if="showCli">
       <div class="cli-opts" v-show="sec.cliOpts">
         <div class="field">
           <label for="sb-cli-format">報告格式 <span class="tag">--format / --tui</span></label>
@@ -709,11 +759,12 @@ function statusTitle(s: string) {
       <div class="cli-warn" v-if="store.config.mode === 'caller' && store.config.caller.authPass">
         撥號認證密碼不顯示在預覽，執行前請把 &lt;密碼&gt; 換成實際密碼
       </div>
-      <div class="cli-warn" v-if="store.config.mode === 'caller' && hasCallerFlow">
+      <div class="cli-warn" v-if="store.config.mode === 'caller' && audioMode === 'flow' && hasCallerFlow">
         流程檔請用通話流程的「匯出」存成 sipress_caller_flow.json<template v-if="store.config.caller.flow.steps.some(s => s.type === 'say')">；匯出檔不含 TTS 金鑰，執行前請設環境變數 SIPRESS_TTS_KEY</template>
       </div>
       <div class="cli-warn" v-if="store.config.mode === 'agent'">
         帳號檔請先用帳號清單的「匯出 CSV」存成 sipress_accounts.csv<template v-if="flowSummary !== '未設定'">；流程檔用座席流程的「匯出」存成 sipress_flow.json</template>
+      </div>
       </div>
     </div>
 
@@ -918,7 +969,23 @@ fieldset:disabled .del-btn { opacity: 0.55; cursor: not-allowed; }
 }
 .warn-tag { color: var(--warn); background: rgba(var(--warn-rgb), 0.12); }
 .flow-row { display: flex; align-items: center; gap: 6px; }
-.superseded { opacity: 0.45; }
+.field-title { display: block; font-size: 11px; color: var(--text1); margin-bottom: 3px; }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius-sm); }
+.seg-btn {
+  border: none; background: transparent; color: var(--text1);
+  font-family: var(--sans); font-size: 11px; padding: 5px 2px; border-radius: 3px; cursor: pointer;
+  white-space: nowrap;
+}
+.seg-btn:hover:not(.active) { color: var(--text0); }
+.seg-btn.active { background: var(--bg1); color: var(--accent); font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+.seg-btn:focus-visible { outline: none; box-shadow: inset 0 0 0 2px rgba(var(--accent-rgb),0.6); }
+.agent-audio { margin-top: 0; }
+/* CLI 參數標籤只在展開「CLI 指令」時顯示；警示用的標籤（warn-tag）一直顯示 */
+.sidebar:not(.show-cli) .tag:not(.warn-tag) { display: none; }
+.cli-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: none; background: transparent; padding: 0; cursor: pointer; color: inherit; font: inherit;
+}
 .flow-summary { flex: 1; font-size: 11px; color: var(--text1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-ctl { padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .ctl-title { font-size: 11px; color: var(--text1); margin-bottom: 6px; }

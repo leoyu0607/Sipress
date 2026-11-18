@@ -52,13 +52,17 @@ export interface CallerProfile {
   refillDelay:   number   // 線路釋放後幾秒才補新的通話（0 = 立即補）
   totalCalls:    number   // 0 = unlimited
   callDuration:  number   // per-call duration seconds (0 = unlimited)
-  enableAudio:   boolean
-  audioFile:     string
-  dtmfSequence:  string
+  /** 通話聲音：不送語音 / 循環播放音檔（可加 DTMF 序列）/ 通話流程 */
+  audioMode:     CallerAudioMode
+  audioFile:     string   // audioMode = loop 時播放；座席端也用它
+  dtmfSequence:  string   // audioMode = loop 時接通後送出
   codec:         'pcma' | 'pcmu'
   duration:      number   // 壓測持續秒數（0 = 不限）
   flow:          CallerFlowConfig   // 通話流程（有步驟時取代播放音檔與 DTMF 序列）
 }
+
+export type CallerAudioMode = 'silence' | 'loop' | 'flow'
+export const CALLER_AUDIO_MODES: CallerAudioMode[] = ['silence', 'loop', 'flow']
 
 /** 民眾端通話流程的一個步驟 */
 export type CallerStepType = 'wait' | 'dtmf' | 'play' | 'say' | 'waitSilence'
@@ -588,7 +592,7 @@ function fmtDuration(sec: number) {
   return sec > 0 ? `${sec}s` : '不限'
 }
 
-function defaultConfig(): TestConfig {
+export function defaultConfig(): TestConfig {
   return {
     server: '192.168.166.60:5066',
     transport: 'UDP',
@@ -621,7 +625,7 @@ function defaultConfig(): TestConfig {
       refillDelay:  0,
       totalCalls:   0,
       callDuration: 30,
-      enableAudio:  false,
+      audioMode:    'silence',
       audioFile:    '',
       dtmfSequence: '',
       codec:        'pcma',
@@ -656,6 +660,8 @@ function defaultConfig(): TestConfig {
 /** 設定的部分欄位（範本、舊版設定） */
 export type ConfigPatch = Partial<Omit<TestConfig, 'caller' | 'agent'>> & {
   caller?: Partial<Omit<CallerProfile, 'cpsPattern' | 'flow'>> & {
+    /** v0.7 以前的「播放音檔」開關，載入時換成 audioMode */
+    enableAudio?: boolean
     cpsPattern?: Partial<CpsPatternConfig>
     flow?: Partial<Omit<CallerFlowConfig, 'tts'>> & { tts?: Partial<TtsSettings> }
   }
@@ -701,11 +707,24 @@ export function mergeConfig(base: TestConfig, patch: ConfigPatch & { duration?: 
       },
     } as AgentProfile,
   }
+  cfg.caller.audioMode = audioModeOf(saved.caller, cfg.caller.audioMode)
+  delete (cfg.caller as CallerProfile & { enableAudio?: boolean }).enableAudio
   if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
   if (cfg.mode !== 'caller' && cfg.mode !== 'agent') cfg.mode = 'caller'
   // 註冊狀態不跨啟動、不跨範本保留
   cfg.agent.accounts = (cfg.agent.accounts ?? []).map(a => ({ ...a, status: 'idle' as const }))
   return cfg
+}
+
+/**
+ * 通話聲音模式：有給就用；舊版設定（只有 enableAudio 與流程步驟）依當時實際的行為推算：
+ * 有流程步驟 → 通話流程（流程優先），否則開了播放音檔 → 循環播放。都沒提到就沿用 `fallback`。
+ */
+function audioModeOf(c: ConfigPatch['caller'], fallback: CallerAudioMode): CallerAudioMode {
+  if (c?.audioMode && CALLER_AUDIO_MODES.includes(c.audioMode)) return c.audioMode
+  if (!c || (c.enableAudio === undefined && c.flow?.steps === undefined)) return fallback
+  if ((c.flow?.steps?.length ?? 0) > 0) return 'flow'
+  return c.enableAudio ? 'loop' : 'silence'
 }
 
 function clone<T>(v: T): T {
@@ -780,6 +799,7 @@ export function builtinTemplates(): TestTemplate[] {
       caller: {
         concurrency: 10, cps: 1, totalCalls: 0, callDuration: 120, duration: 300,
         cpsPattern: { type: 'flat' },
+        audioMode: 'flow',
         flow: {
           hangupWhenDone: true,
           steps: [
@@ -795,6 +815,7 @@ export function builtinTemplates(): TestTemplate[] {
       caller: {
         concurrency: 10, cps: 0.5, totalCalls: 0, callDuration: 180, duration: 300,
         cpsPattern: { type: 'flat' },
+        audioMode: 'flow',
         flow: {
           hangupWhenDone: true,
           steps: [
@@ -961,11 +982,12 @@ export const useTestStore = defineStore('test', () => {
       if (!(Number.isFinite(p.refillDelay) && p.refillDelay >= 0)) errs.push('補話延遲需 ≥ 0 秒')
       if ((p.cpsPattern.type === 'ramp' || p.cpsPattern.type === 'spike') && p.duration === 0)
         errs.push(`${p.cpsPattern.type === 'ramp' ? '漸增' : '尖峰'}模式需設定持續時間（> 0）`)
-      if (p.flow.steps.length > 0) {
-        // 通話流程取代播放音檔與 DTMF 序列，這兩項不檢查
+      // 只檢查選到的通話聲音模式；其他模式的欄位保留但不使用
+      if (p.audioMode === 'flow') {
+        if (p.flow.steps.length === 0) errs.push('通話聲音選了「通話流程」，但流程還沒有步驟（按「設定流程」新增）')
         errs.push(...callerFlowErrors(p.flow))
-      } else {
-        if (p.enableAudio && !p.audioFile.trim()) errs.push('已啟用播放音檔但尚未選擇檔案')
+      } else if (p.audioMode === 'loop') {
+        if (!p.audioFile.trim()) errs.push('通話聲音選了「循環播放音檔」，但尚未選擇檔案')
         if (p.dtmfSequence.trim() && !isValidDtmf(p.dtmfSequence))
           errs.push('DTMF 序列格式錯誤：每段為單一按鍵（0-9 * # A-D）或 wN（等待毫秒），以逗號分隔')
       }
@@ -1030,10 +1052,10 @@ export const useTestStore = defineStore('test', () => {
       if (c.localPort) parts.push(`--local 0.0.0.0:${c.localPort}`)
     }
     if (p.codec !== 'pcma') parts.push(`--codec ${p.codec}`)
-    if (c.mode === 'caller' && p.flow.steps.length > 0) {
+    if (c.mode === 'caller' && p.audioMode === 'flow' && p.flow.steps.length > 0) {
       // 流程檔由「通話流程」的「匯出」產生（不含 TTS 金鑰，改用環境變數）
       parts.push('--rtp --rtp-port 16000 --caller-flow sipress_caller_flow.json')
-    } else if (p.enableAudio && p.audioFile) {
+    } else if (p.audioMode === 'loop' && p.audioFile) {
       parts.push(`--rtp --rtp-port 16000 --audio "${p.audioFile}"`)
       // DTMF 經 RTP 送出，沒有 RTP 時 GUI 也不會送
       if (c.mode === 'caller' && p.dtmfSequence.trim()) parts.push(`--dtmf "${p.dtmfSequence.trim()}"`)
@@ -1081,7 +1103,9 @@ export const useTestStore = defineStore('test', () => {
   // ── Rust config builder ───────────────────────────────────────────────────────
   function buildRustConfig(mode: CallMode = config.value.mode) {
     const c = config.value
-    const flow = mode === 'caller' && c.caller.flow.steps.length > 0 ? c.caller.flow : null
+    const flow = mode === 'caller' && c.caller.audioMode === 'flow' && c.caller.flow.steps.length > 0 ? c.caller.flow : null
+    // 循環播放音檔：民眾端與座席端共用同一個音檔
+    const loopFile = c.caller.audioMode === 'loop' && c.caller.audioFile ? c.caller.audioFile : null
     return {
       server_addr:          c.server.trim(),
       // 座席端每個帳號各自綁定隨機 port，本地埠只套用在民眾端
@@ -1105,11 +1129,11 @@ export const useTestStore = defineStore('test', () => {
       transport:            c.transport.toLowerCase(),
       logs_dir:             'logs',
       rtp_base_port:        16000,
-      // 有通話流程時聲音全部由流程決定，不帶舊的音檔與 DTMF 序列
-      audio_file:           !flow && c.caller.enableAudio && c.caller.audioFile ? c.caller.audioFile : null,
+      // 只送選到的通話聲音模式；沒選到的音檔、DTMF 序列、流程都不帶
+      audio_file:           loopFile,
       codec:                c.caller.codec,
-      enable_rtp:           !!flow || (c.caller.enableAudio && !!c.caller.audioFile),
-      dtmf_sequence:        flow ? null : c.caller.dtmfSequence || null,
+      enable_rtp:           !!flow || !!loopFile,
+      dtmf_sequence:        loopFile ? c.caller.dtmfSequence || null : null,
       caller_flow:          flow ? callerFlowToRust(flow) : callerFlowToRust(defaultConfig().caller.flow),
       mode,                                                                  // 'caller' | 'agent'
       agent_accounts:       mode === 'agent'
@@ -1319,10 +1343,10 @@ export const useTestStore = defineStore('test', () => {
       addLog('ok',   `測試開始 → ${c.server}  [${MODE_LABEL[mode]}]`, mode)
       if (mode === 'caller') {
         addLog('info', `持續時間: ${fmtDuration(c.caller.duration)}  cps: ${c.caller.cps}  併發: ${c.caller.concurrency}${c.caller.totalCalls > 0 ? `  總通數: ${c.caller.totalCalls}` : ''}`, mode)
-        if (c.caller.flow.steps.length > 0) {
+        if (c.caller.audioMode === 'flow' && c.caller.flow.steps.length > 0) {
           const f = c.caller.flow
           addLog('info', `RTP codec=${codecLabel.value.full}  通話流程 ${f.steps.length} 步${f.hangupWhenDone ? '，跑完就掛斷' : ''}`, mode)
-        } else if (c.caller.enableAudio && c.caller.audioFile) {
+        } else if (c.caller.audioMode === 'loop' && c.caller.audioFile) {
           const fname = c.caller.audioFile.replace(/\\/g, '/').split('/').pop() ?? c.caller.audioFile
           addLog('info', `RTP codec=${codecLabel.value.full}  audio="${fname}"  port=${buildRustConfig(mode).rtp_base_port}`, mode)
         } else {

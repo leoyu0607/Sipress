@@ -67,7 +67,7 @@ describe('無法開始的原因直接顯示', () => {
 
     s.config.server = '127.0.0.1:5060'
     s.config.caller.accessNumber = '4008001234'
-    s.config.caller.enableAudio = false
+    s.config.caller.audioMode = 'silence'
     await nextTick()
     expect(s.validationErrors).toEqual([])
     expect(root.querySelector('.start-blockers')).toBeNull()
@@ -128,5 +128,64 @@ describe('無障礙語意', () => {
     s.config.mode = 'agent'
     await nextTick()
     expect(tabs().map(t => t.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+  })
+})
+
+describe('通話聲音三選一', () => {
+  const radios = () => [...root.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+  const radio = (label: string) => radios().find(r => r.textContent === label)!
+
+  it('預設不送語音，不顯示音檔、按鍵序列與 Codec', async () => {
+    await nextTick()
+    expect(radios().map(r => r.textContent)).toEqual(['不送語音', '循環播放音檔', '通話流程'])
+    expect(radio('不送語音').getAttribute('aria-checked')).toBe('true')
+    expect(root.querySelector('#sb-audio-file')).toBeNull()
+    expect(root.querySelector('#sb-dtmf')).toBeNull()
+    expect(root.querySelector('#sb-codec')).toBeNull()
+  })
+
+  it('選循環播放音檔只顯示音檔、按鍵序列與 Codec', async () => {
+    const s = useTestStore()
+    radio('循環播放音檔').click()
+    await nextTick()
+    expect(s.config.caller.audioMode).toBe('loop')
+    expect(root.querySelector('#sb-audio-file')).not.toBeNull()
+    expect(root.querySelector('#sb-dtmf')).not.toBeNull()
+    expect(root.querySelector('#sb-codec')).not.toBeNull()
+    expect(root.textContent).not.toContain('設定流程')
+  })
+
+  it('選通話流程時沒有步驟會直接開流程視窗；有步驟就只切換', async () => {
+    const s = useTestStore()
+    radio('通話流程').click()
+    await nextTick()
+    expect(s.config.caller.audioMode).toBe('flow')
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(root.querySelector('#sb-audio-file')).toBeNull()
+    expect(root.textContent).toContain('設定流程')
+  })
+
+  it('方向鍵切換選項', async () => {
+    const s = useTestStore()
+    await nextTick()
+    radio('不送語音').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(s.config.caller.audioMode).toBe('loop')
+    expect(document.activeElement).toBe(radio('循環播放音檔'))
+  })
+})
+
+describe('CLI 相關預設收起', () => {
+  it('收起時不顯示指令預覽與 --參數標籤；展開後顯示並記住', async () => {
+    await nextTick()
+    expect(root.querySelector('.cli-box')).toBeNull()
+    expect(root.querySelector('.sidebar')!.classList.contains('show-cli')).toBe(false)
+    const toggle = root.querySelector<HTMLButtonElement>('.cli-toggle')!
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    toggle.click()
+    await nextTick()
+    expect(root.querySelector('.cli-box')).not.toBeNull()
+    expect(root.querySelector('.sidebar')!.classList.contains('show-cli')).toBe(true)
+    expect(localStorage.getItem('sipress-show-cli')).toBe('1')
   })
 })

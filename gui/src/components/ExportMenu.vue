@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
- * 標題列「匯出」選單：取代原本一排 5 個「↓ xxx」按鈕。
+ * 標題列「報告」選單：整合報告與各種匯出檔集中在同一個入口。
  * - 不能匯出的項目仍列出，並直接寫出原因（不只放在 hover 提示裡）
  * - 鍵盤：開啟後焦點在第一個可用項目；↑↓ / Home / End 移動，Esc 關閉並回到按鈕，Tab 關閉
  * - 點選單外面關閉
  */
 import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { useTestStore } from '../stores/testStore'
+import IntegratedReportDialog from './IntegratedReportDialog.vue'
 import Icon from './Icon.vue'
 
 const store = useTestStore()
@@ -15,6 +16,7 @@ const open     = ref(false)
 const rootRef  = ref<HTMLElement | null>(null)
 const trigger  = ref<HTMLButtonElement | null>(null)
 const menuRef  = ref<HTMLElement | null>(null)
+const reportOpen = ref(false)
 
 const hasSeries = computed(() => store.series.cps.length > 0)
 const hasReport = computed(() => store.status === 'done')
@@ -35,6 +37,11 @@ const items = computed<Item[]>(() => [
     enabled: store.canExportE2e, run: () => store.exportE2eHtml() },
 ])
 const anyEnabled = computed(() => items.value.some(i => i.enabled))
+
+function openReport() {
+  close(false)
+  reportOpen.value = true
+}
 
 function enabledButtons() {
   return [...(menuRef.value?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])]
@@ -79,7 +86,7 @@ function onMenuKey(e: KeyboardEvent) {
   }
 }
 function onTriggerKey(e: KeyboardEvent) {
-  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && anyEnabled.value && !open.value) {
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !open.value) {
     e.preventDefault()
     show()
   }
@@ -92,19 +99,26 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocPointer, true
   <div class="export-menu" ref="rootRef">
     <button ref="trigger" class="btn btn-sm" type="button"
             aria-haspopup="menu" :aria-expanded="open" aria-controls="export-menu-list"
-            :disabled="!anyEnabled"
-            :title="anyEnabled ? '匯出報告或數據' : '尚無測試資料'"
+            title="整合報告與匯出檔案"
             @click="toggle" @keydown="onTriggerKey">
-      <Icon name="download" :size="13" />匯出<Icon name="chevron-down" :size="12" class="caret" :class="{ open }" />
+      <Icon name="file-text" :size="13" />報告<Icon name="chevron-down" :size="12" class="caret" :class="{ open }" />
     </button>
 
-    <div v-if="open" id="export-menu-list" ref="menuRef" class="menu" role="menu" aria-label="匯出" @keydown="onMenuKey">
+    <div v-if="open" id="export-menu-list" ref="menuRef" class="menu" role="menu" aria-label="報告" @keydown="onMenuKey">
+      <button type="button" role="menuitem" class="item" @click="openReport">
+        <span class="item-label">整合報告…</span>
+        <span class="item-desc">結論、通話量與聲音品質圖表、受測主機資源，依門檻判定；可匯出 PDF</span>
+      </button>
+      <div class="divider" role="separator"></div>
+      <div class="group">匯出檔案<span v-if="!anyEnabled" class="group-hint">尚無測試資料</span></div>
       <button v-for="it in items" :key="it.key" type="button" role="menuitem" class="item"
               :disabled="!it.enabled" @click="choose(it)">
         <span class="item-label">{{ it.label }}</span>
         <span class="item-desc">{{ it.enabled ? it.desc : it.reason }}</span>
       </button>
     </div>
+
+    <IntegratedReportDialog :visible="reportOpen" @close="reportOpen = false" />
   </div>
 </template>
 
@@ -128,6 +142,9 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocPointer, true
   flex-direction: column;
   gap: 1px;
 }
+.group { font-size: 11px; color: var(--text2); font-weight: 500; padding: 6px 10px 3px; }
+.group-hint { font-weight: normal; margin-left: 6px; }
+.divider { height: 1px; background: var(--border2); margin: 4px 2px; }
 .item {
   display: flex;
   flex-direction: column;
