@@ -159,12 +159,14 @@ describe('測試執行流程', () => {
   afterEach(() => { vi.useRealTimers() })
 
   /** 啟動測試，get_snapshot 依序回傳 snaps（用完後持續回傳最後一個） */
+  const verdict = { verdict: 'pass', checks: [] }
   async function startWith(snaps: RustSnapshot[], report: () => RustReport | null = () => baseReport) {
     let i = 0
     const calls = routeInvoke({
       start_test:   () => 'started',
       get_snapshot: () => snaps[Math.min(i++, snaps.length - 1)],
       get_report:   report,
+      get_verdict:  () => verdict,
     })
     const s = useTestStore()
     await s.startTest()
@@ -236,7 +238,13 @@ describe('測試執行流程', () => {
     await tick()
     await vi.waitFor(() => expect(s.status).toBe('done'))
 
-    expect(calls.map(c => c.cmd)).toEqual(['start_test', 'get_snapshot', 'get_report'])
+    await vi.waitFor(() => expect(s.verdicts.caller).toEqual(verdict))
+    expect(calls.map(c => c.cmd)).toEqual(['start_test', 'get_snapshot', 'get_report', 'get_verdict'])
+    // 判定用目前的門檻
+    expect(calls[3].args).toEqual({ mode: 'caller', thresholds: s.thresholds })
+    // 不自動切到結果畫面：停在執行畫面並提示
+    expect(s.stage).toBe('running')
+    expect(s.finishedUnseen.caller).toBe(true)
     expect(s.metrics).toMatchObject({
       cps: baseReport.actual_cps,
       initiated: baseReport.calls_initiated,
@@ -265,6 +273,8 @@ describe('測試執行流程', () => {
     await tick()
     await vi.waitFor(() => expect(s.status).toBe('error'))
     expect(s.logs.some(l => l.level === 'err' && l.msg.includes('無效的 server 位址'))).toBe(true)
+    expect(s.verdicts.caller).toBeNull()
+    expect(s.finishedUnseen.caller).toBe(true)
   })
 
   it('start_test 失敗 → 狀態為 error 且不輪詢', async () => {

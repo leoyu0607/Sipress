@@ -7,7 +7,7 @@ use sipress_core::{
     engine::{Engine, ProgressCallback},
     host_metrics::HostMetrics,
     html_reporter::HtmlReporter,
-    integrated_report::{IntegratedReport, ReportOptions, ReportSources},
+    integrated_report::{judge, IntegratedReport, ReportOptions, ReportSources, VerdictSummary},
     registrar::{register_once, RegisterResult},
     result_file::ResultFile,
     rtp::audio::AudioSource,
@@ -328,6 +328,26 @@ pub struct IntegratedRequest {
     pub notes: String,
 }
 
+/// 某一端最近一次執行的結果（還沒有結果時為 `None`）
+fn session_result_file(app: &AppState, mode: &Mode) -> Option<ResultFile> {
+    let session = app.session(mode);
+    let report = session.report.lock().unwrap().clone()?;
+    let mut config = session.config.lock().unwrap().clone().unwrap_or_default();
+    config.mode = mode.clone();
+    Some(ResultFile::new(&config, &report))
+}
+
+/// 結果畫面的判定：某一端最近一次執行的結果套用門檻，規則與整合報告相同；還沒有結果時為 `None`
+#[tauri::command]
+pub fn get_verdict(
+    state: State<'_, Arc<AppState>>,
+    mode: Mode,
+    thresholds: Thresholds,
+) -> Option<VerdictSummary> {
+    let file = session_result_file(&state, &mode)?;
+    Some(judge(&ReportSources::single(file), &thresholds))
+}
+
 fn integrated_html(app: &AppState, req: &IntegratedRequest) -> Result<String, String> {
     let paths: Vec<&String> = req.result_paths.iter().filter(|p| !p.is_empty()).collect();
     let files = if !paths.is_empty() {
@@ -339,13 +359,9 @@ fn integrated_html(app: &AppState, req: &IntegratedRequest) -> Result<String, St
         req.modes
             .iter()
             .map(|mode| {
-                let session = app.session(mode);
-                let report = session.report.lock().unwrap().clone().ok_or_else(|| {
+                session_result_file(app, mode).ok_or_else(|| {
                     "這個模式還沒有測試結果，請先完成一次壓測或選擇壓測數據檔".to_string()
-                })?;
-                let mut config = session.config.lock().unwrap().clone().unwrap_or_default();
-                config.mode = mode.clone();
-                Ok(ResultFile::new(&config, &report))
+                })
             })
             .collect::<Result<Vec<_>, String>>()?
     };

@@ -462,10 +462,33 @@ export interface ReportThresholds {
   jitter_ms:  number
   loss_pct:   number
   mos:        number
+  /** 接通率下限（%，只判定民眾端） */
+  asr_pct:    number
 }
 
 export const DEFAULT_THRESHOLDS: ReportThresholds = {
-  cpu_pct: 70, mem_pct: 80, disk_queue: 2, jitter_ms: 30, loss_pct: 0.5, mos: 4,
+  cpu_pct: 70, mem_pct: 80, disk_queue: 2, jitter_ms: 30, loss_pct: 0.5, mos: 4, asr_pct: 95,
+}
+
+// ── 使用階段（設定 → 執行中 → 結果）────────────────────────────────────────────
+export type Stage = 'setup' | 'running' | 'result'
+
+/** 結果判定的一項（Rust `CheckResult`） */
+export interface VerdictCheck {
+  name:  string
+  scope: string
+  value: number | null
+  unit:  string
+  limit: string
+  /** null = 沒有數據可判定 */
+  pass:  boolean | null
+  note:  string
+}
+
+/** 結果判定（Rust `VerdictSummary`），規則與整合報告相同 */
+export interface VerdictSummary {
+  verdict: 'pass' | 'fail' | 'nodata'
+  checks:  VerdictCheck[]
 }
 
 /** 整合報告的來源與選項（欄位同 Rust `IntegratedRequest`） */
@@ -1317,8 +1340,59 @@ export const useTestStore = defineStore('test', () => {
     if (rt.pollTimer)  { clearInterval(rt.pollTimer);  rt.pollTimer  = null }
     if (rt.clockTimer) { clearInterval(rt.clockTimer); rt.clockTimer = null }
     r.stopping = false
-    _tryFetchReport(mode).then(ok => { r.status = ok ? 'done' : 'error' })
+    _tryFetchReport(mode).then(ok => {
+      r.status = ok ? 'done' : 'error'
+      finishedUnseen.value[mode] = true
+      if (ok) void refreshVerdict(mode)
+    })
   }
+
+  // ── 使用階段 ──────────────────────────────────────────────────────────────────
+  /** 使用者指定要看的階段；null = 跟著執行狀態（執行中 / 剛結束都停在執行畫面） */
+  const stageRequest = ref<Record<CallMode, Stage | null>>({ caller: null, agent: null })
+  /** 測試結束但還沒看過結果（顯示「測試完成」提示） */
+  const finishedUnseen = ref<Record<CallMode, boolean>>({ caller: false, agent: false })
+
+  function stageOf(mode: CallMode): Stage {
+    const req = stageRequest.value[mode]
+    const st  = sessions.value[mode].status
+    if (req === 'setup' || st === 'idle') return 'setup'
+    if (st === 'running') return 'running'
+    return req === 'result' ? 'result' : 'running'
+  }
+  const stage = computed(() => stageOf(config.value.mode))
+
+  /** 切換目前分頁那一端的階段；結果要測試結束後才看得到 */
+  function goStage(s: Stage, mode: CallMode = config.value.mode) {
+    const st = sessions.value[mode].status
+    if (s === 'result' && (st === 'idle' || st === 'running')) return
+    stageRequest.value[mode] = s === 'running' ? null : s
+    if (s === 'result') finishedUnseen.value[mode] = false
+  }
+
+  // ── 判定門檻與結果判定 ────────────────────────────────────────────────────────
+  const thresholds = ref<ReportThresholds>(loadReportSettings().thresholds)
+  const verdicts = ref<Record<CallMode, VerdictSummary | null>>({ caller: null, agent: null })
+
+  /** 修改門檻（存在本機，整合報告也用同一份） */
+  function setThresholds(t: ReportThresholds) {
+    thresholds.value = { ...DEFAULT_THRESHOLDS, ...t }
+    saveReportSettings(thresholds.value, loadReportSettings().notes)
+  }
+  /** 重新讀取本機存的門檻（整合報告對話框或範本改過之後） */
+  function reloadThresholds() { thresholds.value = loadReportSettings().thresholds }
+
+  async function refreshVerdict(mode: CallMode) {
+    try {
+      verdicts.value[mode] = await invoke<VerdictSummary | null>('get_verdict', { mode, thresholds: thresholds.value })
+    } catch {
+      verdicts.value[mode] = null
+    }
+  }
+  watch(thresholds, () => {
+    for (const m of ['caller', 'agent'] as CallMode[])
+      if (sessions.value[m].status === 'done') void refreshVerdict(m)
+  }, { deep: true })
 
   // ── Start / Stop ──────────────────────────────────────────────────────────────
   /** 啟動指定模式（預設為目前檢視的模式）；另一模式可同時執行 */
@@ -1332,6 +1406,9 @@ export const useTestStore = defineStore('test', () => {
       return false
     }
     sessions.value[mode] = { ...newSession(), status: 'running', seriesTick: r.seriesTick + 1 }
+    stageRequest.value[mode] = null
+    finishedUnseen.value[mode] = false
+    verdicts.value[mode] = null
     rt.prevFailed = 0
     rt.rtpLoggedOnce = false
     rt.prevDials = 0
@@ -1668,7 +1745,7 @@ export const useTestStore = defineStore('test', () => {
     if (t.kind === 'full') {
       config.value = mergeConfig(defaultConfig(), t.config)
       activeTemplateId.value = t.id
-      if (t.thresholds) saveReportSettings(t.thresholds, report.notes)
+      if (t.thresholds) { saveReportSettings(t.thresholds, report.notes); reloadThresholds() }
     } else {
       // 內建情境：保留目前的連線設定，只改情境欄位；設定不再等於任何範本
       config.value = mergeConfig(config.value, t.config)
@@ -1684,6 +1761,7 @@ export const useTestStore = defineStore('test', () => {
     config.value = u.config
     activeTemplateId.value = u.activeId
     saveReportSettings(u.thresholds, loadReportSettings().notes)
+    reloadThresholds()
     templateUndo.value = null
     addLog('info', `已復原套用範本「${u.name}」前的設定`)
   }
@@ -1904,5 +1982,7 @@ export const useTestStore = defineStore('test', () => {
     templates, activeTemplate, templateModified, templateUndo,
     applyTemplate, undoApplyTemplate, saveAsTemplate, updateActiveTemplate, editTemplate, deleteTemplate,
     exportTemplates, importTemplates,
+    stage, stageOf, goStage, finishedUnseen,
+    thresholds, verdicts, setThresholds, reloadThresholds, refreshVerdict,
   }
 })

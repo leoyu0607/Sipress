@@ -19,6 +19,8 @@ pub struct Thresholds {
     pub loss_pct: f64,
     /// MOS 下限（jitter buffer 200 ms 模擬，看每通電話的 P5）
     pub mos: f64,
+    /// 接通率下限（%，只判定民眾端）
+    pub asr_pct: f64,
 }
 
 impl Default for Thresholds {
@@ -30,6 +32,7 @@ impl Default for Thresholds {
             jitter_ms: 30.0,
             loss_pct: 0.5,
             mos: 4.0,
+            asr_pct: 95.0,
         }
     }
 }

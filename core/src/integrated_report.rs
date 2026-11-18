@@ -10,6 +10,7 @@ use crate::rtp::stats::CallQuality;
 use crate::thresholds::Thresholds;
 use crate::timeline::TimelineBucket;
 use anyhow::Result;
+use serde::Serialize;
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::{fs, path::PathBuf};
@@ -451,6 +452,13 @@ impl Verdict {
             Self::NoData => "info",
         }
     }
+    fn key(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::NoData => "nodata",
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Pass => "通過",
@@ -506,6 +514,21 @@ fn checks(side: &Side, th: &Thresholds) -> Vec<Check> {
     let scope = side.label;
     let q = r.call_quality.as_ref();
     let mos_p5 = q.and_then(|q| CallQuality::quantile(&q.mos_jb200_hist, 0.05));
+    let mut out = Vec::new();
+    // 接通率只對民眾端有意義（座席端是被撥打的一方）
+    if !is_agent(side.file) {
+        out.push(Check {
+            name: "接通率 ASR".into(),
+            scope: "民眾端",
+            value: (r.calls_initiated > 0).then_some(r.asr),
+            unit: "%",
+            limit: Limit::Min(th.asr_pct),
+            note: format!(
+                "發起 {} 通，接通 {} 通",
+                r.calls_initiated, r.calls_answered
+            ),
+        });
+    }
     let mos_note = q.map_or(String::new(), |q| {
         let ok = q.calls - CallQuality::count_below(&q.mos_jb200_hist, th.mos);
         format!(
@@ -515,7 +538,7 @@ fn checks(side: &Side, th: &Thresholds) -> Vec<Check> {
             ok as f64 / q.calls as f64 * 100.0
         )
     });
-    vec![
+    out.extend([
         Check {
             name: "MOS（jitter buffer 200 ms 模擬）".into(),
             scope,
@@ -542,7 +565,51 @@ fn checks(side: &Side, th: &Thresholds) -> Vec<Check> {
             limit: Limit::Max(th.jitter_ms),
             note: "每通電話的 P95".into(),
         },
-    ]
+    ]);
+    out
+}
+
+/// 一項判定的結果（GUI 結果畫面用，與整合報告同一套規則）
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckResult {
+    pub name: String,
+    /// 方向或對象，例如「民眾端」「民眾聽到（座席 → 民眾）」
+    pub scope: String,
+    /// 量到的值；`None` = 沒有數據
+    pub value: Option<f64>,
+    pub unit: String,
+    /// 門檻，例如「≥ 95」
+    pub limit: String,
+    /// `None` = 沒有數據可判定
+    pub pass: Option<bool>,
+    pub note: String,
+}
+
+/// 整體判定：`verdict` 為 `pass` / `fail` / `nodata`
+#[derive(Debug, Clone, Serialize)]
+pub struct VerdictSummary {
+    pub verdict: &'static str,
+    pub checks: Vec<CheckResult>,
+}
+
+/// 依門檻判定測試結果（不含主機資源），規則與整合報告相同
+pub fn judge(src: &ReportSources, th: &Thresholds) -> VerdictSummary {
+    let checks: Vec<Check> = sides(src).iter().flat_map(|s| checks(s, th)).collect();
+    VerdictSummary {
+        verdict: overall(&checks).key(),
+        checks: checks
+            .iter()
+            .map(|c| CheckResult {
+                name: c.name.clone(),
+                scope: c.scope.to_string(),
+                value: c.value,
+                unit: c.unit.trim().to_string(),
+                limit: c.limit.label(),
+                pass: c.value.map(|v| c.limit.ok(v)),
+                note: c.note.clone(),
+            })
+            .collect(),
+    }
 }
 
 fn overall(checks: &[Check]) -> Verdict {
@@ -1459,6 +1526,8 @@ fn duration_label(secs: f64) -> String {
 const DEFINITIONS: &str = r#"<dl>
 <dt>聲音方向</dt>
 <dd>每一端只能量測自己收到的封包：民眾端的數據是座席 → 民眾方向（民眾聽到的聲音），座席端的數據是民眾 → 座席方向（座席聽到的聲音）。報告同時有兩端數據時分開列出，兩個方向都在警戒值內才算通過；座席端的時間軸依兩端的測試開始時間對齊到民眾端。</dd>
+<dt>接通率 ASR</dt>
+<dd>接通通數 ÷ 發起通數。只判定民眾端；座席端是被撥打的一方，不判定。</dd>
 <dt>MOS（jitter buffer 200 ms 模擬）</dt>
 <dd>判定用的 MOS。模擬話機的 200 ms 固定緩衝：封包延遲比基準（最近 30 至 60 秒內最小的延遲）多出 200 ms 以上就來不及播放，視同遺失，再以 ITU-T G.107 E-Model（G.711）換算成 MOS。完全不掉包時最高 4.41。判定看<strong>每通電話的 P5</strong>：95% 的通話不低於這個值。</dd>
 <dt>掉包率（整體）</dt>
@@ -1602,6 +1671,45 @@ mod tests {
         assert!(html.contains("每個時段的聲音品質都沒有超過警戒值"));
         assert!(html.contains("@page{size:A4"));
         assert!(html.contains(r#"data-utc="2026-10-28T05:00:00Z""#));
+    }
+
+    #[test]
+    fn judge_checks_asr_on_caller_side() {
+        let mut f = file(
+            (0..30).map(|i| bucket(i, 4.3, 0.1)).collect(),
+            &[(4.4, 4.3); 20],
+        );
+        f.report.calls_initiated = 100;
+        f.report.calls_answered = 90;
+        f.report.asr = 90.0;
+        let src = ReportSources::single(f);
+
+        let v = judge(&src, &Thresholds::default());
+        assert_eq!(v.verdict, "fail");
+        let asr = &v.checks[0];
+        assert_eq!(asr.name, "接通率 ASR");
+        assert_eq!(asr.pass, Some(false));
+        assert_eq!(asr.limit, "≥ 95");
+        assert!(v.checks[1..].iter().all(|c| c.pass == Some(true)));
+
+        let lenient = Thresholds {
+            asr_pct: 85.0,
+            ..Thresholds::default()
+        };
+        assert_eq!(judge(&src, &lenient).verdict, "pass");
+        // 整合報告用同一套判定
+        let html = IntegratedReport::render(&src, &ReportOptions::default());
+        assert!(html.contains(r#"<div class="verdict bad">未通過</div>"#));
+        assert!(html.contains("接通率 ASR"));
+    }
+
+    #[test]
+    fn judge_without_calls_or_rtp_has_no_data() {
+        let mut f = file(vec![], &[]);
+        f.report.loss_rate_pct = None;
+        let v = judge(&ReportSources::single(f), &Thresholds::default());
+        assert_eq!(v.verdict, "nodata");
+        assert!(v.checks.iter().all(|c| c.pass.is_none()));
     }
 
     #[test]

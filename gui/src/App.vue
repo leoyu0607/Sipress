@@ -7,6 +7,13 @@ import ChartPanel  from './components/ChartPanel.vue'
 import RightPanel  from './components/RightPanel.vue'
 import LogPanel    from './components/LogPanel.vue'
 import SidebarResizer, { loadSidebarWidth, sidebarMaxFor } from './components/SidebarResizer.vue'
+import ReadyPanel   from './components/ReadyPanel.vue'
+import RunBar       from './components/RunBar.vue'
+import ResultBanner from './components/ResultBanner.vue'
+import FinishToast  from './components/FinishToast.vue'
+import { useTestStore } from './stores/testStore'
+
+const store = useTestStore()
 
 // 側欄寬度（可拖曳調整，記在本機）。實際顯示的寬度不超過目前視窗允許的上限，
 // 視窗縮小時側欄跟著變窄，放大後回到使用者設定的寬度
@@ -39,10 +46,17 @@ provide('toggleTheme', toggleTheme)
 <template>
   <div class="app">
     <TitleBar />
+    <!-- 三段式：設定（側欄＋準備開始）→ 執行中（即時數據）→ 結果（結論＋整場數據） -->
     <div class="body">
-      <Sidebar :style="{ width: shownSidebarWidth + 'px' }" />
-      <SidebarResizer v-model="sidebarWidth" :max="sidebarMax" />
-      <div class="content">
+      <!-- 用 v-show：切階段回來時側欄的捲動位置與展開狀態還在 -->
+      <div v-show="store.stage === 'setup'" class="setup-stage">
+        <Sidebar :style="{ width: shownSidebarWidth + 'px' }" />
+        <SidebarResizer v-model="sidebarWidth" :max="sidebarMax" />
+        <ReadyPanel />
+      </div>
+      <div v-if="store.stage !== 'setup'" class="content">
+        <RunBar v-if="store.stage === 'running'" />
+        <ResultBanner v-else />
         <MetricStrip />
         <div class="middle">
           <ChartPanel />
@@ -51,6 +65,7 @@ provide('toggleTheme', toggleTheme)
         <LogPanel />
       </div>
     </div>
+    <FinishToast />
   </div>
 </template>
 
@@ -161,6 +176,8 @@ html, body, #app {
   -webkit-font-smoothing: antialiased;
   transition: background 0.25s, color 0.25s;
 }
+
+.setup-stage { display: contents; }
 
 /* ── Scrollbar ─────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
