@@ -238,3 +238,63 @@ ACD log 分析：(1) 座席接聽的 200 OK Contact 帶成主叫號碼（v0.6.1 
 - [x] 即時圖表暫停 / 文字摘要 / 鍵盤逐點查看、側欄可拖曳調整寬度（上限依視窗寬度）、`index.html` 標題與語言 — PR #33
 
 驗證方式：vitest 元件測試，加上以 headless Edge 載入 build 結果（Tauri API 以 stub 代替）在 960×600 與 1280×780 截圖量測。尚未在 `npm run tauri dev` 的原生視窗確認拖曳標題列與視窗按鈕。
+
+### [x] 31. RTP 序號回捲造成假掉包、MOS 掉到 1（正確性，issue #40） — PR #41
+
+RTP 序號從 65535 回捲到 0 時，期望封包數算錯，掉包率暴增（座席端 51.80%、民眾端 32.15%），MOS 掉到 1。改用 RFC 3550 的延伸序號（`core/src/rtp/stats.rs` 的 `SeqRange{first,max,cycles}`，`expected()` 以 i64 計算）。以 issue 附件重建的封包重播驗證：座席端 51.80% → 0%、民眾端 32.15% → 0.01%。
+
+### [x] 32. 民眾端通話流程與雲端 TTS（功能，issue #39） — PR #42
+
+民眾端「通話流程」視窗：等待秒數、按鍵、播放音檔（可多檔隨機）、TTS 說話（可多句隨機）、等對方講完（VAD：RMS ≥ -40 dBFS 算有聲音），用來測傳統按鍵 IVR 與智能語音 IVR。
+- core：`Config.caller_flow`（`CallerStep`）、`core/src/rtp/script.rs`、`core/src/tts.rs`（Azure：SSML、`raw-8khz-8bit-mono-alaw`；Google：`ALAW` 8000 Hz）。合成結果以 MD5 命名快取在 `tts_cache/`。DTMF（RFC 4733）與語音共用 SSRC 與序號。
+- CLI `--caller-flow <JSON>`（需 `--rtp`），金鑰用環境變數 `SIPRESS_TTS_KEY`；結果檔與匯出的流程檔都不含金鑰。
+- 尚未驗證（見第 36 項）：真實金鑰合成、-40 dBFS 門檻對真實 IVR 是否合適。
+
+### [x] 33. 發佈 v0.7.5 — PR #43
+
+musl 版 CLI 改用 cargo-zigbuild（zig 0.15.2）建置（ring 找不到交叉編譯器）。注意：`v0.7.5` 是 lightweight tag，之前的版本是 annotated tag。
+
+### [~] 34. GUI 範本：常用設定存起來，一鍵套用（UI/UX） — PR #44（`feat/templates`，CI 全綠，待使用者合併）
+
+標題列「範本」選單：套用、存成範本、更新、管理（改名 / 刪除 / 匯出 / 匯入）、套用後可復原。內建 4 個情境（試打幾通、按鍵 IVR、語音 IVR（TTS）、長時間耐久），套用時保留伺服器、號碼、帳號。範本存本機（`sipress-templates`），匯出檔預設不含密碼與金鑰，勾選才包含；不鎖定設定。
+同一個 PR 也修了 CI：
+- `zip` 升到 9.7.0（RUSTSEC-2026-0548）
+- npm audit 拆成兩步：執行期相依擋 PR，開發工具只列出（見第 37 項）
+待確認：GUI 實際畫面；內建情境的數字（併發、CPS、秒數）是開發時自訂的，需依實際使用調整。
+
+### [~] 35. GUI 簡化第一步：合併重複入口（UI/UX） — PR #45（`feat/uiux-simplify`，基底 `feat/templates`，CI 全綠，待使用者合併）
+
+背景：使用者回饋「畫面功能多、不直覺」。分兩步做，這是第一步：
+- 開始按鈕合成一顆（`StartButton.vue`）：主按鈕作用在目前分頁；▾ 選單有「兩端一起跑」「全部停止」
+- 「整合報告」併進「匯出」選單，改名「報告」
+- 民眾端「通話聲音」三選一（`caller.audioMode`：`silence` / `loop` / `flow`，取代 `enableAudio`），只顯示選到的欄位；舊設定自動換算（`mergeConfig` 的 `audioModeOf`）
+- CLI 指令預覽與欄位旁的 `--參數` 預設收起（`sipress-show-cli`）
+- 行為改變：座席端只在民眾端選「循環播放音檔」時收送 RTP（見第 38 項）
+合併順序：先 #44 再 #45（#44 合併後 #45 自動改成合併到 main）。待確認：GUI 實際畫面（960px 標題列寬度、分段按鈕、亮暗色主題）。
+
+### [ ] 36. 實測驗證通話流程與 TTS（驗證）
+
+- 用真實的 Azure / Google 金鑰合成並在通話中播放，確認音質與快取
+- 對真實的智能語音 IVR 測「等對方講完」：-40 dBFS 門檻與安靜時間預設值（800 ms）是否合適，背景音樂或雜訊會不會一直判定為有聲音
+- 結果補進第 32 項
+
+### [ ] 37. 追蹤 npm 開發工具弱點（維護）
+
+picomatch GHSA-fc5q-39xc-vjpf（ReDoS，≤ 4.0.7 全中，尚無修補版）只出現在 vite / vitest。CI 的「npm audit (dev tools, informational)」會列出但不擋。picomatch 出修補版後升級，若開發工具不再有高風險弱點，可把這一步改回會擋。另有 minimatch GHSA-g3hv-75wg-m249（中風險，來自 vue-tsc 2.x，要升 vue-tsc 3 才會消失）。
+
+### [ ] 38. 座席端音檔獨立設定（功能，視需求）
+
+目前座席端與民眾端共用「循環播放音檔」的音檔，民眾端選「通話流程」時座席端不收送 RTP，量不到座席端 MOS。若需要「民眾端跑 IVR 流程、座席端同時量音質」，在座席端分頁加上自己的音檔設定（`agent.audioMode` / `agent.audioFile`），`buildRustConfig` 依模式取對應的一端。
+
+### [ ] 39. GUI 簡化第二步：三段式畫面（UI/UX，接在第 35 項之後）
+
+把畫面依使用階段分成「設定 / 執行中 / 結果」：
+- 設定階段以側欄為主
+- 執行中突出即時指標與圖表，設定收起並鎖定
+- 結束後顯示結論與「報告」入口
+
+保留圖表與數據（使用者明確要求，不能做成過度簡化的版本）。開工前先跟使用者確認版面草圖。
+
+### [ ] 40. 本機 TTS（功能，暫緩）
+
+使用者希望有繁體中文的本機 TTS（例如聯發科 BreezyVoice，Apache 2.0）。評估結果：模型約 1.2–1.8 GB，需 Python / PyTorch，移植成內嵌引擎需數週，所以先做雲端 TTS（第 32 項）。有需求再評估「一鍵下載模型 + 外掛程序」的做法。
