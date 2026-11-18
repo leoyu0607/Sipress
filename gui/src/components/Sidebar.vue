@@ -186,14 +186,8 @@ function statusTitle(s: string) {
 
 <template>
   <aside class="sidebar" :class="{ 'show-cli': showCli }">
+    <!-- 「開始測試」被擋住的原因列在右側「準備開始」的開始前檢查 -->
     <div class="lock-banner" v-if="locked"><Icon name="lock" :size="12" />測試執行中，設定已鎖定</div>
-    <!-- 「開始測試」被擋住的原因直接列出，不只放在按鈕的 hover 提示裡 -->
-    <div class="start-blockers" v-else-if="store.validationErrors.length > 0" aria-live="polite">
-      <div class="blockers-title"><Icon name="alert" :size="12" />開始前需修正 {{ store.validationErrors.length }} 項</div>
-      <ul>
-        <li v-for="e in store.validationErrors" :key="e">{{ e }}</li>
-      </ul>
-    </div>
     <fieldset class="lock-wrap" :disabled="locked">
 
     <!-- ── TARGET ─────────────────────────────────────────── -->
@@ -824,21 +818,6 @@ function statusTitle(s: string) {
   top: 0;
   z-index: 1;
 }
-.start-blockers {
-  font-size: 11px;
-  color: var(--warn);
-  background: linear-gradient(rgba(var(--warn-rgb),0.08), rgba(var(--warn-rgb),0.08)), var(--bg1);
-  border-bottom: 1px solid rgba(var(--warn-rgb),0.3);
-  padding: 6px 14px 7px;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  line-height: 1.5;
-}
-.blockers-title { display: flex; align-items: center; gap: 5px; font-weight: 600; margin-bottom: 2px; }
-.start-blockers ul { margin: 0; padding-left: 14px; }
-.start-blockers li { color: var(--text0); }
-.start-blockers li::marker { color: var(--warn); }
 
 fieldset:disabled input,
 fieldset:disabled select,

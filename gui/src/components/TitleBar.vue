@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, inject, type ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useTestStore, MODE_LABEL } from '../stores/testStore'
+import { useTestStore, MODE_LABEL, type CallMode } from '../stores/testStore'
 import ExportMenu from './ExportMenu.vue'
 import TemplateMenu from './TemplateMenu.vue'
 import StartButton from './StartButton.vue'
+import StageNav from './StageNav.vue'
 import Icon from './Icon.vue'
 
 const store = useTestStore()
@@ -18,12 +19,7 @@ async function closeWindow()    { await appWindow.close() }
 async function minimizeWindow() { await appWindow.minimize() }
 async function maximizeWindow() { await appWindow.toggleMaximize() }
 
-const timerDisplay = computed(() => {
-  const s   = store.elapsedSec
-  const m   = String(Math.floor(s / 60)).padStart(2, '0')
-  const sec = String(s % 60).padStart(2, '0')
-  return `${m}:${sec}`
-})
+const MODES: CallMode[] = ['caller', 'agent']
 
 const STATUS_LABEL: Record<string, string> = {
   idle: '待命', running: '執行中', done: '已完成', error: '錯誤',
@@ -41,8 +37,17 @@ const bothRunning = computed(() =>
     <div class="logo">sip<em>ress</em></div>
     <div class="sep-v"></div>
 
+    <!-- 設定階段：側欄上方就有民眾端 / 座席端分頁；其他階段側欄收起，改在這裡切換 -->
+    <div v-if="store.stage !== 'setup'" class="mode-switch" role="tablist" aria-label="檢視端">
+      <button v-for="m in MODES" :key="m" type="button" role="tab" class="ms-btn"
+              :class="{ active: store.config.mode === m }" :aria-selected="store.config.mode === m"
+              @click="store.config.mode = m">
+        {{ MODE_LABEL[m] }}<span v-if="store.sessions[m].status === 'running'" class="ms-dot" title="執行中"></span>
+      </button>
+    </div>
+
     <!-- Status badge -->
-    <div class="status-badge" :class="store.status">
+    <div v-else class="status-badge" :class="store.status">
       <div class="dot" :class="{ pulse: store.status === 'running' }"></div>
       <span>{{ MODE_LABEL[store.config.mode] }} · {{ STATUS_LABEL[store.status] }}</span>
     </div>
@@ -50,19 +55,8 @@ const bothRunning = computed(() =>
       <span>雙端執行中</span>
     </div>
 
-    <!-- Target -->
-    <div class="target-info" v-if="store.config.server" :title="`${store.config.server} (${store.config.transport})`">
-      → <strong>{{ store.config.server }}</strong>
-      <span class="transport-tag">{{ store.config.transport }}</span>
-    </div>
-
-    <!-- Progress bar -->
-    <div class="progress-wrap" v-if="store.status === 'running'">
-      <div class="progress-bar" :style="{ width: store.progressPct + '%' }"></div>
-    </div>
-
-    <!-- Timer -->
-    <div class="timer">{{ timerDisplay }}</div>
+    <!-- 階段：設定 → 執行中 → 結果（進度與時間在執行畫面上方） -->
+    <div class="stage-wrap"><StageNav /></div>
 
     <!-- Actions -->
     <div class="actions">
@@ -78,9 +72,11 @@ const bothRunning = computed(() =>
         <Icon :name="isDark ? 'sun' : 'moon'" :size="14" />
       </button>
 
-      <div class="sep-v"></div>
-
-      <StartButton />
+      <!-- 設定階段的開始按鈕在右側「準備開始」；結果階段改用「用同樣設定再跑一次」 -->
+      <template v-if="store.stage === 'running'">
+        <div class="sep-v"></div>
+        <StartButton />
+      </template>
     </div>
 
     <!-- Window controls (Windows style) -->
@@ -173,60 +169,28 @@ const bothRunning = computed(() =>
   50%      { opacity: 0.3; transform: scale(0.8); }
 }
 
-.target-info {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text1);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.target-info strong { color: var(--text0); font-weight: 500; }
-.transport-tag {
-  margin-left: 4px;
-  font-size: 11px;
-  color: var(--text2);
-  background: var(--bg3);
-  padding: 1px 5px;
-  border-radius: 3px;
-}
+.stage-wrap { flex: 1 1 auto; display: flex; justify-content: center; min-width: 0; }
 
-.progress-wrap {
-  flex: 1 1 60px;
-  min-width: 48px;           /* 窄視窗時目標位址先縮（省略號），進度條不可被擠到看不見 */
-  max-width: 120px;
-  height: 3px;
-  background: var(--bg3);
-  border-radius: 2px;
-  overflow: hidden;
+.mode-switch {
+  display: flex; flex-shrink: 0; padding: 2px; gap: 2px;
+  background: var(--bg2); border: 1px solid var(--border2); border-radius: var(--radius);
+  -webkit-app-region: no-drag;
 }
-.progress-bar {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 1s linear;
+.ms-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text1); font-family: var(--sans); font-size: 12px; cursor: pointer;
 }
-
-.timer {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text0);
-  background: var(--bg3);
-  border: 1px solid var(--border2);
-  padding: 3px 10px;
-  border-radius: var(--radius);
-  min-width: 56px;
-  text-align: center;
-  transition: background 0.25s, border-color 0.25s;
-}
+.ms-btn:hover { color: var(--text0); }
+.ms-btn.active { background: var(--bg4); color: var(--text0); }
+.ms-btn:focus-visible { outline: 2px solid rgba(var(--accent-rgb),0.6); outline-offset: 1px; }
+.ms-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
 
 .actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Theme button：只有圖示，寬高一致 */

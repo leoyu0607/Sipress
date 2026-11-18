@@ -54,35 +54,6 @@ describe('執行中鎖定', () => {
   })
 })
 
-describe('無法開始的原因直接顯示', () => {
-  it('有驗證錯誤時列出每一項，修正後消失', async () => {
-    const s = useTestStore()
-    s.config.server = ''
-    await nextTick()
-    const box = root.querySelector('.start-blockers')
-    expect(box).not.toBeNull()
-    const items = [...box!.querySelectorAll('li')].map(li => li.textContent)
-    expect(items).toEqual(s.validationErrors)
-    expect(items).toContain('SIP server 不可空白')
-
-    s.config.server = '127.0.0.1:5060'
-    s.config.caller.accessNumber = '4008001234'
-    s.config.caller.audioMode = 'silence'
-    await nextTick()
-    expect(s.validationErrors).toEqual([])
-    expect(root.querySelector('.start-blockers')).toBeNull()
-  })
-
-  it('執行中改顯示鎖定提示，不顯示驗證清單', async () => {
-    const s = useTestStore()
-    s.config.server = ''
-    s.sessions.caller.status = 'running'
-    await nextTick()
-    expect(root.querySelector('.lock-banner')).not.toBeNull()
-    expect(root.querySelector('.start-blockers')).toBeNull()
-  })
-})
-
 describe('無障礙語意', () => {
   it('每個 label[for] 都指到存在的輸入框', async () => {
     const s = useTestStore()

@@ -32,6 +32,7 @@ const pdfReady = ref(true)
 const done = (m: CallMode) => store.sessions[m].status === 'done'
 
 const THRESHOLD_FIELDS: { key: keyof ReportThresholds; label: string; unit: string; hint: string; step: number }[] = [
+  { key: 'asr_pct',    label: '接通率下限',    unit: '%',  hint: '民眾端接通率（接通 ÷ 發起）不低於此值', step: 1 },
   { key: 'mos',        label: 'MOS 下限',      unit: '',   hint: 'MOS（jitter buffer 200 ms 模擬）每通電話的 P5 不低於此值', step: 0.1 },
   { key: 'loss_pct',   label: '掉包率上限',     unit: '%',  hint: '整體掉包率（所有通話的掉包數 ÷ 應收封包數）', step: 0.1 },
   { key: 'jitter_ms',  label: 'Jitter 上限',   unit: 'ms', hint: '每通電話 Jitter 的 P95', step: 1 },
@@ -98,6 +99,7 @@ function request(): IntegratedRequest {
 async function run(kind: 'html' | 'pdf' | 'open') {
   if (invalid.value || busy.value) return
   saveReportSettings(thresholds.value, notes.value)
+  store.reloadThresholds()
   busy.value = kind
   error.value = ''
   const req = request()
