@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useTestStore, MODE_LABEL } from '../stores/testStore'
 import IntegratedReportDialog from './IntegratedReportDialog.vue'
 import ExportMenu from './ExportMenu.vue'
+import TemplateMenu from './TemplateMenu.vue'
 import Icon from './Icon.vue'
 
 const store = useTestStore()
@@ -97,6 +98,7 @@ function toggleTest() {
 
     <!-- Actions -->
     <div class="actions">
+      <TemplateMenu />
       <ExportMenu />
       <button class="btn btn-sm"
               @click="reportOpen = true"

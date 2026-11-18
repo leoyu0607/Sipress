@@ -653,49 +653,211 @@ function defaultConfig(): TestConfig {
   }
 }
 
+/** 設定的部分欄位（範本、舊版設定） */
+export type ConfigPatch = Partial<Omit<TestConfig, 'caller' | 'agent'>> & {
+  caller?: Partial<Omit<CallerProfile, 'cpsPattern' | 'flow'>> & {
+    cpsPattern?: Partial<CpsPatternConfig>
+    flow?: Partial<Omit<CallerFlowConfig, 'tts'>> & { tts?: Partial<TtsSettings> }
+  }
+  agent?: Partial<Omit<AgentProfile, 'behavior' | 'flow'>> & {
+    behavior?: Partial<AgentBehaviorConfig>
+    flow?: Partial<Omit<AgentFlowConfig, 'codes'>> & { codes?: Partial<Record<FlowCodeKey, string>> }
+  }
+}
+
+/**
+ * 把部分設定合併到 `base` 上（逐段合併，沒給的欄位保留 base 的值），回傳新的設定。
+ * 載入舊版設定（新版本新增的欄位取預設值）與套用範本共用。
+ */
+export function mergeConfig(base: TestConfig, patch: ConfigPatch & { duration?: number }): TestConfig {
+  const saved = clone(patch)
+  // v0.4 以前持續時間是兩端共用的頂層欄位 → 兩端都沿用舊值
+  const legacyDuration = typeof saved.duration === 'number' ? { duration: saved.duration } : {}
+  delete saved.duration
+  const def = clone(base)
+  const cfg: TestConfig = {
+    ...def,
+    ...saved,
+    caller: {
+      ...def.caller,
+      ...legacyDuration,
+      ...saved.caller,
+      cpsPattern: { ...def.caller.cpsPattern, ...saved.caller?.cpsPattern },
+      flow: {
+        ...def.caller.flow,
+        ...saved.caller?.flow,
+        tts: { ...def.caller.flow.tts, ...saved.caller?.flow?.tts },
+      },
+    } as CallerProfile,
+    agent: {
+      ...def.agent,
+      ...legacyDuration,
+      ...saved.agent,
+      behavior: { ...def.agent.behavior, ...saved.agent?.behavior },
+      flow: {
+        ...def.agent.flow,
+        ...saved.agent?.flow,
+        codes: { ...def.agent.flow.codes, ...saved.agent?.flow?.codes },
+      },
+    } as AgentProfile,
+  }
+  if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
+  if (cfg.mode !== 'caller' && cfg.mode !== 'agent') cfg.mode = 'caller'
+  // 註冊狀態不跨啟動、不跨範本保留
+  cfg.agent.accounts = (cfg.agent.accounts ?? []).map(a => ({ ...a, status: 'idle' as const }))
+  return cfg
+}
+
+function clone<T>(v: T): T {
+  return v === undefined ? v : JSON.parse(JSON.stringify(v))
+}
+
 /** 從 localStorage 載入設定，與預設值合併（新版本新增的欄位會取預設值） */
 function loadConfig(): TestConfig {
   const def = defaultConfig()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return def
-    const saved = JSON.parse(raw) as Partial<TestConfig> & { duration?: number }
-    // v0.4 以前持續時間是兩端共用的頂層欄位 → 兩端都沿用舊值
-    const legacyDuration = typeof saved.duration === 'number' ? { duration: saved.duration } : {}
-    delete saved.duration
-    const cfg: TestConfig = {
-      ...def,
-      ...saved,
-      caller: {
-        ...def.caller,
-        ...legacyDuration,
-        ...saved.caller,
-        cpsPattern: { ...def.caller.cpsPattern, ...saved.caller?.cpsPattern },
-        flow: {
-          ...def.caller.flow,
-          ...saved.caller?.flow,
-          tts: { ...def.caller.flow.tts, ...saved.caller?.flow?.tts },
-        },
-      },
-      agent: {
-        ...def.agent,
-        ...legacyDuration,
-        ...saved.agent,
-        behavior: { ...def.agent.behavior, ...saved.agent?.behavior },
-        flow: {
-          ...def.agent.flow,
-          ...saved.agent?.flow,
-          codes: { ...def.agent.flow.codes, ...saved.agent?.flow?.codes },
-        },
-      },
-    }
-    if (cfg.transport !== 'UDP' && cfg.transport !== 'TCP') cfg.transport = 'UDP'
-    // 註冊狀態不跨啟動保留
-    cfg.agent.accounts = (cfg.agent.accounts ?? []).map(a => ({ ...a, status: 'idle' as const }))
-    return cfg
+    return mergeConfig(def, JSON.parse(raw))
   } catch {
     return def
   }
+}
+
+// ── 範本 ──────────────────────────────────────────────────────────────────────
+/**
+ * 範本：一份完整的設定快照（含整合報告的判定門檻），存在本機，可匯出成檔案給同事匯入。
+ * 內建情境只含「怎麼打」的欄位，套用時保留目前的伺服器、號碼與帳號。
+ */
+export interface TestTemplate {
+  id:          string
+  name:        string
+  description: string
+  /** full：完整設定，套用時取代所有設定；scenario：內建情境，只改情境相關欄位 */
+  kind:        'full' | 'scenario'
+  config:      ConfigPatch
+  /** 整合報告的判定門檻（完整範本才有） */
+  thresholds?: ReportThresholds
+  updatedAt:   string
+}
+
+const TEMPLATES_KEY = 'sipress-templates'
+const ACTIVE_TEMPLATE_KEY = 'sipress-active-template'
+/** 匯出檔的格式識別 */
+export const TEMPLATE_FILE_FORMAT = 'sipress-templates'
+
+/** 設定裡的密碼與金鑰清空（保留欄位，套用後再填即可） */
+export function stripSecrets(c: TestConfig): TestConfig {
+  const out = clone(c)
+  out.caller.authPass = ''
+  out.caller.flow.tts.apiKey = ''
+  out.agent.flow.agentPassword = ''
+  out.agent.accounts = out.agent.accounts.map(a => ({ ...a, password: '' }))
+  return out
+}
+
+/** 範本存的設定快照（帳號的註冊狀態不保存） */
+function snapshotConfig(c: TestConfig): TestConfig {
+  const out = clone(c)
+  out.agent.accounts = out.agent.accounts.map(a => ({ ...a, status: 'idle' as const }))
+  return out
+}
+
+/** 內建情境：只含情境相關欄位，套用時保留伺服器、號碼、帳號等連線設定 */
+export function builtinTemplates(): TestTemplate[] {
+  const t = (id: string, name: string, description: string, config: ConfigPatch): TestTemplate =>
+    ({ id: `builtin-${id}`, name, description, kind: 'scenario', config, updatedAt: '' })
+  return [
+    t('trial', '試打幾通', '民眾端打 5 通、一次 1 通，確認線路與設定正常（保留目前的通話流程）', {
+      mode: 'caller',
+      caller: {
+        concurrency: 1, cps: 1, totalCalls: 5, callDuration: 15, duration: 120, refillDelay: 0,
+        cpsPattern: { type: 'flat' },
+      },
+    }),
+    t('dtmf-ivr', '按鍵 IVR', '每通等 10 秒聽招呼語 → 按 1 → 等 5 秒 → 按 2 → 等 10 秒後掛斷；同時 10 通、5 分鐘', {
+      mode: 'caller',
+      caller: {
+        concurrency: 10, cps: 1, totalCalls: 0, callDuration: 120, duration: 300,
+        cpsPattern: { type: 'flat' },
+        flow: {
+          hangupWhenDone: true,
+          steps: [
+            newCallerStep('wait', { secs: 10 }), newCallerStep('dtmf', { digits: '1' }),
+            newCallerStep('wait', { secs: 5 }),  newCallerStep('dtmf', { digits: '2' }),
+            newCallerStep('wait', { secs: 10 }),
+          ],
+        },
+      },
+    }),
+    t('voice-ivr', '語音 IVR（TTS）', '等對方講完 → 說「我想查詢帳單」→ 等回答 → 道謝後掛斷；同時 10 通、5 分鐘。需要設定 TTS 金鑰', {
+      mode: 'caller',
+      caller: {
+        concurrency: 10, cps: 0.5, totalCalls: 0, callDuration: 180, duration: 300,
+        cpsPattern: { type: 'flat' },
+        flow: {
+          hangupWhenDone: true,
+          steps: [
+            newCallerStep('waitSilence', { silenceMs: 800, timeoutSecs: 20 }),
+            newCallerStep('say', { texts: ['我想查詢這個月的帳單', '請問這個月的帳單金額是多少'] }),
+            newCallerStep('waitSilence', { silenceMs: 800, timeoutSecs: 20 }),
+            newCallerStep('say', { texts: ['好的，謝謝'] }),
+            newCallerStep('waitSilence', { silenceMs: 800, timeoutSecs: 10 }),
+          ],
+        },
+      },
+    }),
+    t('soak', '長時間耐久', '民眾端同時 50 通、每通 60 秒，連續 1 小時，看系統會不會越跑越差', {
+      mode: 'caller',
+      caller: {
+        concurrency: 50, cps: 2, totalCalls: 0, callDuration: 60, duration: 3600, refillDelay: 0,
+        cpsPattern: { type: 'flat' },
+      },
+    }),
+  ]
+}
+
+function loadTemplates(): TestTemplate[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TEMPLATES_KEY) ?? '[]')
+    return Array.isArray(raw) ? raw.filter(isTemplateLike).map(t => ({ ...t, kind: 'full' as const })) : []
+  } catch {
+    return []
+  }
+}
+
+function isTemplateLike(v: unknown): v is TestTemplate {
+  const t = v as Partial<TestTemplate> | null
+  return !!t && typeof t === 'object' && typeof t.name === 'string' && !!t.config && typeof t.config === 'object'
+}
+
+/** 解析匯入的範本檔：本程式匯出的檔案（含多個範本），或單一範本 */
+export function parseTemplateFile(text: string): TestTemplate[] {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error('檔案不是有效的 JSON')
+  }
+  const d = data as { format?: string; templates?: unknown[] }
+  const list = d && d.format === TEMPLATE_FILE_FORMAT && Array.isArray(d.templates) ? d.templates : [data]
+  const ok = list.filter(isTemplateLike)
+  if (ok.length === 0) throw new Error('檔案裡沒有範本（請選擇 sipress 匯出的範本檔）')
+  return ok.map(t => ({
+    id: uid(),
+    name: t.name.trim() || '未命名範本',
+    description: typeof t.description === 'string' ? t.description : '',
+    kind: 'full' as const,
+    config: t.config,
+    ...(t.thresholds ? { thresholds: { ...DEFAULT_THRESHOLDS, ...t.thresholds } } : {}),
+    updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : new Date().toISOString(),
+  }))
+}
+
+/** 同名時加上 (2)、(3)… */
+function uniqueName(name: string, taken: string[]): string {
+  if (!taken.includes(name)) return name
+  for (let i = 2; ; i++) if (!taken.includes(`${name} (${i})`)) return `${name} (${i})`
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -1450,6 +1612,129 @@ export const useTestStore = defineStore('test', () => {
       saveTextFile('sipress_flow.json', 'json', 'JSON', JSON.stringify(flowToRust(config.value.agent.flow), null, 2) + '\n'))
   }
 
+  // ── 範本 ────────────────────────────────────────────────────────────────────
+  const templates = ref<TestTemplate[]>(loadTemplates())
+  watch(templates, t => {
+    try { localStorage.setItem(TEMPLATES_KEY, JSON.stringify(t)) } catch { /* quota / private mode */ }
+  }, { deep: true })
+  const activeTemplateId = ref<string | null>(localStorage.getItem(ACTIVE_TEMPLATE_KEY))
+  watch(activeTemplateId, id => {
+    try {
+      if (id) localStorage.setItem(ACTIVE_TEMPLATE_KEY, id)
+      else localStorage.removeItem(ACTIVE_TEMPLATE_KEY)
+    } catch { /* ignore */ }
+  })
+  /** 目前設定來自哪個範本（套用內建情境或刪除範本後為 null） */
+  const activeTemplate = computed(() => templates.value.find(t => t.id === activeTemplateId.value) ?? null)
+  /** 比較用：去掉密碼（匯入的範本可能不含密碼，填上後不算修改）與執行期狀態 */
+  const comparable = (c: TestConfig) => JSON.stringify(stripSecrets(snapshotConfig(c)))
+  /** 目前設定與套用的範本不同（有改過，尚未更新範本） */
+  const templateModified = computed(() =>
+    !!activeTemplate.value
+    && comparable(config.value) !== comparable(mergeConfig(defaultConfig(), activeTemplate.value.config)))
+
+  /** 套用前的狀態，可用「復原」回去 */
+  const templateUndo = ref<{ name: string; config: TestConfig; activeId: string | null; thresholds: ReportThresholds } | null>(null)
+
+  /** 套用範本；回傳錯誤訊息（null = 成功） */
+  function applyTemplate(t: TestTemplate): string | null {
+    if (anyRunning.value) return '測試執行中，請先停止再套用範本'
+    const report = loadReportSettings()
+    templateUndo.value = { name: t.name, config: clone(config.value), activeId: activeTemplateId.value, thresholds: report.thresholds }
+    if (t.kind === 'full') {
+      config.value = mergeConfig(defaultConfig(), t.config)
+      activeTemplateId.value = t.id
+      if (t.thresholds) saveReportSettings(t.thresholds, report.notes)
+    } else {
+      // 內建情境：保留目前的連線設定，只改情境欄位；設定不再等於任何範本
+      config.value = mergeConfig(config.value, t.config)
+      activeTemplateId.value = null
+    }
+    addLog('ok', `已套用範本「${t.name}」`)
+    return null
+  }
+
+  function undoApplyTemplate() {
+    const u = templateUndo.value
+    if (!u || anyRunning.value) return
+    config.value = u.config
+    activeTemplateId.value = u.activeId
+    saveReportSettings(u.thresholds, loadReportSettings().notes)
+    templateUndo.value = null
+    addLog('info', `已復原套用範本「${u.name}」前的設定`)
+  }
+
+  /** 把目前設定存成範本；同名的範本會被覆蓋 */
+  function saveAsTemplate(name: string, description: string, withThresholds = true): TestTemplate {
+    const n = name.trim() || '未命名範本'
+    const existing = templates.value.find(t => t.name === n)
+    const tpl: TestTemplate = {
+      id: existing?.id ?? uid(),
+      name: n,
+      description: description.trim(),
+      kind: 'full',
+      config: snapshotConfig(config.value),
+      ...(withThresholds ? { thresholds: loadReportSettings().thresholds } : {}),
+      updatedAt: new Date().toISOString(),
+    }
+    if (existing) templates.value.splice(templates.value.indexOf(existing), 1, tpl)
+    else templates.value.push(tpl)
+    activeTemplateId.value = tpl.id
+    templateUndo.value = null
+    addLog('ok', `${existing ? '已更新' : '已儲存'}範本「${n}」`)
+    return tpl
+  }
+
+  /** 用目前設定更新正在使用的範本（名稱、說明、門檻設定不變） */
+  function updateActiveTemplate() {
+    const t = activeTemplate.value
+    if (t) saveAsTemplate(t.name, t.description, !!t.thresholds)
+  }
+
+  function editTemplate(id: string, name: string, description: string) {
+    const t = templates.value.find(x => x.id === id)
+    if (!t) return
+    t.name = name.trim() || t.name
+    t.description = description.trim()
+  }
+
+  function deleteTemplate(id: string) {
+    const i = templates.value.findIndex(t => t.id === id)
+    if (i < 0) return
+    const [t] = templates.value.splice(i, 1)
+    if (activeTemplateId.value === id) activeTemplateId.value = null
+    addLog('info', `已刪除範本「${t.name}」`)
+  }
+
+  /** 匯出範本檔；預設不含密碼與金鑰 */
+  function exportTemplates(ids: string[], includeSecrets: boolean) {
+    const list = templates.value.filter(t => ids.includes(t.id)).map(t => ({
+      name: t.name,
+      description: t.description,
+      config: includeSecrets ? t.config : stripSecrets(mergeConfig(defaultConfig(), t.config)),
+      ...(t.thresholds ? { thresholds: t.thresholds } : {}),
+      updatedAt: t.updatedAt,
+    }))
+    if (list.length === 0) return Promise.resolve(null)
+    const file = { format: TEMPLATE_FILE_FORMAT, version: 1, exportedAt: new Date().toISOString(), templates: list }
+    const fname = list.length === 1
+      ? `sipress_範本_${list[0].name.replace(/[\\/:*?"<>|\s]+/g, '_')}.json`
+      : 'sipress_範本.json'
+    return exportWith(`範本（${list.length} 個${includeSecrets ? '，含密碼與金鑰' : ''}）`, () =>
+      saveTextFile(fname, 'json', 'JSON', JSON.stringify(file, null, 2) + '\n'))
+  }
+
+  /** 匯入範本檔的內容；同名的加上編號，不覆蓋既有範本。回傳匯入的數量，格式錯誤時丟出錯誤 */
+  function importTemplates(text: string): number {
+    const parsed = parseTemplateFile(text)
+    for (const t of parsed) {
+      t.name = uniqueName(t.name, templates.value.map(x => x.name))
+      templates.value.push(t)
+    }
+    addLog('ok', `匯入 ${parsed.length} 個範本：${parsed.map(t => `「${t.name}」`).join('、')}`)
+    return parsed.length
+  }
+
   /** 匯出民眾端通話流程（CLI --caller-flow 使用的 JSON）；不含 TTS 金鑰 */
   function exportCallerFlowJson() {
     return exportWith('通話流程', () =>
@@ -1592,5 +1877,8 @@ export const useTestStore = defineStore('test', () => {
     exportJson, exportCsv, exportHtml, exportResult, exportAccountsCsv,
     exportIntegratedHtml, exportIntegratedPdf, openIntegratedReport, exportE2eHtml, canExportE2e,
     exportFlowJson, runAgentCode, exportCallerFlowJson, previewTts,
+    templates, activeTemplate, templateModified, templateUndo,
+    applyTemplate, undoApplyTemplate, saveAsTemplate, updateActiveTemplate, editTemplate, deleteTemplate,
+    exportTemplates, importTemplates,
   }
 })
